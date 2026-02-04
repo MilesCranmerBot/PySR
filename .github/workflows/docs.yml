@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'master'
+      - 'release-*'
     paths:
       - 'pysr/**'
       - '.github/workflows/docs.yml'
