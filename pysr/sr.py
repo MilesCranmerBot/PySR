@@ -11,6 +11,7 @@ import sys
 import tempfile
 import warnings
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, fields
 from io import StringIO
 from multiprocessing import cpu_count
@@ -53,6 +54,7 @@ from .julia_helpers import (
     jl_serialize,
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
+from .jupyter_progress import JupyterProgressContext, should_use_jupyter_progress
 from .logger_specs import AbstractLoggerSpec
 from .utils import (
     ArrayLike,
@@ -2264,40 +2266,56 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else None
         )
 
-        out = SymbolicRegression.equation_search(
-            jl_X,
-            jl_y,
-            weights=jl_weights,
-            extra=jl_extra,
-            niterations=int(self.niterations),
-            variable_names=jl_array([str(v) for v in self.feature_names_in_]),
-            display_variable_names=jl_array(
-                [str(v) for v in self.display_feature_names_in_]
-            ),
-            y_variable_names=jl_y_variable_names,
-            X_units=jl_array(self.X_units_),
-            y_units=(
-                jl_array(self.y_units_)
-                if isinstance(self.y_units_, list)
-                else self.y_units_
-            ),
-            options=options,
-            guesses=jl_guesses,
-            numprocs=numprocs,
-            parallelism=parallelism,
-            saved_state=self.julia_state_,
-            return_state=True,
-            run_id=self.run_id_,
-            addprocs_function=cluster_manager,
-            heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
-            worker_timeout=self.worker_timeout,
-            worker_imports=jl_worker_imports,
-            progress=runtime_params.progress
-            and self.verbosity > 0
-            and len(y.shape) == 1,
-            verbosity=int(self.verbosity),
-            logger=logger,
+        equation_search_progress = (
+            runtime_params.progress and self.verbosity > 0 and len(y.shape) == 1
         )
+        use_notebook_progress = should_use_jupyter_progress(
+            progress=equation_search_progress,
+            verbosity=int(self.verbosity),
+            is_single_output=len(y.shape) == 1,
+        )
+        if use_notebook_progress:
+            equation_search_progress = False
+            progress_context = JupyterProgressContext(
+                total_iterations=int(self.niterations) * int(self.populations)
+            )
+            progress_capture = progress_context.capture()
+        else:
+            progress_capture = nullcontext()
+
+        with progress_capture:
+            out = SymbolicRegression.equation_search(
+                jl_X,
+                jl_y,
+                weights=jl_weights,
+                extra=jl_extra,
+                niterations=int(self.niterations),
+                variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                display_variable_names=jl_array(
+                    [str(v) for v in self.display_feature_names_in_]
+                ),
+                y_variable_names=jl_y_variable_names,
+                X_units=jl_array(self.X_units_),
+                y_units=(
+                    jl_array(self.y_units_)
+                    if isinstance(self.y_units_, list)
+                    else self.y_units_
+                ),
+                options=options,
+                guesses=jl_guesses,
+                numprocs=numprocs,
+                parallelism=parallelism,
+                saved_state=self.julia_state_,
+                return_state=True,
+                run_id=self.run_id_,
+                addprocs_function=cluster_manager,
+                heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                worker_timeout=self.worker_timeout,
+                worker_imports=jl_worker_imports,
+                progress=equation_search_progress,
+                verbosity=int(self.verbosity),
+                logger=logger,
+            )
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
             if not self.warm_start:
@@ -3031,17 +3049,6 @@ def _mutate_parameter(param_name: str, param_value):
             "`batch_size` has been increased to equal one."
         )
         return 1
-
-    if (
-        param_name == "progress"
-        and param_value == True
-        and "buffer" not in sys.stdout.__dir__()
-    ):
-        warnings.warn(
-            "Note: it looks like you are running in Jupyter. "
-            "The progress bar will be turned off."
-        )
-        return False
 
     return param_value
 
