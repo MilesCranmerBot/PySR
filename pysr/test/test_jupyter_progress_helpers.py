@@ -62,6 +62,19 @@ class TestJupyterProgressHelpers(unittest.TestCase):
         stream.flush()
         self.assertEqual(updates, [(1, 100), (2, 100), (3, 100)])
 
+    def test_progress_capture_stream_handles_no_delimiter_updates(self):
+        module = _load_module()
+        updates = []
+        parser = module._ProgressLineParser(
+            lambda current, total: updates.append((current, total))
+        )
+        target = io.StringIO()
+        stream = module._ProgressCaptureStream(target, parser)
+        stream.write("Progress: 4 / 100 total iterations")
+        stream.write(" ... Progress: 5 / 100 total iterations")
+        stream.write(" ... Progress: 6 / 100 total iterations")
+        self.assertEqual(updates[-1], (6, 100))
+
     def test_should_use_jupyter_progress_gating(self):
         module = _load_module()
         self.assertFalse(

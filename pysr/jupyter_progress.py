@@ -112,15 +112,17 @@ class _ProgressLineParser:
     on_progress: Callable[[int, int], None]
 
     def parse_line(self, line: str) -> None:
-        match = _PROGRESS_PATTERN.search(line)
-        if match is not None:
+        progress_matches = list(_PROGRESS_PATTERN.finditer(line))
+        if progress_matches:
+            match = progress_matches[-1]
             current = int(match.group(1))
             total = int(match.group(2))
             self.on_progress(current, total)
             return
 
-        match = _EVOLVING_PATTERN.search(line)
-        if match is not None:
+        evolving_matches = list(_EVOLVING_PATTERN.finditer(line))
+        if evolving_matches:
+            match = evolving_matches[-1]
             total = int(match.group(1))
             pct = int(match.group(2))
             current = int(round(total * pct / 100.0))
@@ -153,6 +155,10 @@ class _ProgressCaptureStream:
         written = self._target.write(text)
         self._buffer += text
         self._drain_complete_lines()
+        # Also parse the in-flight buffer in case progress updates arrive
+        # without line delimiters (seen in some notebook frontends).
+        if self._buffer:
+            self._parser.parse_line(self._buffer)
         return written if isinstance(written, int) else len(text)
 
     def flush(self) -> None:
