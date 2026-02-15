@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Callable, Iterator, Protocol
 
@@ -94,6 +94,19 @@ def _create_display(total: int) -> _ProgressDisplay:
         return _NullProgressDisplay()
 
 
+def _native_stream_capture_context(stdout_capture, stderr_capture):
+    """Capture C-level stdout/stderr (e.g. Julia prints) when available."""
+    try:
+        from wurlitzer import pipes
+    except Exception:
+        return nullcontext()
+
+    try:
+        return pipes(stdout=stdout_capture, stderr=stderr_capture)
+    except Exception:
+        return nullcontext()
+
+
 @dataclass
 class _ProgressLineParser:
     on_progress: Callable[[int, int], None]
@@ -173,10 +186,12 @@ class JupyterProgressContext:
         stdout_capture = _ProgressCaptureStream(sys.stdout, self._parser)
         stderr_capture = _ProgressCaptureStream(sys.stderr, self._parser)
         old_stdout, old_stderr = sys.stdout, sys.stderr
+        native_capture = _native_stream_capture_context(stdout_capture, stderr_capture)
         try:
             sys.stdout = stdout_capture
             sys.stderr = stderr_capture
-            yield
+            with native_capture:
+                yield
         finally:
             stdout_capture.flush()
             stderr_capture.flush()
