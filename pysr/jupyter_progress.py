@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import re
 import sys
-from contextlib import contextmanager, nullcontext
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, Iterator, Protocol
+from typing import Callable, Iterator, Optional, Protocol, Tuple
 
 
 _PROGRESS_PATTERN = re.compile(r"Progress:\s*(\d+)\s*/\s*(\d+)\s*total iterations")
@@ -82,6 +83,17 @@ def _is_notebook_session() -> bool:
     return ipython.__class__.__name__ == "ZMQInteractiveShell"
 
 
+def _get_iopub_thread():
+    """Best-effort access to ipykernel's IOPubThread (for thread-safe widget updates)."""
+    try:
+        from ipykernel.ipkernel import IPythonKernel  # type: ignore
+
+        ip = IPythonKernel.instance()
+        return getattr(ip, "iopub_thread", None)
+    except Exception:
+        return None
+
+
 def _create_display(total: int) -> _ProgressDisplay:
     try:
         return _TqdmProgressDisplay(total=total)
@@ -92,19 +104,6 @@ def _create_display(total: int) -> _ProgressDisplay:
         return _IpywidgetsProgressDisplay(total=total)
     except Exception:
         return _NullProgressDisplay()
-
-
-def _native_stream_capture_context(stdout_capture, stderr_capture):
-    """Capture C-level stdout/stderr (e.g. Julia prints) when available."""
-    try:
-        from wurlitzer import pipes
-    except Exception:
-        return nullcontext()
-
-    try:
-        return pipes(stdout=stdout_capture, stderr=stderr_capture)
-    except Exception:
-        return nullcontext()
 
 
 @dataclass
@@ -129,11 +128,22 @@ class _ProgressLineParser:
             self.on_progress(current, total)
 
 
+@dataclass
+class _StreamProxy:
+    _stream: object
+    write: Callable[[str], int]
+    flush: Callable[[], None] | None = None
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
 class _ProgressCaptureStream:
     def __init__(self, target_stream, parser: _ProgressLineParser):
         self._target = target_stream
         self._parser = parser
         self._buffer = ""
+        self._lock = threading.RLock()
 
     def _drain_complete_lines(self) -> None:
         # ProgressMeter often updates in-place with carriage returns (`\r`) rather
@@ -152,21 +162,23 @@ class _ProgressCaptureStream:
     def write(self, text: str) -> int:
         if not isinstance(text, str):
             text = str(text)
-        written = self._target.write(text)
-        self._buffer += text
-        self._drain_complete_lines()
-        # Also parse the in-flight buffer in case progress updates arrive
-        # without line delimiters (seen in some notebook frontends).
-        if self._buffer:
-            self._parser.parse_line(self._buffer)
-        return written if isinstance(written, int) else len(text)
+        with self._lock:
+            written = self._target.write(text)
+            self._buffer += text
+            self._drain_complete_lines()
+            # Also parse the in-flight buffer in case progress updates arrive
+            # without line delimiters (seen in some notebook frontends).
+            if self._buffer:
+                self._parser.parse_line(self._buffer)
+            return written if isinstance(written, int) else len(text)
 
     def flush(self) -> None:
-        if self._buffer:
-            self._parser.parse_line(self._buffer)
-            self._buffer = ""
-        if hasattr(self._target, "flush"):
-            self._target.flush()
+        with self._lock:
+            if self._buffer:
+                self._parser.parse_line(self._buffer)
+                self._buffer = ""
+            if hasattr(self._target, "flush"):
+                self._target.flush()
 
     def __getattr__(self, name: str):
         return getattr(self._target, name)
@@ -181,27 +193,112 @@ class JupyterProgressContext:
         self._parser = _ProgressLineParser(self._on_progress)
         self._current = 0
 
+        # Progress updates often come from non-main threads (e.g., ipykernel watchfd thread,
+        # or Julia threads calling into Python). Some notebook frontends (notably Colab)
+        # are much more reliable if widget updates are sent from ipykernel's IOPub thread.
+        self._iopub_thread = None
+        self._update_lock = threading.Lock()
+        self._pending_update: Optional[Tuple[int, int]] = None
+        self._update_scheduled = False
+        self._active = False
+
     def _on_progress(self, current: int, total: int) -> None:
         self._current = current
-        self.display.update(current, total)
+        self._queue_update(current, total)
+
+    def _queue_update(self, current: int, total: int) -> None:
+        # Coalesce frequent updates to avoid flooding the frontend with widget state
+        # messages. This also lets us route the actual widget update through the
+        # ipykernel IOPub thread when available.
+        with self._update_lock:
+            if not self._active:
+                return
+            self._pending_update = (current, total)
+            if self._update_scheduled:
+                return
+            self._update_scheduled = True
+
+        iopub_thread = self._iopub_thread
+        if iopub_thread is not None:
+            iopub_thread.schedule(self._apply_pending_update)
+        else:
+            self._apply_pending_update()
+
+    def _apply_pending_update(self) -> None:
+        # Runs either on ipykernel's IOPub thread or the current thread.
+        # Always take the latest pending value.
+        while True:
+            with self._update_lock:
+                if not self._active:
+                    self._pending_update = None
+                    self._update_scheduled = False
+                    return
+                pending = self._pending_update
+                self._pending_update = None
+                if pending is None:
+                    self._update_scheduled = False
+                    return
+
+            current, total = pending
+            try:
+                self.display.update(current, total)
+            except Exception:
+                # Never let UI plumbing crash a model fit.
+                pass
 
     @contextmanager
     def capture(self) -> Iterator[None]:
         self.display = _create_display(self.total_iterations)
         self.display.update(0, self.total_iterations)
-        stdout_capture = _ProgressCaptureStream(sys.stdout, self._parser)
-        stderr_capture = _ProgressCaptureStream(sys.stderr, self._parser)
+
+        # Mark active *before* any output starts flowing.
+        self._iopub_thread = _get_iopub_thread()
+        with self._update_lock:
+            self._active = True
+            self._pending_update = None
+            self._update_scheduled = False
+
         old_stdout, old_stderr = sys.stdout, sys.stderr
-        native_capture = _native_stream_capture_context(stdout_capture, stderr_capture)
+
+        stdout_old_write = old_stdout.write
+        stdout_old_flush = getattr(old_stdout, "flush", None)
+        stderr_old_write = old_stderr.write
+        stderr_old_flush = getattr(old_stderr, "flush", None)
+
+        stdout_proxy = _StreamProxy(old_stdout, stdout_old_write, stdout_old_flush)
+        stderr_proxy = _StreamProxy(old_stderr, stderr_old_write, stderr_old_flush)
+        stdout_capture_stream = _ProgressCaptureStream(stdout_proxy, self._parser)
+        stderr_capture_stream = _ProgressCaptureStream(stderr_proxy, self._parser)
+
         try:
-            sys.stdout = stdout_capture
-            sys.stderr = stderr_capture
-            with native_capture:
-                yield
+            old_stdout.write = stdout_capture_stream.write
+            if stdout_old_flush is not None:
+                old_stdout.flush = stdout_capture_stream.flush
+
+            old_stderr.write = stderr_capture_stream.write
+            if stderr_old_flush is not None:
+                old_stderr.flush = stderr_capture_stream.flush
+
+            yield
         finally:
-            stdout_capture.flush()
-            stderr_capture.flush()
-            sys.stdout, sys.stderr = old_stdout, old_stderr
+            stdout_capture_stream.flush()
+            stderr_capture_stream.flush()
+
+            old_stdout.write = stdout_old_write
+            if stdout_old_flush is not None:
+                old_stdout.flush = stdout_old_flush
+
+            old_stderr.write = stderr_old_write
+            if stderr_old_flush is not None:
+                old_stderr.flush = stderr_old_flush
+
+            # Prevent any late/asynchronous progress callbacks from trying to update
+            # a closed widget.
+            with self._update_lock:
+                self._active = False
+                self._pending_update = None
+                self._update_scheduled = False
+
             self.display.update(self.total_iterations, self.total_iterations)
             self.display.close()
 
@@ -210,4 +307,9 @@ def should_use_jupyter_progress(*, progress: bool, verbosity: int, is_single_out
     """Whether PySR should use Python-side notebook progress handling."""
     if not progress or verbosity <= 0 or not is_single_output:
         return False
+
+    disable_progress = os.environ.get("PYSR_DISABLE_JUPYTER_PROGRESS", "").lower()
+    if disable_progress in {"1", "true", "yes", "on"}:
+        return False
+
     return _is_notebook_session()

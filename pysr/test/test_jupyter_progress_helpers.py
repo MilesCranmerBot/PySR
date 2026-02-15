@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -92,6 +93,41 @@ class TestJupyterProgressHelpers(unittest.TestCase):
                 progress=True, verbosity=1, is_single_output=False
             )
         )
+
+    def test_should_use_jupyter_progress_respects_disable_flag(self):
+        module = _load_module()
+        prev = os.environ.get("PYSR_DISABLE_JUPYTER_PROGRESS")
+        os.environ["PYSR_DISABLE_JUPYTER_PROGRESS"] = "1"
+        try:
+            self.assertFalse(
+                module.should_use_jupyter_progress(
+                    progress=True, verbosity=1, is_single_output=True
+                )
+            )
+        finally:
+            if prev is None:
+                os.environ.pop("PYSR_DISABLE_JUPYTER_PROGRESS", None)
+            else:
+                os.environ["PYSR_DISABLE_JUPYTER_PROGRESS"] = prev
+
+    def test_capture_patches_existing_stream_write_method(self):
+        module = _load_module()
+        updates = []
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        context = module.JupyterProgressContext(total_iterations=10)
+        context._parser.on_progress = lambda current, total: updates.append((current, total))
+
+        try:
+            with context.capture():
+                sys.stdout.write("Progress: 4 / 10 total iterations\n")
+        finally:
+            sys.stdout = old_stdout
+
+        self.assertEqual(updates[-1], (4, 10))
+        self.assertIs(sys.stdout, old_stdout)
+
+
 
 
 def runtests(just_tests=False):
