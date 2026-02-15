@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from typing import Callable, Iterator, Protocol
 
 
 _PROGRESS_PATTERN = re.compile(r"Progress:\s*(\d+)\s*/\s*(\d+)\s*total iterations")
+_EVOLVING_PATTERN = re.compile(r"Evolving for\s*(\d+)\s*iterations\.\.\.\s*(\d+)%\|")
 
 
 class _ProgressDisplay(Protocol):
@@ -65,6 +67,10 @@ class _IpywidgetsProgressDisplay:
 
 
 def _is_notebook_session() -> bool:
+    # Colab does not always expose the same IPython shell metadata as classic Jupyter.
+    if "google.colab" in sys.modules or os.environ.get("COLAB_RELEASE_TAG"):
+        return True
+
     try:
         from IPython import get_ipython
     except Exception:
@@ -94,11 +100,18 @@ class _ProgressLineParser:
 
     def parse_line(self, line: str) -> None:
         match = _PROGRESS_PATTERN.search(line)
-        if match is None:
+        if match is not None:
+            current = int(match.group(1))
+            total = int(match.group(2))
+            self.on_progress(current, total)
             return
-        current = int(match.group(1))
-        total = int(match.group(2))
-        self.on_progress(current, total)
+
+        match = _EVOLVING_PATTERN.search(line)
+        if match is not None:
+            total = int(match.group(1))
+            pct = int(match.group(2))
+            current = int(round(total * pct / 100.0))
+            self.on_progress(current, total)
 
 
 class _ProgressCaptureStream:

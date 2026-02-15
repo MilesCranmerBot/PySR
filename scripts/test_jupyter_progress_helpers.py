@@ -37,9 +37,18 @@ def test_capture_stream_handles_split_lines() -> None:
     assert updates == [(1, 3)], updates
 
 
+def test_parser_extracts_evolving_percent() -> None:
+    module = _load_module()
+    updates = []
+    parser = module._ProgressLineParser(lambda current, total: updates.append((current, total)))
+    parser.parse_line("Evolving for 40 iterations... 11%|██        | ETA: 0:00:05")
+    assert updates == [(4, 40)], updates
+
+
 def run() -> None:
     test_parser_extracts_progress()
     test_capture_stream_handles_split_lines()
+    test_parser_extracts_evolving_percent()
     print("helpers-tests=ok")
 
 

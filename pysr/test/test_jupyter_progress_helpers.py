@@ -39,6 +39,15 @@ class TestJupyterProgressHelpers(unittest.TestCase):
         self.assertIn("prefix", target.getvalue())
         self.assertEqual(updates, [(4, 10)])
 
+    def test_progress_parser_extracts_evolving_percent_lines(self):
+        module = _load_module()
+        updates = []
+        parser = module._ProgressLineParser(
+            lambda current, total: updates.append((current, total))
+        )
+        parser.parse_line("Evolving for 40 iterations... 11%|██        | ETA: 0:00:05")
+        self.assertEqual(updates, [(4, 40)])
+
     def test_should_use_jupyter_progress_gating(self):
         module = _load_module()
         self.assertFalse(
