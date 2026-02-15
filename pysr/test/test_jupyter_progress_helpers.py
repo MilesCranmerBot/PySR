@@ -48,6 +48,20 @@ class TestJupyterProgressHelpers(unittest.TestCase):
         parser.parse_line("Evolving for 40 iterations... 11%|██        | ETA: 0:00:05")
         self.assertEqual(updates, [(4, 40)])
 
+    def test_progress_capture_stream_handles_carriage_return_updates(self):
+        module = _load_module()
+        updates = []
+        parser = module._ProgressLineParser(
+            lambda current, total: updates.append((current, total))
+        )
+        target = io.StringIO()
+        stream = module._ProgressCaptureStream(target, parser)
+        stream.write("Evolving for 100 iterations... 1%|\r")
+        stream.write("Evolving for 100 iterations... 2%|\r")
+        stream.write("Evolving for 100 iterations... 3%|\r")
+        stream.flush()
+        self.assertEqual(updates, [(1, 100), (2, 100), (3, 100)])
+
     def test_should_use_jupyter_progress_gating(self):
         module = _load_module()
         self.assertFalse(

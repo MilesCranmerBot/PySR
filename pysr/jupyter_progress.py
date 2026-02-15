@@ -120,14 +120,26 @@ class _ProgressCaptureStream:
         self._parser = parser
         self._buffer = ""
 
+    def _drain_complete_lines(self) -> None:
+        # ProgressMeter often updates in-place with carriage returns (`\r`) rather
+        # than newline-terminated lines. Treat both as parse boundaries.
+        while True:
+            newline_idx = self._buffer.find("\n")
+            carriage_idx = self._buffer.find("\r")
+            candidates = [idx for idx in (newline_idx, carriage_idx) if idx != -1]
+            if not candidates:
+                break
+            split_idx = min(candidates)
+            line = self._buffer[:split_idx]
+            self._buffer = self._buffer[split_idx + 1 :]
+            self._parser.parse_line(line)
+
     def write(self, text: str) -> int:
         if not isinstance(text, str):
             text = str(text)
         written = self._target.write(text)
         self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            self._parser.parse_line(line)
+        self._drain_complete_lines()
         return written if isinstance(written, int) else len(text)
 
     def flush(self) -> None:

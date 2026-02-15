@@ -45,10 +45,23 @@ def test_parser_extracts_evolving_percent() -> None:
     assert updates == [(4, 40)], updates
 
 
+def test_capture_stream_handles_carriage_return_updates() -> None:
+    module = _load_module()
+    updates = []
+    parser = module._ProgressLineParser(lambda current, total: updates.append((current, total)))
+    capture = module._ProgressCaptureStream(io.StringIO(), parser)
+    capture.write("Evolving for 100 iterations... 1%|\r")
+    capture.write("Evolving for 100 iterations... 2%|\r")
+    capture.write("Evolving for 100 iterations... 3%|\r")
+    capture.flush()
+    assert updates == [(1, 100), (2, 100), (3, 100)], updates
+
+
 def run() -> None:
     test_parser_extracts_progress()
     test_capture_stream_handles_split_lines()
     test_parser_extracts_evolving_percent()
+    test_capture_stream_handles_carriage_return_updates()
     print("helpers-tests=ok")
 
 
