@@ -76,6 +76,22 @@ except ImportError:
     from typing_extensions import List
 
 
+def _is_notebook_session() -> bool:
+    """Detect if running in Jupyter/Colab notebook."""
+    if "google.colab" in sys.modules or os.environ.get("COLAB_RELEASE_TAG"):
+        return True
+    try:
+        from IPython import get_ipython
+        ipython = get_ipython()
+        if ipython is None:
+            return False
+        return ipython.__class__.__name__ == "ZMQInteractiveShell"
+    except Exception:
+        return False
+
+
+from .threaded_executor import ThreadedExecutor
+
 ALREADY_RAN = False
 
 pysr_logger = logging.getLogger(__name__)
@@ -2348,40 +2364,94 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else None
         )
 
-        out = SymbolicRegression.equation_search(
-            jl_X,
-            jl_y,
-            weights=jl_weights,
-            extra=jl_extra,
-            niterations=int(self.niterations),
-            variable_names=jl_array([str(v) for v in self.feature_names_in_]),
-            display_variable_names=jl_array(
-                [str(v) for v in self.display_feature_names_in_]
-            ),
-            y_variable_names=jl_y_variable_names,
-            X_units=jl_array(self.X_units_),
-            y_units=(
-                jl_array(self.y_units_)
-                if isinstance(self.y_units_, list)
-                else self.y_units_
-            ),
-            options=options,
-            guesses=jl_guesses,
-            numprocs=numprocs,
-            parallelism=parallelism,
-            saved_state=self.julia_state_,
-            return_state=True,
-            run_id=self.run_id_,
-            addprocs_function=cluster_manager,
-            heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
-            worker_timeout=self.worker_timeout,
-            worker_imports=jl_worker_imports,
-            progress=runtime_params.progress
-            and self.verbosity > 0
-            and len(y.shape) == 1,
-            verbosity=int(self.verbosity),
-            logger=logger,
+        # Check if we're in a notebook and should use threaded execution
+        use_threaded = (
+            runtime_params.progress 
+            and self.verbosity > 0 
+            and len(y.shape) == 1
+            and _is_notebook_session()
         )
+        
+        if use_threaded:
+            # Use threaded execution with live widget updates
+            from .jupyter_progress import _IpywidgetsProgressDisplay
+            
+            total_iters = int(self.niterations) * int(self.populations)
+            widget = _IpywidgetsProgressDisplay(total_iters)
+            
+            executor = ThreadedExecutor()
+            out = executor.execute(
+                SymbolicRegression.equation_search,
+                widget,
+                jl_X,
+                jl_y,
+                weights=jl_weights,
+                extra=jl_extra,
+                niterations=int(self.niterations),
+                variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                display_variable_names=jl_array(
+                    [str(v) for v in self.display_feature_names_in_]
+                ),
+                y_variable_names=jl_y_variable_names,
+                X_units=jl_array(self.X_units_),
+                y_units=(
+                    jl_array(self.y_units_)
+                    if isinstance(self.y_units_, list)
+                    else self.y_units_
+                ),
+                options=options,
+                guesses=jl_guesses,
+                numprocs=numprocs,
+                parallelism=parallelism,
+                saved_state=self.julia_state_,
+                return_state=True,
+                run_id=self.run_id_,
+                addprocs_function=cluster_manager,
+                heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                worker_timeout=self.worker_timeout,
+                worker_imports=jl_worker_imports,
+                progress=False,  # Disable Julia progress bar
+                verbosity=int(self.verbosity),
+                logger=logger,
+            )
+            widget.update(total_iters, total_iters)
+            widget.close()
+        else:
+            # Standard synchronous execution
+            out = SymbolicRegression.equation_search(
+                jl_X,
+                jl_y,
+                weights=jl_weights,
+                extra=jl_extra,
+                niterations=int(self.niterations),
+                variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                display_variable_names=jl_array(
+                    [str(v) for v in self.display_feature_names_in_]
+                ),
+                y_variable_names=jl_y_variable_names,
+                X_units=jl_array(self.X_units_),
+                y_units=(
+                    jl_array(self.y_units_)
+                    if isinstance(self.y_units_, list)
+                    else self.y_units_
+                ),
+                options=options,
+                guesses=jl_guesses,
+                numprocs=numprocs,
+                parallelism=parallelism,
+                saved_state=self.julia_state_,
+                return_state=True,
+                run_id=self.run_id_,
+                addprocs_function=cluster_manager,
+                heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                worker_timeout=self.worker_timeout,
+                worker_imports=jl_worker_imports,
+                progress=runtime_params.progress
+                and self.verbosity > 0
+                and len(y.shape) == 1,
+                verbosity=int(self.verbosity),
+                logger=logger,
+            )
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
             if not self.warm_start:
