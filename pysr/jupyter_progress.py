@@ -9,6 +9,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Protocol
+import time
 
 
 _PROGRESS_PATTERN = re.compile(r"Progress:\s*(\d+)\s*/\s*(\d+)\s*total iterations")
@@ -28,49 +29,43 @@ class _NullProgressDisplay:
 
 
 class _IpywidgetsProgressDisplay:
-    """Widget display using ipywidgets - more reliable than tqdm in notebooks."""
+    """Simple ipywidgets-based progress display."""
     
     def __init__(self, total: int):
         from IPython.display import display
         from ipywidgets import HTML, IntProgress, VBox
-        import ipywidgets as widgets
-
+        
         self._total = total
         self._current = 0
+        self._start_time = time.time()
         
-        # Create widget with explicit layout
         self._bar = IntProgress(
-            value=0, 
-            min=0, 
-            max=max(total, 1), 
-            description="PySR",
-            style={'description_width': 'initial'},
-            layout=widgets.Layout(width='100%')
+            value=0, min=0, max=max(total, 1), 
+            description="PySR", 
+            style={'description_width': 'initial'}
         )
         self._label = HTML(value=f"0 / {total}")
         self._widget = VBox([self._bar, self._label])
-        
-        # Display and keep reference
         display(self._widget)
 
     def update(self, current: int, total: int) -> None:
-        """Update widget values."""
-        import ipywidgets as widgets
-        
+        """Update progress."""
         self._current = current
         if total != self._total:
             self._total = total
             self._bar.max = max(total, 1)
-        
-        # Direct value assignment
         self._bar.value = min(max(current, 0), self._bar.max)
-        self._label.value = f"{current} / {total}"
+        elapsed = time.time() - self._start_time
+        self._label.value = f"{current} / {total} ({elapsed:.1f}s)"
+
+    def set_message(self, message: str) -> None:
+        """Set status message."""
+        elapsed = time.time() - self._start_time
+        self._label.value = f"{message} ({elapsed:.1f}s)"
 
     def close(self) -> None:
-        """Close the widget."""
+        """Close widget."""
         try:
-            self._bar.close()
-            self._label.close()
             self._widget.close()
         except Exception:
             pass
@@ -88,15 +83,6 @@ def _is_notebook_session() -> bool:
         return ipython.__class__.__name__ == "ZMQInteractiveShell"
     except Exception:
         return False
-
-
-def _create_display(total: int) -> _ProgressDisplay:
-    """Create progress display - prefer ipywidgets for reliability."""
-    try:
-        # Only try ipywidgets, skip tqdm due to threading issues
-        return _IpywidgetsProgressDisplay(total=total)
-    except Exception:
-        return _NullProgressDisplay()
 
 
 @dataclass
@@ -176,7 +162,6 @@ class JupyterProgressContext:
         """Called when progress is detected (may be from any thread)."""
         with self._lock:
             self._current = current
-        # Update display immediately - ipywidgets should handle thread safety
         try:
             self.display.update(current, total)
         except Exception:
@@ -185,7 +170,15 @@ class JupyterProgressContext:
     @contextmanager
     def capture(self) -> Iterator[None]:
         """Capture stdout/stderr and display progress."""
-        self.display = _create_display(self.total_iterations)
+        try:
+            from tqdm.notebook import tqdm
+            self.display = _TqdmProgressDisplay(total=self.total_iterations)
+        except Exception:
+            try:
+                self.display = _IpywidgetsProgressDisplay(total=self.total_iterations)
+            except Exception:
+                self.display = _NullProgressDisplay()
+        
         self.display.update(0, self.total_iterations)
         
         old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -201,7 +194,6 @@ class JupyterProgressContext:
             stderr_capture.flush()
             sys.stdout, sys.stderr = old_stdout, old_stderr
             
-            # Final update
             with self._lock:
                 final = self._current
             try:
@@ -209,6 +201,24 @@ class JupyterProgressContext:
             except Exception:
                 pass
             self.display.close()
+
+
+class _TqdmProgressDisplay:
+    def __init__(self, total: int):
+        from tqdm.notebook import tqdm
+        self._bar = tqdm(total=total, desc="PySR fit", leave=True)
+        self._current = 0
+
+    def update(self, current: int, total: int) -> None:
+        if total != self._bar.total:
+            self._bar.total = total
+        delta = max(0, current - self._current)
+        if delta > 0:
+            self._bar.update(delta)
+        self._current = current
+
+    def close(self) -> None:
+        self._bar.close()
 
 
 def should_use_jupyter_progress(*, progress: bool, verbosity: int, is_single_output: bool) -> bool:

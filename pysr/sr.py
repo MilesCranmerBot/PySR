@@ -78,6 +78,20 @@ except ImportError:
     from typing_extensions import List
 
 
+def _is_notebook_session() -> bool:
+    """Detect if running in Jupyter/Colab notebook."""
+    if "google.colab" in sys.modules or os.environ.get("COLAB_RELEASE_TAG"):
+        return True
+    try:
+        from IPython import get_ipython
+        ipython = get_ipython()
+        if ipython is None:
+            return False
+        return ipython.__class__.__name__ == "ZMQInteractiveShell"
+    except Exception:
+        return False
+
+
 ALREADY_RAN = False
 
 pysr_logger = logging.getLogger(__name__)
@@ -2274,16 +2288,101 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             verbosity=int(self.verbosity),
             is_single_output=len(y.shape) == 1,
         )
-        if use_notebook_progress:
+        
+        # Check if we should use threaded execution for notebooks
+        use_threaded = (
+            equation_search_progress 
+            and self.verbosity > 0 
+            and len(y.shape) == 1
+            and _is_notebook_session()
+        )
+        
+        if use_threaded:
+            # Use threaded execution with live widget updates
+            from .threaded_executor import ThreadedExecutor
+            from .jupyter_progress import _IpywidgetsProgressDisplay
+            
+            total_iters = int(self.niterations) * int(self.populations)
+            widget = _IpywidgetsProgressDisplay(total_iters)
+            
+            executor = ThreadedExecutor()
+            out = executor.execute(
+                SymbolicRegression.equation_search,
+                widget,
+                jl_X,
+                jl_y,
+                weights=jl_weights,
+                extra=jl_extra,
+                niterations=int(self.niterations),
+                variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                display_variable_names=jl_array(
+                    [str(v) for v in self.display_feature_names_in_]
+                ),
+                y_variable_names=jl_y_variable_names,
+                X_units=jl_array(self.X_units_),
+                y_units=(
+                    jl_array(self.y_units_)
+                    if isinstance(self.y_units_, list)
+                    else self.y_units_
+                ),
+                options=options,
+                guesses=jl_guesses,
+                numprocs=numprocs,
+                parallelism=parallelism,
+                saved_state=self.julia_state_,
+                return_state=True,
+                run_id=self.run_id_,
+                addprocs_function=cluster_manager,
+                heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                worker_timeout=self.worker_timeout,
+                worker_imports=jl_worker_imports,
+                progress=False,  # Disable Julia progress bar
+                verbosity=int(self.verbosity),
+                logger=logger,
+            )
+            widget.update(total_iters, total_iters)
+            widget.close()
+        elif use_notebook_progress:
+            # Use original notebook progress (stdout capture)
             equation_search_progress = False
             progress_context = JupyterProgressContext(
                 total_iterations=int(self.niterations) * int(self.populations)
             )
-            progress_capture = progress_context.capture()
+            with progress_context.capture():
+                out = SymbolicRegression.equation_search(
+                    jl_X,
+                    jl_y,
+                    weights=jl_weights,
+                    extra=jl_extra,
+                    niterations=int(self.niterations),
+                    variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                    display_variable_names=jl_array(
+                        [str(v) for v in self.display_feature_names_in_]
+                    ),
+                    y_variable_names=jl_y_variable_names,
+                    X_units=jl_array(self.X_units_),
+                    y_units=(
+                        jl_array(self.y_units_)
+                        if isinstance(self.y_units_, list)
+                        else self.y_units_
+                    ),
+                    options=options,
+                    guesses=jl_guesses,
+                    numprocs=numprocs,
+                    parallelism=parallelism,
+                    saved_state=self.julia_state_,
+                    return_state=True,
+                    run_id=self.run_id_,
+                    addprocs_function=cluster_manager,
+                    heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                    worker_timeout=self.worker_timeout,
+                    worker_imports=jl_worker_imports,
+                    progress=equation_search_progress,
+                    verbosity=int(self.verbosity),
+                    logger=logger,
+                )
         else:
-            progress_capture = nullcontext()
-
-        with progress_capture:
+            # Standard synchronous execution
             out = SymbolicRegression.equation_search(
                 jl_X,
                 jl_y,
