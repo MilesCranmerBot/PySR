@@ -226,8 +226,9 @@ class JupyterProgressContext:
 
     def _apply_pending_update(self) -> None:
         # Runs either on ipykernel's IOPub thread or the current thread.
-        # Always take the latest pending value.
-        while True:
+        # Process all pending updates but limit iterations to prevent infinite loops.
+        max_iterations = 100
+        for _ in range(max_iterations):
             with self._update_lock:
                 if not self._active:
                     self._pending_update = None
