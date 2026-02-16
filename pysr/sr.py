@@ -2373,49 +2373,65 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         )
         
         if use_threaded:
-            # Use threaded execution with live widget updates
-            from .jupyter_progress import _IpywidgetsProgressDisplay
+            # Use file-based progress monitoring
+            from .jupyter_progress import FileBasedProgressExecutor, _IpywidgetsProgressDisplay
+            import tempfile
+            import os
             
             total_iters = int(self.niterations) * int(self.populations)
-            widget = _IpywidgetsProgressDisplay(total_iters)
             
-            executor = ThreadedExecutor()
-            out = executor.execute(
-                SymbolicRegression.equation_search,
-                widget,
-                jl_X,
-                jl_y,
-                weights=jl_weights,
-                extra=jl_extra,
-                niterations=int(self.niterations),
-                variable_names=jl_array([str(v) for v in self.feature_names_in_]),
-                display_variable_names=jl_array(
-                    [str(v) for v in self.display_feature_names_in_]
-                ),
-                y_variable_names=jl_y_variable_names,
-                X_units=jl_array(self.X_units_),
-                y_units=(
-                    jl_array(self.y_units_)
-                    if isinstance(self.y_units_, list)
-                    else self.y_units_
-                ),
-                options=options,
-                guesses=jl_guesses,
-                numprocs=numprocs,
-                parallelism=parallelism,
-                saved_state=self.julia_state_,
-                return_state=True,
-                run_id=self.run_id_,
-                addprocs_function=cluster_manager,
-                heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
-                worker_timeout=self.worker_timeout,
-                worker_imports=jl_worker_imports,
-                progress=False,  # Disable Julia progress bar
-                verbosity=int(self.verbosity),
-                logger=logger,
-            )
-            widget.update(total_iters, total_iters)
-            widget.close()
+            # Create temp file for progress
+            fd, progress_path = tempfile.mkstemp(suffix='.json', prefix='pysr_progress_')
+            os.close(fd)
+            
+            try:
+                widget = _IpywidgetsProgressDisplay(total_iters)
+                executor = FileBasedProgressExecutor()
+                
+                out = executor.execute(
+                    SymbolicRegression.equation_search,
+                    widget,
+                    progress_path,
+                    total_iters,
+                    jl_X,
+                    jl_y,
+                    weights=jl_weights,
+                    extra=jl_extra,
+                    niterations=int(self.niterations),
+                    variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                    display_variable_names=jl_array(
+                        [str(v) for v in self.display_feature_names_in_]
+                    ),
+                    y_variable_names=jl_y_variable_names,
+                    X_units=jl_array(self.X_units_),
+                    y_units=(
+                        jl_array(self.y_units_)
+                        if isinstance(self.y_units_, list)
+                        else self.y_units_
+                    ),
+                    options=options,
+                    guesses=jl_guesses,
+                    numprocs=numprocs,
+                    parallelism=parallelism,
+                    saved_state=self.julia_state_,
+                    return_state=True,
+                    run_id=self.run_id_,
+                    addprocs_function=cluster_manager,
+                    heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                    worker_timeout=self.worker_timeout,
+                    worker_imports=jl_worker_imports,
+                    progress_file=progress_path,
+                    progress=False,
+                    verbosity=int(self.verbosity),
+                    logger=logger,
+                )
+                widget.update(total_iters, total_iters)
+                widget.close()
+            finally:
+                try:
+                    os.unlink(progress_path)
+                except Exception:
+                    pass
         else:
             # Standard synchronous execution
             out = SymbolicRegression.equation_search(
