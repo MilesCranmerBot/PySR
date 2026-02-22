@@ -1,39 +1,51 @@
 """Jupyter progress with file-based monitoring.
 
-Uses Julia's ProgressFileWriter to write progress to a file,
-which Python monitors from the main thread.
+This module is meant for Jupyter/Colab where widget updates must occur on the
+main Python thread.
+
+Approach:
+- Julia writes progress JSON to a file (via SymbolicRegression.jl ProgressFileWriter)
+- Python runs the Julia call in a background thread
+- The main thread polls the file and updates an ipywidgets progress display
 """
+
+from __future__ import annotations
+
 import json
 import os
 import threading
 import time
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 
 class _IpywidgetsProgressDisplay:
     """Simple ipywidgets-based progress display."""
-    
+
     def __init__(self, total: int):
         from IPython.display import display
         from ipywidgets import HTML, IntProgress, VBox
-        
-        self._total = total
+
+        self._total = int(total)
         self._current = 0
         self._start_time = time.time()
-        
+
         self._bar = IntProgress(
-            value=0, min=0, max=max(total, 1), 
-            description="PySR", 
-            style={'description_width': 'initial'}
+            value=0,
+            min=0,
+            max=max(self._total, 1),
+            description="PySR",
+            style={"description_width": "initial"},
         )
-        self._label = HTML(value=f"0 / {total}")
+        self._label = HTML(value=f"0 / {self._total}")
         self._widget = VBox([self._bar, self._label])
         display(self._widget)
 
     def update(self, current: int, total: int) -> None:
         """Update progress."""
+        current = int(current)
+        total = int(total)
         self._current = current
         if total != self._total:
             self._total = total
@@ -55,115 +67,112 @@ class _IpywidgetsProgressDisplay:
             pass
 
 
-class JupyterProgressMonitor:
-    """Monitors progress file and updates widget from main thread."""
-    
-    def __init__(self, progress_file: Path, widget: _IpywidgetsProgressDisplay, total: int):
-        self.progress_file = progress_file
-        self.widget = widget
-        self.total = total
-        self._stop = threading.Event()
-        self._current = 0
-        
-    def monitor(self) -> None:
-        """Monitor progress file until completion.
-        
-        This runs in the main thread, updating the widget periodically.
-        """
-        while not self._stop.is_set():
-            try:
-                if self.progress_file.exists():
-                    data = json.loads(self.progress_file.read_text())
-                    current = data.get('current', 0)
-                    if current != self._current:
-                        self._current = current
-                        self.widget.update(current, self.total)
-            except Exception:
-                pass
-            
-            # Short sleep to not block completely
-            time.sleep(0.2)
-    
-    def stop(self) -> None:
-        self._stop.set()
-
-
 class FileBasedProgressExecutor:
-    """Executes Julia function with file-based progress tracking."""
-    
+    """Execute a function in a background thread while polling a progress file.
+
+    The *widget updates* are performed on the caller thread (intended to be the
+    main thread in a notebook).
+    """
+
     def __init__(self):
         self._result: Optional[Any] = None
-        self._exception: Optional[Exception] = None
+        self._exception: Optional[BaseException] = None
         self._done = threading.Event()
-        
-    def _run_julia(self, func: Callable, progress_file: str, *args, **kwargs) -> None:
-        """Run Julia function in background thread."""
+
+    def _run_julia(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
         try:
-            # Pass progress_file to Julia function
-            self._result = func(*args, progress_file=progress_file, **kwargs)
-        except Exception as e:
+            self._result = func(*args, **kwargs)
+        except BaseException as e:
             self._exception = e
         finally:
             self._done.set()
-    
-    def execute(self, func: Callable, widget: _IpywidgetsProgressDisplay, 
-                total_iters: int, *args, **kwargs) -> Any:
-        """Execute with progress monitoring via file.
-        
+
+    def execute(self, func: Callable[..., Any], widget: _IpywidgetsProgressDisplay,
+                progress_file: Union[str, os.PathLike[str], None], total_iters: int,
+                *args: Any, poll_interval_s: float = 0.2, **kwargs: Any) -> Any:
+        """Execute `func` with file-based progress.
+
         Args:
-            func: Julia function to call
-            widget: Widget to update
-            total_iters: Total iterations expected
-            *args, **kwargs: Args for func
+            func: Callable to run (e.g., SymbolicRegression.equation_search)
+            widget: Progress display to update
+            progress_file: Path to JSON progress file. If None, a temp file is created.
+            total_iters: Expected total iterations (used as a fallback)
+            poll_interval_s: Main-thread polling interval
+            *args/**kwargs: passed to func; we also pass `progress_file=<path>`
+
+        Returns:
+            func result
         """
-        # Create progress file
-        fd, progress_path = tempfile.mkstemp(suffix='.json', prefix='pysr_progress_')
-        os.close(fd)
-        progress_file = Path(progress_path)
-        progress_file.write_text(json.dumps({'current': 0, 'total': total_iters}))
-        
+        total_iters = int(total_iters)
+
+        created_tmp = False
+        if progress_file is None:
+            fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="pysr_progress_")
+            os.close(fd)
+            progress_path = Path(tmp_path)
+            created_tmp = True
+        else:
+            progress_path = Path(progress_file)
+
+        # Ensure the file exists with a valid initial payload.
         try:
-            # Start Julia in background thread
-            julia_thread = threading.Thread(
-                target=self._run_julia,
-                args=(func, str(progress_file)) + args,
-                kwargs=kwargs,
-                daemon=False
-            )
-            
-            self._done.clear()
-            julia_thread.start()
-            
-            # Monitor from main thread
-            monitor = JupyterProgressMonitor(progress_file, widget, total_iters)
-            
-            # Run monitoring loop
-            while not self._done.is_set():
-                monitor.monitor()
-                if self._done.is_set():
-                    break
-                time.sleep(0.1)
-            
-            # Wait for Julia to complete
-            julia_thread.join()
-            
-            # Final update
+            progress_path.write_text(json.dumps({"current": 0, "total": total_iters}))
+        except Exception:
+            # Best effort; polling loop will tolerate missing/bad file.
+            pass
+
+        # Start background execution.
+        self._done.clear()
+        self._result = None
+        self._exception = None
+
+        thread = threading.Thread(
+            target=self._run_julia,
+            args=(func,) + args,
+            kwargs={**kwargs, "progress_file": str(progress_path)},
+            daemon=False,
+        )
+        thread.start()
+
+        last_current: Optional[int] = None
+        last_total: Optional[int] = None
+
+        try:
+            # Poll from *this* thread (intended: main thread).
+            while thread.is_alive() and not self._done.is_set():
+                try:
+                    if progress_path.exists():
+                        data = json.loads(progress_path.read_text())
+                        current = int(data.get("current", 0))
+                        total = int(data.get("total", total_iters))
+                        if current != last_current or total != last_total:
+                            last_current, last_total = current, total
+                            widget.update(current, total)
+                except Exception:
+                    pass
+                time.sleep(poll_interval_s)
+
+            thread.join()
+
+            # Final update.
             try:
-                if progress_file.exists():
-                    data = json.loads(progress_file.read_text())
-                    widget.update(data.get('current', total_iters), total_iters)
+                if progress_path.exists():
+                    data = json.loads(progress_path.read_text())
+                    current = int(data.get("current", total_iters))
+                    total = int(data.get("total", total_iters))
+                    widget.update(current, total)
+                else:
+                    widget.update(total_iters, total_iters)
             except Exception:
                 pass
-            
-            if self._exception:
+
+            if self._exception is not None:
                 raise self._exception
-                
+
             return self._result
-            
         finally:
-            # Cleanup
-            monitor.stop()
-            try:
-                progress_file.unlink()
-            except Exception:
-                pass
+            if created_tmp:
+                try:
+                    progress_path.unlink()
+                except Exception:
+                    pass

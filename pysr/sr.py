@@ -2389,7 +2389,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 executor = FileBasedProgressExecutor()
                 
                 out = executor.execute(
-                    SymbolicRegression.equation_search,
+                    _get_nogil_callable(SymbolicRegression.equation_search),
                     widget,
                     progress_path,
                     total_iters,
@@ -2434,7 +2434,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     pass
         else:
             # Standard synchronous execution
-            out = SymbolicRegression.equation_search(
+            out = _get_nogil_callable(SymbolicRegression.equation_search)(
                 jl_X,
                 jl_y,
                 weights=jl_weights,
@@ -3215,18 +3215,17 @@ def _mutate_parameter(param_name: str, param_value):
         )
         return 1
 
-    if (
-        param_name == "progress"
-        and param_value == True
-        and "buffer" not in sys.stdout.__dir__()
-    ):
-        warnings.warn(
-            "Note: it looks like you are running in Jupyter. "
-            "The progress bar will be turned off."
-        )
-        return False
-
+    # Keep progress enabled in notebook environments: we handle Jupyter/Colab
+    # via file-based monitoring + widget updates on the Python side.
     return param_value
+
+
+def _get_nogil_callable(callable_obj):
+    """Return a callable that releases the Python GIL for Julia work when possible."""
+    nogil_call = getattr(callable_obj, "_jl_call_nogil", None)
+    if callable(nogil_call):
+        return nogil_call
+    return callable_obj
 
 
 def _map_parallelism_params(
