@@ -39,6 +39,7 @@ from pysr.feature_selection import _handle_feature_selection, run_feature_select
 from pysr.julia_helpers import init_julia
 from pysr.sr import (
     _check_assertions,
+    _map_parallelism_params,
     _process_constraints,
     _suggest_keywords,
     _validate_elementwise_loss,
@@ -1855,6 +1856,28 @@ class TestHelpMessages(unittest.TestCase):
                 model.fit([[1]], [1])
                 model.get_best()
                 print("Failed", opt["kwargs"])
+
+    def test_parallelism_auto(self):
+        self.assertEqual(
+            _map_parallelism_params(None, None, None), ("multithreading", None)
+        )
+        self.assertEqual(
+            _map_parallelism_params("auto", None, None), ("multithreading", None)
+        )
+        self.assertEqual(
+            _map_parallelism_params("auto", None, None, deterministic=True),
+            ("serial", None),
+        )
+        self.assertEqual(
+            _map_parallelism_params("auto", 2, None), ("multiprocessing", 2)
+        )
+        self.assertEqual(
+            _map_parallelism_params("auto", 2, None, cluster_manager="slurm"),
+            ("multiprocessing", 2),
+        )
+        self.assertEqual(
+            _map_parallelism_params("serial", None, None), ("serial", None)
+        )
 
     def test_suggest_keywords(self):
         # Easy

@@ -683,9 +683,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         tournament. The probability will decay as p*(1-p)^n for other
         expressions, sorted by loss.
         Default is `0.982`.
-    parallelism: Literal["serial", "multithreading", "multiprocessing"] | None
-        Parallelism to use for the search. Can be `"serial"`, `"multithreading"`, or `"multiprocessing"`.
-        Default is `"multithreading"`.
+    parallelism: Literal["auto", "serial", "multithreading", "multiprocessing"] | None
+        Parallelism to use for the search. Can be `"auto"`, `"serial"`, `"multithreading"`, or `"multiprocessing"`.
+        `"auto"` selects `"serial"` when `deterministic=True`, `"multiprocessing"`
+        when `procs` or `cluster_manager` is set, and `"multithreading"` otherwise.
+        Default is `None`, which behaves like `"auto"`.
     procs: int | None
         Number of processes to use for parallelism. If `None`, defaults to `cpu_count()`.
         Default is `None`.
@@ -1013,7 +1015,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         tournament_selection_n: int = 15,
         tournament_selection_p: float = 0.982,
         parallelism: (
-            Literal["serial", "multithreading", "multiprocessing"] | None
+            Literal["auto", "serial", "multithreading", "multiprocessing"] | None
         ) = None,
         procs: int | None = None,
         cluster_manager: (
@@ -2048,7 +2050,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             pysr_logger.info("Compiling Julia backend...")
 
         parallelism, numprocs = _map_parallelism_params(
-            self.parallelism, self.procs, getattr(self, "multithreading", None)
+            self.parallelism,
+            self.procs,
+            getattr(self, "multithreading", None),
+            deterministic=self.deterministic,
+            cluster_manager=cluster_manager,
         )
 
         if self.deterministic and parallelism != "serial":
@@ -3164,16 +3170,19 @@ def _mutate_parameter(param_name: str, param_value):
 
 
 def _map_parallelism_params(
-    parallelism: Literal["serial", "multithreading", "multiprocessing"] | None,
+    parallelism: Literal["auto", "serial", "multithreading", "multiprocessing"] | None,
     procs: int | None,
     multithreading: bool | None,
+    *,
+    deterministic: bool = False,
+    cluster_manager: str | None = None,
 ) -> tuple[Literal["serial", "multithreading", "multiprocessing"], int | None]:
     """Map old and new parallelism parameters to the new format.
 
     Parameters
     ----------
     parallelism : str or None
-        New parallelism parameter. Can be "serial", "multithreading", or "multiprocessing".
+        New parallelism parameter. Can be "auto", "serial", "multithreading", or "multiprocessing".
     procs : int or None
         Number of processes parameter.
     multithreading : bool or None
@@ -3219,30 +3228,37 @@ def _map_parallelism_params(
         else:
             _parallelism = "serial"
             _procs = None
-    elif using_new:
+    elif parallelism in {None, "auto"}:
+        if deterministic:
+            _parallelism = "serial"
+            _procs = None
+        elif procs is not None or cluster_manager is not None:
+            _parallelism = "multiprocessing"
+            _procs = procs
+        else:
+            _parallelism = "multithreading"
+            _procs = None
+    else:
         _parallelism = cast(
             Literal["serial", "multithreading", "multiprocessing"], parallelism
         )
         _procs = procs
-    else:
-        _parallelism = "multithreading"
-        _procs = None
 
     if _parallelism not in {"serial", "multithreading", "multiprocessing"}:
         raise ValueError(
-            "`parallelism` must be one of 'serial', 'multithreading', or 'multiprocessing'"
+            "`parallelism` must be one of 'auto', 'serial', 'multithreading', or 'multiprocessing'"
         )
     elif _parallelism == "serial" and _procs is not None:
         warnings.warn(
             "`numprocs` is specified but will be ignored since `parallelism='serial'`"
         )
         _procs = None
-    elif parallelism == "multithreading" and _procs is not None:
+    elif _parallelism == "multithreading" and _procs is not None:
         warnings.warn(
             "`numprocs` is specified but will be ignored since `parallelism='multithreading'`"
         )
         _procs = None
-    elif parallelism == "multiprocessing" and _procs is None:
+    elif _parallelism == "multiprocessing" and _procs is None:
         _procs = cpu_count()
 
     return _parallelism, _procs
