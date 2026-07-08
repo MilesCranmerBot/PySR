@@ -70,8 +70,9 @@ class TestInputStream(unittest.TestCase):
         stdin = mock.Mock(closed=False)
         stdin.isatty.return_value = False
         seval = mock.Mock(return_value="DEVNULL")
-        with mock.patch("pysr.sr.sys.stdin", stdin), mock.patch(
-            "pysr.sr.jl", mock.Mock(seval=seval)
+        with (
+            mock.patch("pysr.sr.sys.stdin", stdin),
+            mock.patch("pysr.sr.jl", mock.Mock(seval=seval)),
         ):
             self.assertEqual(_resolve_input_stream("stdin"), "DEVNULL")
         seval.assert_called_once_with("devnull")
@@ -81,9 +82,11 @@ class TestInputStream(unittest.TestCase):
         stdin.isatty.return_value = True
         stdin.fileno.return_value = 0
         seval = mock.Mock(return_value="STDIN")
-        with mock.patch("pysr.sr.sys.stdin", stdin), mock.patch(
-            "pysr.sr.os.fstat"
-        ), mock.patch("pysr.sr.jl", mock.Mock(seval=seval)):
+        with (
+            mock.patch("pysr.sr.sys.stdin", stdin),
+            mock.patch("pysr.sr.os.fstat"),
+            mock.patch("pysr.sr.jl", mock.Mock(seval=seval)),
+        ):
             self.assertTrue(_stdin_is_compatible())
             self.assertEqual(_resolve_input_stream("stdin"), "STDIN")
         seval.assert_called_once_with("stdin")
@@ -92,8 +95,9 @@ class TestInputStream(unittest.TestCase):
         stdin = mock.Mock(closed=False)
         stdin.isatty.return_value = False
         seval = mock.Mock(return_value="STREAM")
-        with mock.patch("pysr.sr.sys.stdin", stdin), mock.patch(
-            "pysr.sr.jl", mock.Mock(seval=seval)
+        with (
+            mock.patch("pysr.sr.sys.stdin", stdin),
+            mock.patch("pysr.sr.jl", mock.Mock(seval=seval)),
         ):
             self.assertEqual(_resolve_input_stream("Main.my_stream"), "STREAM")
         seval.assert_called_once_with("Main.my_stream")
