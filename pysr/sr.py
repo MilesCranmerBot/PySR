@@ -81,6 +81,26 @@ ALREADY_RAN = False
 pysr_logger = logging.getLogger(__name__)
 
 
+def _stdin_is_compatible() -> bool:
+    """Return whether Python's stdin is a usable interactive stream."""
+    stdin = sys.stdin
+    if stdin is None or stdin.closed:
+        return False
+    try:
+        if not stdin.isatty():
+            return False
+        os.fstat(stdin.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    return True
+
+
+def _resolve_input_stream(input_stream: str) -> AnyValue:
+    if input_stream == "stdin" and not _stdin_is_compatible():
+        return jl.seval("devnull")
+    return jl.seval(input_stream)
+
+
 def _process_constraints(
     operators: dict[int, list[str]],
     constraints: dict[str, int | tuple[int, ...]],
@@ -780,10 +800,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         `TensorBoardLoggerSpec`.
         Default is `None`.
     input_stream : str
-        The stream to read user input from. By default, this is `"stdin"`.
-        If you encounter issues with reading from `stdin`, like a hang,
-        you can simply pass `"devnull"` to this argument. You can also
-        reference an arbitrary Julia object in the `Main` namespace.
+        The stream to read user input from. By default, this is `"stdin"`,
+        which falls back to `"devnull"` when Python's stdin is not an
+        interactive terminal. You can pass `"devnull"` to explicitly disable
+        reading from stdin, or reference an arbitrary Julia object in the
+        `Main` namespace.
         Default is `"stdin"`.
     run_id : str
         A unique identifier for the run. Will be generated using the
@@ -2152,7 +2173,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else "nothing"
         )
 
-        input_stream = jl.seval(self.input_stream)
+        input_stream = _resolve_input_stream(self.input_stream)
 
         load_required_packages(
             turbo=self.turbo,

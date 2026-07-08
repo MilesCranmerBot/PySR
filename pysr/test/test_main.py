@@ -40,6 +40,8 @@ from pysr.julia_helpers import init_julia
 from pysr.sr import (
     _check_assertions,
     _process_constraints,
+    _resolve_input_stream,
+    _stdin_is_compatible,
     _suggest_keywords,
     _validate_elementwise_loss,
     _validate_export_mappings,
@@ -61,6 +63,40 @@ os.environ["SYMBOLIC_REGRESSION_IS_TESTING"] = os.environ.get(
 
 # Import from juliacall at end:
 from juliacall import JuliaError  # type: ignore
+
+
+class TestInputStream(unittest.TestCase):
+    def test_stdin_resolves_to_devnull_when_not_interactive(self):
+        stdin = mock.Mock(closed=False)
+        stdin.isatty.return_value = False
+        seval = mock.Mock(return_value="DEVNULL")
+        with mock.patch("pysr.sr.sys.stdin", stdin), mock.patch(
+            "pysr.sr.jl", mock.Mock(seval=seval)
+        ):
+            self.assertEqual(_resolve_input_stream("stdin"), "DEVNULL")
+        seval.assert_called_once_with("devnull")
+
+    def test_stdin_resolves_to_stdin_when_interactive(self):
+        stdin = mock.Mock(closed=False)
+        stdin.isatty.return_value = True
+        stdin.fileno.return_value = 0
+        seval = mock.Mock(return_value="STDIN")
+        with mock.patch("pysr.sr.sys.stdin", stdin), mock.patch(
+            "pysr.sr.os.fstat"
+        ), mock.patch("pysr.sr.jl", mock.Mock(seval=seval)):
+            self.assertTrue(_stdin_is_compatible())
+            self.assertEqual(_resolve_input_stream("stdin"), "STDIN")
+        seval.assert_called_once_with("stdin")
+
+    def test_custom_input_stream_is_preserved(self):
+        stdin = mock.Mock(closed=False)
+        stdin.isatty.return_value = False
+        seval = mock.Mock(return_value="STREAM")
+        with mock.patch("pysr.sr.sys.stdin", stdin), mock.patch(
+            "pysr.sr.jl", mock.Mock(seval=seval)
+        ):
+            self.assertEqual(_resolve_input_stream("Main.my_stream"), "STREAM")
+        seval.assert_called_once_with("Main.my_stream")
 
 
 class TestPipeline(unittest.TestCase):
