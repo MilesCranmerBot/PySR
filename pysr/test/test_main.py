@@ -1862,11 +1862,21 @@ class TestHelpMessages(unittest.TestCase):
             _map_parallelism_params(None, None, None), ("multithreading", None)
         )
         self.assertEqual(
+            _map_parallelism_params(None, 0, None), ("multithreading", None)
+        )
+        self.assertEqual(
+            _map_parallelism_params(None, None, None, deterministic=True),
+            ("serial", None),
+        )
+        self.assertEqual(
             _map_parallelism_params("auto", None, None), ("multithreading", None)
         )
         self.assertEqual(
             _map_parallelism_params("auto", None, None, deterministic=True),
             ("serial", None),
+        )
+        self.assertEqual(
+            _map_parallelism_params("auto", 0, None), ("serial", None)
         )
         self.assertEqual(
             _map_parallelism_params("auto", 2, None), ("multiprocessing", 2)

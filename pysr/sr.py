@@ -686,8 +686,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     parallelism: Literal["auto", "serial", "multithreading", "multiprocessing"] | None
         Parallelism to use for the search. Can be `"auto"`, `"serial"`, `"multithreading"`, or `"multiprocessing"`.
         `"auto"` selects `"serial"` when `deterministic=True`, `"multiprocessing"`
-        when `procs` or `cluster_manager` is set, and `"multithreading"` otherwise.
-        Default is `None`, which behaves like `"auto"`.
+        when `procs > 0` or `cluster_manager` is set, and `"multithreading"` otherwise.
+        Default is `None`, which preserves legacy multithreading behavior unless
+        `deterministic=True` requires `"serial"`.
     procs: int | None
         Number of processes to use for parallelism. If `None`, defaults to `cpu_count()`.
         Default is `None`.
@@ -3228,11 +3229,17 @@ def _map_parallelism_params(
         else:
             _parallelism = "serial"
             _procs = None
-    elif parallelism in {None, "auto"}:
+    elif parallelism is None:
         if deterministic:
             _parallelism = "serial"
+        else:
+            _parallelism = "multithreading"
+        _procs = None
+    elif parallelism == "auto":
+        if deterministic or procs == 0:
+            _parallelism = "serial"
             _procs = None
-        elif procs is not None or cluster_manager is not None:
+        elif (procs is not None and procs > 0) or cluster_manager is not None:
             _parallelism = "multiprocessing"
             _procs = procs
         else:
