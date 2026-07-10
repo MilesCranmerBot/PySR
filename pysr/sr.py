@@ -1469,7 +1469,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         return pickled_state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        # ponytail: raise immediately on reload instead of confusing SymPy error later
         self.__dict__.update(state)
         if (
             "equations_" in state
