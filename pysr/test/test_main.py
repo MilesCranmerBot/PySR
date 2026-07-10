@@ -2258,6 +2258,16 @@ class TestTemplateExpressionSpec(unittest.TestCase):
         with self.assertRaisesRegex(NotImplementedError, "not yet supported"):
             pkl.loads(pkl.dumps(model))
 
+    def test_num_features_symbol_keys(self):
+        spec = TemplateExpressionSpec(
+            ["f", "g"],
+            "combine(fs, vars) = fs.f(vars[1], vars[2]) + fs.g(vars[3])",
+            {"f": 2, "g": 1},
+        )
+        options = spec.julia_expression_options()
+        names = jl.seval("x -> propertynames(x.structure.num_features)")(options)
+        self.assertEqual(names, (jl.Symbol("f"), jl.Symbol("g")))
+
     def _check_macro_str(self, spec, expected_str):
         self.assertEqual(
             spec._template_macro_str().strip(), dedent(expected_str).strip()
