@@ -20,6 +20,8 @@ jobs:
   conda_test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      SCIPY_ARRAY_API: "1"
     defaults:
       run:
         shell: bash -el {0}
