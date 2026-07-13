@@ -14,7 +14,6 @@ on:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    if: ${{ matrix.arch != 'linux/arm64' || (github.event_name == 'workflow_dispatch' && inputs.include-arm64) }}
     continue-on-error: ${{ matrix.arch == 'linux/arm64' }}
     defaults:
       run:
@@ -25,7 +24,7 @@ jobs:
         julia-version: ['1.10', '1']
         python-version: ['3.10', '3']
         os: [ubuntu-latest]
-        arch: ['linux/amd64', 'linux/arm64']
+        arch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && github.event.inputs.include-arm64 == 'true' && '["linux/amd64", "linux/arm64"]' || '["linux/amd64"]') }}
 
 
     steps:
