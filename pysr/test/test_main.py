@@ -2393,6 +2393,7 @@ def runtests(just_tests=False):
         TestLaTeXTable,
         TestDimensionalConstraints,
         TestGuesses,
+        TestTemplateExpressionSpec,
     ]
     if just_tests:
         return test_cases
