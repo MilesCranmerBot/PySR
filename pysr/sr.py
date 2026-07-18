@@ -690,11 +690,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         Number of processes to use for parallelism. If `None`, defaults to `cpu_count()`.
         Default is `None`.
     cluster_manager : str
-        For distributed computing, this sets the job queue system. Set
-        to one of "slurm", "pbs", "lsf", "sge", "qrsh", "scyld", or
-        "htc". If set to one of these, PySR will run in distributed
-        mode, and use `procs` to figure out how many processes to launch.
-        Default is `None`.
+        For distributed computing, this sets the job queue system. Set to
+        "slurm" to use an existing Slurm allocation, with `procs` equal to
+        its task count. Other supported values are "pbs", "lsf", "sge",
+        "qrsh", "scyld", and "htc". Default is `None`.
     heap_size_hint_in_bytes : int
         For multiprocessing, this sets the `--heap-size-hint` parameter
         for new Julia processes. This can be configured when using
@@ -2165,9 +2164,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         if cluster_manager is not None:
             active_project = jl.seval("Base.active_project()")
             if isinstance(active_project, str) and len(active_project) > 0:
-                # `ClusterManagers.addprocs_slurm` launches new Julia workers via `srun`.
-                # The project (environment) is propagated via `JULIA_PROJECT` rather
-                # than a `--project=...` flag, so ensure it is set.
+                # Some distributed worker launchers propagate the project (environment)
+                # via `JULIA_PROJECT` rather than a `--project=...` flag.
                 os.environ.setdefault(
                     "JULIA_PROJECT", str(Path(active_project).resolve().parent)
                 )
