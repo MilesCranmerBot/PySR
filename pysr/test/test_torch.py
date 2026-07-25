@@ -194,7 +194,7 @@ class TestTorch(unittest.TestCase):
 
     def test_constant_arguments(self):
         # Test that functions with constant arguments work correctly
-        # Regression test for https://github.com/MilesCranmer/PySR/issues/656
+        # Regression test for https://github.com/astroautomata/PySR/issues/656
         test_cases = [
             (pysr.export_sympy.pysr2sympy("sqrt(2)"), np.sqrt(2)),
             (sympy.exp(2), np.exp(2)),
