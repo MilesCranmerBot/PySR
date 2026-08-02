@@ -463,7 +463,7 @@ that looks at the error in log-space:
 
 ```python
 elementwise_loss = """function loss_fnc(prediction, target)
-    scatter_loss = abs(log((abs(prediction)+1e-20) / (abs(target)+1e-20)))
+    scatter_loss = abs(log((abs(prediction)+1f-20) / (abs(target)+1f-20)))
     sign_loss = 10 * (sign(prediction) - sign(target))^2
     return scatter_loss + sign_loss
 end
