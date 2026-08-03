@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import copy
-import textwrap
-import warnings
 from abc import ABC, abstractmethod
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any, NewType, overload
@@ -13,7 +11,6 @@ import pandas as pd
 from .export import add_export_formats
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, SymbolicRegression, jl
-from .utils import ArrayLike
 
 try:
     from typing import TypeAlias
@@ -314,85 +311,6 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     ) -> pd.DataFrame:
         # We try to load the raw julia state from a saved binary stream
         # if not provided.
-        search_output = search_output or model.julia_state_
-        return _search_output_to_callable_expressions(equations, search_output, i)
-
-
-def parametric_expression_deprecation_warning(
-    max_parameters: int, variable_names: ArrayLike[str]
-):
-    function_name = "f"
-    var_names = list(variable_names)
-    message = dedent(f"""
-        ParametricExpressionSpec is deprecated. you should switch to TemplateExpressionSpec with explicit parameters indexed by category.
-
-        Since you have `max_parameters={max_parameters}` and `variable_names=[{", ".join(f'"{v}"' for v in var_names)}]`, you could migrate like this:
-
-            n_categories = len(np.unique(category))  # count the number of parameters required
-            expression_spec = TemplateExpressionSpec(
-                expressions=["{function_name}"],
-                variable_names=[{", ".join(f'"{v}"' for v in var_names + ["category"])}],
-                parameters={{{", ".join(f'"p{i+1}": n_categories' for i in range(max_parameters))}}},
-                combine="{function_name}({', '.join(var_names + [f'p{i+1}[category]' for i in range(max_parameters)])})",
-            )
-            X = np.column_stack([X, category])       # add the category column
-
-        Finally, do not pass `category` when calling .fit().
-    """).strip()
-    wrapped = "\n".join(textwrap.fill(line, 88) for line in message.splitlines())
-    warnings.warn(wrapped, FutureWarning, stacklevel=3)
-
-
-class ParametricExpressionSpec(AbstractExpressionSpec):
-    """Spec for parametric expressions that vary by category.
-
-    **This is deprecated in favor of the `TemplateExpressionSpec` class,
-    which now supports parameters indexed by category.**
-
-    This class allows you to specify expressions with parameters that vary across different
-    categories in your dataset. The expression structure remains the same, but parameters
-    are optimized separately for each category.
-
-    Parameters
-    ----------
-    max_parameters : int
-        Maximum number of parameters that can appear in the expression. Each parameter
-        will take on different values for each category in the data.
-
-    Examples
-    --------
-    For example, if we want to allow for a model with up to 2 parameters (each category
-    can have a different value for these parameters), we can use:
-
-    ```python
-    model = PySRRegressor(
-        expression_spec=ParametricExpressionSpec(max_parameters=2),
-        binary_operators=["+", "*"],
-        unary_operators=["sin"]
-    )
-    model.fit(X, y, category=category)
-    ```
-    """
-
-    def __init__(self, max_parameters: int):
-        self.max_parameters = max_parameters
-
-    def julia_expression_spec(self):
-        return SymbolicRegression.ParametricExpressionSpec(
-            max_parameters=self.max_parameters, warn=False
-        )
-
-    @property
-    def evaluates_in_julia(self):
-        return True
-
-    def create_exports(
-        self,
-        model: PySRRegressor,
-        equations: pd.DataFrame,
-        search_output,
-        i: int | None = None,
-    ):
         search_output = search_output or model.julia_state_
         return _search_output_to_callable_expressions(equations, search_output, i)
 

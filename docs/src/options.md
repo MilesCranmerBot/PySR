@@ -302,6 +302,11 @@ You can load the saved model state with:
 model = PySRRegressor.from_file(pickle_filename)
 ```
 
+::: warning PySR v2 compatibility
+Saved states created with `ParametricExpressionSpec` are unsupported in PySR v2. Migrate the
+search to `TemplateExpressionSpec` and start it from a new state.
+:::
+
 If you have a long-running job and would like to load the model
 before completion, you can also do this. In this case, the model
 loading will use the `csv` file to load the equations, since the
