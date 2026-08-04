@@ -1,12 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Breaking Changes
-
-* remove `ParametricExpressionSpec` and the `category` arguments to `fit` and `predict`; use `TemplateExpressionSpec` with the category appended to `X` using Julia's one-based indexing
-* saved states created with `ParametricExpressionSpec` are unsupported in PySR v2 and must be migrated to `TemplateExpressionSpec` with a new search state
-
 ## [2.0.0a2](https://github.com/MilesCranmer/PySR/compare/v2.0.0a1...v2.0.0a2) (2026-05-15)
 
 This is an alpha release of v2.0.0. It includes backend, packaging, export, and documentation updates since `v2.0.0a1`.
