@@ -611,7 +611,7 @@ corresponding to the index we defined in `variable_names`.
 
 ```python
 category_p_one = category + 1
-X_with_category = np.column_stack([X, category])
+X_with_category = np.column_stack([X, category_p_one])
 ```
 
 Now, we can fit our model:
