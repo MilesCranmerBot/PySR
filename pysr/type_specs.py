@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, ClassVar
+
+import numpy as np
 
 from .julia_import import AnyValue, jl
 
@@ -17,8 +20,27 @@ class TypeSpec:
     count_scalar_constants: int | str | None = None
     can_optimize: bool | None = None
 
+    _installed: ClassVar[dict[str, tuple[tuple[Any, ...], AnyValue]]] = {}
+
     def install(self) -> AnyValue:
         """Define the type and its global SymbolicRegression.jl interface methods."""
+        key = (
+            self.julia_type,
+            tuple(self.fields.items()) if self.fields is not None else None,
+            self.init_value,
+            self.sample_value,
+            self.mutate_value,
+            self.count_scalar_constants,
+            self.can_optimize,
+        )
+        installed = self._installed.get(self.julia_type)
+        if installed is not None:
+            if installed[0] != key:
+                raise ValueError(
+                    f"A different TypeSpec for `{self.julia_type}` is already installed."
+                )
+            return installed[1]
+
         jl.seval("using Random: AbstractRNG")
         if self.fields is not None:
             if not self.julia_type.isidentifier():
@@ -51,7 +73,31 @@ class TypeSpec:
                 "(T, flag) -> @eval "
                 "SymbolicRegression.ConstantOptimizationModule.can_optimize(::Type{$T}, _) = $flag"
             )(value_type, self.can_optimize)
+        self._installed[self.julia_type] = (key, value_type)
         return value_type
+
+    def to_julia_array(self, values: Any, *, transpose: bool = False) -> AnyValue:
+        """Convert Python logical values into a concrete Julia array."""
+        array = np.asarray(values, dtype=object)
+        if transpose:
+            array = array.T
+        if array.ndim not in (1, 2):
+            raise ValueError("TypeSpec data must be a 1D or 2D array.")
+
+        value_type = self.install()
+        if self.fields is None:
+            convert = jl.seval("(T, x) -> PythonCall.pyconvert(T, x)")
+        elif len(self.fields) == 1:
+            convert = jl.seval("(T, x) -> T(PythonCall.pyconvert(fieldtype(T, 1), x))")
+        else:
+            raise NotImplementedError(
+                "Automatic conversion currently supports one-field structs."
+            )
+
+        converted = [convert(value_type, value) for value in array.ravel(order="F")]
+        return jl.seval("(T, xs, dims) -> reshape(T[x for x in xs], Tuple(dims))")(
+            value_type, converted, array.shape
+        )
 
     @staticmethod
     def _install(kind: str, source: str, value_type: AnyValue) -> None:
