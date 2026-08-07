@@ -38,6 +38,7 @@ from .export_sympy import assert_valid_sympy_symbol
 from .expression_specs import (
     AbstractExpressionSpec,
     ExpressionSpec,
+    _JuliaExpressionSpec,
 )
 from .feature_selection import run_feature_selection
 from .julia_extensions import load_required_packages
@@ -52,6 +53,7 @@ from .julia_helpers import (
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
 from .logger_specs import AbstractLoggerSpec
+from .type_specs import TypeSpec
 from .utils import (
     ArrayLike,
     PathLike,
@@ -406,6 +408,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         `TemplateExpressionSpec(...)` which allows you to specify
         a custom template for the expressions.
         Default is `ExpressionSpec()`.
+    type_spec : TypeSpec
+        Runtime Julia value type and its SymbolicRegression.jl interface methods.
+        Default is `None`, which uses the normal numeric path.
     niterations : int
         Number of iterations of the algorithm to run. The best
         equations are printed and migrate between populations at the
@@ -497,6 +502,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         that the name of the function doesn't matter). Here,
         both `prediction` and `dataset.y` are 1D arrays of length `dataset.n`.
         Default is `None`.
+    loss_type : str
+        Julia scalar type returned by a custom loss. Required with `type_spec`.
     loss_function_expression : str
         Similar to `loss_function`, but takes as input the full
         expression object as the first argument, rather than
@@ -950,6 +957,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         unary_operators: list[str] | None = None,
         operators: dict[int, list[str]] | None = None,
         expression_spec: AbstractExpressionSpec | None = None,
+        type_spec: TypeSpec | None = None,
         niterations: int = 100,
         populations: int = 31,
         population_size: int = 27,
@@ -961,6 +969,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         constraints: dict[str, int | tuple[int, ...]] | None = None,
         nested_constraints: dict[str, dict[str, int]] | None = None,
         elementwise_loss: str | None = None,
+        loss_type: str | None = None,
         loss_function: str | None = None,
         loss_function_expression: str | None = None,
         loss_scale: Literal["log", "linear"] = "log",
@@ -1064,6 +1073,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.unary_operators = unary_operators
         self.operators = operators
         self.expression_spec = expression_spec
+        self.type_spec = type_spec
         self.niterations = niterations
         self.populations = populations
         self.population_size = population_size
@@ -1081,6 +1091,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.early_stop_condition = early_stop_condition
         # - Loss parameters
         self.elementwise_loss = elementwise_loss
+        self.loss_type = loss_type
         self.loss_function = loss_function
         self.loss_function_expression = loss_function_expression
         self.loss_scale = loss_scale
@@ -1495,11 +1506,15 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     @property
     def julia_options_(self):
         """The deserialized julia options."""
+        if self.type_spec is not None:
+            self.type_spec.install()
         return jl_deserialize(self.julia_options_stream_)
 
     @property
     def julia_state_(self):
         """The deserialized state."""
+        if self.type_spec is not None:
+            self.type_spec.install()
         return cast(
             Union[Tuple[VectorValue, AnyValue], None],
             jl_deserialize(self.julia_state_stream_),
@@ -1517,7 +1532,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
     @property
     def expression_spec_(self):
-        return self.expression_spec or ExpressionSpec()
+        if self.expression_spec is not None:
+            return self.expression_spec
+        return (
+            _JuliaExpressionSpec() if self.type_spec is not None else ExpressionSpec()
+        )
 
     def get_best(
         self, index: int | list[int] | None = None
@@ -1624,6 +1643,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         """
         # Immutable parameter validation
         # Ensure instance parameters are allowable values:
+        if self.type_spec is not None:
+            if self.elementwise_loss is None or self.loss_type is None:
+                raise ValueError(
+                    "TypeSpec requires `elementwise_loss` and `loss_type`."
+                )
 
         # Validate operators vs binary_operators/unary_operators mutual exclusion
         if self.operators is not None:
@@ -1762,6 +1786,67 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             Validated units for `y`.
 
         """
+        if self.type_spec is not None:
+            if Xresampled is not None or self.denoise or self.select_k_features:
+                raise NotImplementedError(
+                    "TypeSpec does not support resampling, denoising, or feature selection."
+                )
+            if self.expression_spec is not None:
+                raise NotImplementedError(
+                    "TypeSpec currently supports only the default expression shape."
+                )
+
+            if isinstance(X, pd.DataFrame):
+                if variable_names is not None:
+                    warnings.warn(
+                        "`variable_names` has been reset to `None` as `X` is a DataFrame."
+                    )
+                variable_names = X.columns.astype(str).to_numpy()
+                X = X.to_numpy(dtype=object)
+            else:
+                X = np.asarray(X, dtype=object)
+            if X.ndim != 2:
+                raise ValueError("TypeSpec X must be a 2D array of logical values.")
+
+            if isinstance(y, (pd.Series, pd.DataFrame)):
+                y = y.to_numpy(dtype=object)
+                if y.ndim == 2 and y.shape[1] == 1:
+                    y = y[:, 0]
+            elif isinstance(y, np.ndarray) and y.dtype == object:
+                y = y.copy()
+            else:
+                values = list(y)
+                y = np.empty(len(values), dtype=object)
+                y[:] = values
+            if y.ndim != 1:
+                raise NotImplementedError("TypeSpec currently supports one output.")
+            if X.shape[0] != y.shape[0]:
+                raise ValueError("X and y have inconsistent numbers of samples.")
+
+            if weights is not None:
+                raise NotImplementedError(
+                    "TypeSpec does not currently support weights."
+                )
+            self.n_features_in_ = X.shape[1]
+            if variable_names is None:
+                variable_names = np.array([f"x{i}" for i in range(X.shape[1])])
+            self.feature_names_in_ = np.asarray(variable_names, dtype=str)
+            self.display_feature_names_in_ = self.feature_names_in_
+            self.nout_ = 1
+            self.complexity_of_variables_ = copy.deepcopy(complexity_of_variables)
+            self.X_units_ = copy.deepcopy(X_units)
+            self.y_units_ = copy.deepcopy(y_units)
+            return (
+                X,
+                y,
+                None,
+                weights,
+                self.feature_names_in_,
+                complexity_of_variables,
+                X_units,
+                y_units,
+            )
+
         if isinstance(X, pd.DataFrame):
             if variable_names:
                 variable_names = None
@@ -2027,6 +2112,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         # These are the parameters which may be modified from the ones
         # specified in init, so we define them here locally:
+        value_type = self.type_spec.install() if self.type_spec is not None else None
+        use_generic_operators = self.type_spec is not None and not bool(
+            jl.seval("T -> T <: Number")(value_type)
+        )
         operators = runtime_params.operators
         constraints = runtime_params.constraints
 
@@ -2042,6 +2131,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         parallelism, numprocs = _map_parallelism_params(
             self.parallelism, self.procs, getattr(self, "multithreading", None)
         )
+        if self.type_spec is not None and parallelism != "serial":
+            raise NotImplementedError(
+                "TypeSpec currently requires parallelism='serial'."
+            )
 
         if self.deterministic and parallelism != "serial":
             raise ValueError(
@@ -2110,7 +2203,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         if isinstance(complexity_of_variables, list):
             complexity_of_variables = jl_array(complexity_of_variables)
 
-        np_dtype = self._get_precision_mapped_dtype(np.array(X))
+        np_dtype = (
+            self._get_precision_mapped_dtype(np.array(X))
+            if self.type_spec is None
+            else None
+        )
 
         custom_loss = jl.seval(
             str(self.elementwise_loss)
@@ -2121,7 +2218,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             _validate_elementwise_loss(
                 custom_loss,
                 has_weights=weights is not None,
-                probe_value=np_dtype(1.0),
+                probe_value=(
+                    np_dtype(1.0)
+                    if self.type_spec is None
+                    else SymbolicRegression.init_value(value_type)
+                ),
             )
 
         custom_full_objective = jl.seval(
@@ -2216,8 +2317,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.logger_ = logger
 
         # Use Julia function to create OperatorEnum from Dict{Int,Tuple}
+        enum_type = (
+            "SymbolicRegression.GenericOperatorEnum"
+            if use_generic_operators
+            else "OperatorEnum"
+        )
         create_operator_enum = jl.seval(
-            "__sr_make_op_enum(ops_dict) = OperatorEnum([k => v for (k, v) in ops_dict]...)"
+            f"ops_dict -> {enum_type}([k => v for (k, v) in ops_dict]...)"
         )
         jl_operator_enum = create_operator_enum(jl_operators_dict)
 
@@ -2312,11 +2418,15 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # Convert data to desired precision
 
         # This converts the data into a Julia array:
-        jl_X = jl_array(np.array(X, dtype=np_dtype).T)
-        if len(y.shape) == 1:
-            jl_y = jl_array(np.array(y, dtype=np_dtype))
+        if self.type_spec is not None:
+            jl_X = self.type_spec.to_julia_array(X, transpose=True)
+            jl_y = self.type_spec.to_julia_array(y)
         else:
-            jl_y = jl_array(np.array(y, dtype=np_dtype).T)
+            jl_X = jl_array(np.array(X, dtype=np_dtype).T)
+            if len(y.shape) == 1:
+                jl_y = jl_array(np.array(y, dtype=np_dtype))
+            else:
+                jl_y = jl_array(np.array(y, dtype=np_dtype).T)
         if weights is not None:
             if len(weights.shape) == 1:
                 jl_weights = jl_array(np.array(weights, dtype=np_dtype))
@@ -2341,6 +2451,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             jl_array([jl.Symbol(s) for s in self.worker_imports])
             if self.worker_imports is not None
             else None
+        )
+        loss_type_kw = (
+            {"loss_type": jl.seval(self.loss_type)}
+            if self.loss_type is not None
+            else {}
         )
 
         out = SymbolicRegression.equation_search(
@@ -2375,6 +2490,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             and len(y.shape) == 1,
             verbosity=int(self.verbosity),
             logger=logger,
+            **loss_type_kw,
         )
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
@@ -2605,7 +2721,17 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # and then set the column/feature_names of X to be equal to those
         # generated during fit.
         if not isinstance(X, pd.DataFrame):
-            X = check_array(X)
+            X = (
+                np.asarray(X, dtype=object)
+                if self.type_spec is not None
+                else check_array(X)
+            )
+            if X.ndim != 2:
+                raise ValueError("X must be a 2D array.")
+            if X.shape[1] != self.n_features_in_:
+                raise ValueError(
+                    "X has a different number of features than during fit."
+                )
             X = pd.DataFrame(X)
         if isinstance(X.columns, pd.RangeIndex):
             if self.selection_mask_ is not None:
@@ -2633,9 +2759,16 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # order is preserved after conversion, the dataframe columns must be
         # reordered/reindexed to match those of the transformed (denoised and
         # feature selected) X in fit.
+        missing_features = set(self.feature_names_in_) - set(X.columns)
+        if missing_features:
+            raise ValueError(f"X is missing features: {sorted(missing_features)}")
         X = X.reindex(columns=self.feature_names_in_)
-        X = self._validate_data_X(X)
-        if self.expression_spec_.evaluates_in_julia:
+        X = (
+            X.to_numpy(dtype=object)
+            if self.type_spec is not None
+            else self._validate_data_X(X)
+        )
+        if self.expression_spec_.evaluates_in_julia and self.type_spec is None:
             # Julia wants the right dtype
             X = X.astype(self._get_precision_mapped_dtype(X))
 
