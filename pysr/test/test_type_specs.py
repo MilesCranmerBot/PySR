@@ -55,14 +55,21 @@ class TestTypeSpecs(unittest.TestCase):
             ).instantiate()
 
     def test_type_spec_rejects_incompatible_or_invalid_definitions(self):
-        name = f"UniqueTypeSpec_{uuid.uuid4().hex}"
-        TypeSpec(name, fields={"data": "Float64"}).instantiate()
-        with self.assertRaisesRegex(ValueError, "different TypeSpec"):
-            TypeSpec(name, fields={"data": "String"}).instantiate()
         with self.assertRaisesRegex(ValueError, "simple type name"):
             TypeSpec("Base.Invalid", fields={"data": "Float64"}).instantiate()
         with self.assertRaisesRegex(ValueError, "concrete Julia type"):
             TypeSpec("nothing").instantiate()
+
+    def test_type_spec_requires_loss_and_loss_type(self):
+        with self.assertRaisesRegex(ValueError, "type_spec.loss_type"):
+            PySRRegressor(
+                type_spec=TypeSpec("String"),
+                elementwise_loss="loss(x, y) = x == y ? 0.0 : 1.0",
+            )._validate_and_modify_params()
+        with self.assertRaisesRegex(ValueError, "requires a loss"):
+            PySRRegressor(
+                type_spec=TypeSpec("String", loss_type="Float64")
+            )._validate_and_modify_params()
 
     def test_type_spec_converts_values_and_callback_constants(self):
         float_spec = TypeSpec("Float64")
@@ -89,11 +96,17 @@ class TestTypeSpecs(unittest.TestCase):
             ),
             2,
         )
-        with self.assertRaises(NotImplementedError):
-            TypeSpec(
-                f"TwoFieldTypeSpec_{uuid.uuid4().hex}",
-                fields={"x": "Float64", "y": "Float64"},
-            ).to_julia_array([[1.0, 2.0]])
+        name = f"TwoFieldTypeSpec_{uuid.uuid4().hex}"
+        pairs = np.empty(2, dtype=object)
+        pairs[:] = [(1.0, "one"), [2.0, "two"]]
+        converted = TypeSpec(
+            name,
+            fields={"x": "Float64", "label": "String"},
+        ).to_julia_array(pairs)
+        self.assertEqual(
+            [(value.x, value.label) for value in converted],
+            [(1.0, "one"), (2.0, "two")],
+        )
 
     @staticmethod
     def _tiny_model(type_spec, operator, loss, **kwargs):
@@ -101,7 +114,6 @@ class TestTypeSpecs(unittest.TestCase):
             type_spec=type_spec,
             operators={1: [operator]},
             elementwise_loss=loss,
-            loss_type="Float64",
             niterations=1,
             ncycles_per_iteration=5,
             populations=1,
@@ -129,6 +141,7 @@ class TestTypeSpecs(unittest.TestCase):
             mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
             count_scalar_constants=1,
             can_optimize=False,
+            loss_type="Float64",
         )
         X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
         y = np.array(["a", "b", "a", "b"], dtype=object)
@@ -150,6 +163,7 @@ class TestTypeSpecs(unittest.TestCase):
             mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
             count_scalar_constants=1,
             can_optimize=False,
+            loss_type="Float64",
         )
         X = np.array([["a"], ["b"]], dtype=object)
         y = np.array(["a", "b"], dtype=object)
@@ -164,7 +178,6 @@ class TestTypeSpecs(unittest.TestCase):
                 model = PySRRegressor(
                     type_spec=spec,
                     operators={1: ["identity_string_full_loss(x::String) = x"]},
-                    loss_type="Float64",
                     niterations=1,
                     ncycles_per_iteration=1,
                     populations=1,
@@ -196,6 +209,7 @@ class TestTypeSpecs(unittest.TestCase):
             ),
             count_scalar_constants=1,
             can_optimize=False,
+            loss_type="Float64",
         )
         sequences = [[1.0, 2.0], [2.0, 3.0], [3.0, 4.0], [4.0, 5.0]]
         X = pd.DataFrame({"x": sequences})
@@ -211,6 +225,35 @@ class TestTypeSpecs(unittest.TestCase):
         prediction = model.predict(X, index=model.equations_["loss"].idxmin())
         self.assertEqual([list(value.data) for value in prediction], y.tolist())
 
+    def test_multi_field_struct_type_spec_fit_and_predict(self):
+        name = f"PairValue_{uuid.uuid4().hex}"
+        spec = TypeSpec(
+            name,
+            fields={"number": "Float64", "label": "String"},
+            init_value=f'() -> {name}(0.0, "")',
+            sample_value=f'rng -> {name}(randn(rng), "")',
+            mutate_value=(
+                f"(rng, value, temperature) -> {name}(value.number + "
+                "temperature * randn(rng), value.label)"
+            ),
+            count_scalar_constants=1,
+            can_optimize=False,
+            loss_type="Float64",
+        )
+        pairs = [(1.0, "one"), (2.0, "two"), (3.0, "three"), (4.0, "four")]
+        X = pd.DataFrame({"x": pairs})
+        y = pd.Series(pairs, dtype=object)
+        model = self._tiny_model(
+            spec,
+            f"identity_pair(x::{name}) = x",
+            f"pair_loss(x::{name}, y::{name}) = x == y ? 0.0 : 1.0",
+        )
+
+        model.fit(X, y)
+
+        prediction = model.predict(X, index=model.equations_["loss"].idxmin())
+        self.assertEqual([(value.number, value.label) for value in prediction], pairs)
+
     def test_type_spec_supports_multithreading(self):
         spec = TypeSpec(
             "String",
@@ -219,6 +262,7 @@ class TestTypeSpecs(unittest.TestCase):
             mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
             count_scalar_constants=1,
             can_optimize=False,
+            loss_type="Float64",
         )
         X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
         y = np.array(["a", "b", "a", "b"], dtype=object)

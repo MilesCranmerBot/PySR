@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, Callable
 
 import numpy as np
 
+from .julia_helpers import jl_array
 from .julia_import import AnyValue, jl
 
 
@@ -19,28 +20,10 @@ class TypeSpec:
     mutate_value: str | None = None
     count_scalar_constants: int | str | None = None
     can_optimize: bool | None = None
-
-    _instantiated: ClassVar[dict[str, tuple[tuple[Any, ...], AnyValue]]] = {}
+    loss_type: str | None = None
 
     def instantiate(self) -> AnyValue:
         """Define the type and its global SymbolicRegression.jl interface methods."""
-        key = (
-            self.julia_type,
-            tuple(self.fields.items()) if self.fields is not None else None,
-            self.init_value,
-            self.sample_value,
-            self.mutate_value,
-            self.count_scalar_constants,
-            self.can_optimize,
-        )
-        instantiated = self._instantiated.get(self.julia_type)
-        if instantiated is not None:
-            if instantiated[0] != key:
-                raise ValueError(
-                    f"A different TypeSpec for `{self.julia_type}` is already instantiated."
-                )
-            return instantiated[1]
-
         jl.seval("using Random: AbstractRNG")
         if self.fields is not None:
             if not self.julia_type.isidentifier():
@@ -73,10 +56,51 @@ class TypeSpec:
                 "SymbolicRegression.ConstantOptimizationModule."
                 f"can_optimize(::Type{{{self.julia_type}}}, _) = {str(self.can_optimize).lower()}"
             )
-        self._instantiated[self.julia_type] = (key, value_type)
         return value_type
 
-    def to_julia_array(self, values: Any, *, transpose: bool = False) -> AnyValue:
+    def validate_loss(
+        self,
+        elementwise_loss: str | None,
+        loss_function: str | None,
+        loss_function_expression: str | None,
+    ) -> None:
+        if (
+            elementwise_loss is None
+            and loss_function is None
+            and loss_function_expression is None
+        ) or self.loss_type is None:
+            raise ValueError(
+                "TypeSpec requires a loss (`elementwise_loss`, `loss_function`, or "
+                "`loss_function_expression`) and `type_spec.loss_type`."
+            )
+
+    @staticmethod
+    def supports_export() -> bool:
+        return False
+
+    @staticmethod
+    def uses_generic_operators(value_type: AnyValue | None) -> bool:
+        return not bool(jl.seval("T -> T <: Number")(value_type))
+
+    @staticmethod
+    def numpy_dtype(
+        values: Any, precision_mapper: Callable[[np.ndarray], type]
+    ) -> None:
+        return None
+
+    @staticmethod
+    def elementwise_loss_probe(
+        value_type: AnyValue | None, np_dtype: type | None
+    ) -> AnyValue:
+        return jl.SymbolicRegression.init_value(value_type)
+
+    def to_julia_array(
+        self,
+        values: Any,
+        *,
+        transpose: bool = False,
+        dtype: type | None = None,
+    ) -> AnyValue:
         """Convert Python logical values into a concrete Julia array."""
         array = np.asarray(values, dtype=object)
         if transpose:
@@ -90,9 +114,11 @@ class TypeSpec:
         elif len(self.fields) == 1:
             convert = jl.seval("(T, x) -> T(PythonCall.pyconvert(fieldtype(T, 1), x))")
         else:
-            raise NotImplementedError(
-                "Automatic conversion currently supports one-field structs."
+            arguments = ", ".join(
+                f"PythonCall.pyconvert(fieldtype(T, {i + 1}), x[{i}])"
+                for i in range(len(self.fields))
             )
+            convert = jl.seval(f"(T, x) -> (x = PythonCall.Py(x); T({arguments}))")
 
         converted = [convert(value_type, value) for value in array.ravel(order="F")]
         return jl.seval("(T, xs, dims) -> reshape(T[x for x in xs], Tuple(dims))")(
@@ -137,3 +163,55 @@ class TypeSpec:
                 f"count_scalar_constants(value::{self.julia_type}) = ({source})(value)"
             )
         jl.seval(definition)
+
+
+class _DefaultTypeSpec:
+    loss_type = None
+
+    @staticmethod
+    def instantiate() -> None:
+        return None
+
+    @staticmethod
+    def validate_loss(
+        elementwise_loss: str | None,
+        loss_function: str | None,
+        loss_function_expression: str | None,
+    ) -> None:
+        return None
+
+    @staticmethod
+    def supports_export() -> bool:
+        return True
+
+    @staticmethod
+    def uses_generic_operators(value_type: AnyValue | None) -> bool:
+        return False
+
+    @staticmethod
+    def numpy_dtype(
+        values: Any, precision_mapper: Callable[[np.ndarray], type]
+    ) -> type:
+        return precision_mapper(np.array(values))
+
+    @staticmethod
+    def elementwise_loss_probe(
+        value_type: AnyValue | None, np_dtype: type | None
+    ) -> Any:
+        assert np_dtype is not None
+        return np_dtype(1.0)
+
+    @staticmethod
+    def to_julia_array(
+        values: Any,
+        *,
+        transpose: bool = False,
+        dtype: type | None = None,
+    ) -> AnyValue:
+        array = np.array(values, dtype=dtype)
+        if transpose:
+            array = array.T
+        return jl_array(array)
+
+
+_DEFAULT_TYPE_SPEC = _DefaultTypeSpec()

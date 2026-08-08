@@ -14,7 +14,6 @@
     - ncycles_per_iteration
   - The Objective:
     - elementwise_loss
-    - loss_type
     - loss_function
     - loss_function_expression
     - loss_scale

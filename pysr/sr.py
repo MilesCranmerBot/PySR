@@ -52,7 +52,7 @@ from .julia_helpers import (
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
 from .logger_specs import AbstractLoggerSpec
-from .type_specs import TypeSpec
+from .type_specs import _DEFAULT_TYPE_SPEC, TypeSpec
 from .utils import (
     ArrayLike,
     PathLike,
@@ -501,8 +501,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         that the name of the function doesn't matter). Here,
         both `prediction` and `dataset.y` are 1D arrays of length `dataset.n`.
         Default is `None`.
-    loss_type : str
-        Julia scalar type returned by a custom loss. Required with `type_spec`.
     loss_function_expression : str
         Similar to `loss_function`, but takes as input the full
         expression object as the first argument, rather than
@@ -969,7 +967,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         constraints: dict[str, int | tuple[int, ...]] | None = None,
         nested_constraints: dict[str, dict[str, int]] | None = None,
         elementwise_loss: str | None = None,
-        loss_type: str | None = None,
         loss_function: str | None = None,
         loss_function_expression: str | None = None,
         loss_scale: Literal["log", "linear"] = "log",
@@ -1091,7 +1088,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.early_stop_condition = early_stop_condition
         # - Loss parameters
         self.elementwise_loss = elementwise_loss
-        self.loss_type = loss_type
         self.loss_function = loss_function
         self.loss_function_expression = loss_function_expression
         self.loss_scale = loss_scale
@@ -1506,15 +1502,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     @property
     def julia_options_(self):
         """The deserialized julia options."""
-        if self.type_spec is not None:
-            self.type_spec.instantiate()
+        self.type_spec_.instantiate()
         return jl_deserialize(self.julia_options_stream_)
 
     @property
     def julia_state_(self):
         """The deserialized state."""
-        if self.type_spec is not None:
-            self.type_spec.instantiate()
+        self.type_spec_.instantiate()
         return cast(
             Union[Tuple[VectorValue, AnyValue], None],
             jl_deserialize(self.julia_state_stream_),
@@ -1534,8 +1528,12 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     def expression_spec_(self):
         return self.expression_spec or ExpressionSpec()
 
+    @property
+    def type_spec_(self):
+        return self.type_spec or _DEFAULT_TYPE_SPEC
+
     def _supports_export(self, format: str) -> bool:
-        return self.type_spec is None and getattr(
+        return self.type_spec_.supports_export() and getattr(
             self.expression_spec_, f"supports_{format}"
         )
 
@@ -1644,16 +1642,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         """
         # Immutable parameter validation
         # Ensure instance parameters are allowable values:
-        if self.type_spec is not None:
-            if (
-                self.elementwise_loss is None
-                and self.loss_function is None
-                and self.loss_function_expression is None
-            ) or self.loss_type is None:
-                raise ValueError(
-                    "TypeSpec requires a loss (`elementwise_loss`, `loss_function`, or "
-                    "`loss_function_expression`) and `loss_type`."
-                )
+        self.type_spec_.validate_loss(
+            self.elementwise_loss,
+            self.loss_function,
+            self.loss_function_expression,
+        )
 
         # Validate operators vs binary_operators/unary_operators mutual exclusion
         if self.operators is not None:
@@ -2118,12 +2111,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         # These are the parameters which may be modified from the ones
         # specified in init, so we define them here locally:
-        value_type = (
-            self.type_spec.instantiate() if self.type_spec is not None else None
-        )
-        use_generic_operators = self.type_spec is not None and not bool(
-            jl.seval("T -> T <: Number")(value_type)
-        )
+        value_type = self.type_spec_.instantiate()
+        use_generic_operators = self.type_spec_.uses_generic_operators(value_type)
         operators = runtime_params.operators
         constraints = runtime_params.constraints
 
@@ -2162,9 +2151,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         operators = _maybe_create_inline_operators(
             operators=operators,
             extra_sympy_mappings=self.extra_sympy_mappings,
-            supports_sympy=(
-                self.type_spec is None and self.expression_spec_.supports_sympy
-            ),
+            supports_sympy=self.type_spec_.supports_export()
+            and self.expression_spec_.supports_sympy,
         )
         if constraints is not None:
             _constraints = _process_constraints(
@@ -2208,11 +2196,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         if isinstance(complexity_of_variables, list):
             complexity_of_variables = jl_array(complexity_of_variables)
 
-        np_dtype = (
-            self._get_precision_mapped_dtype(np.array(X))
-            if self.type_spec is None
-            else None
-        )
+        np_dtype = self.type_spec_.numpy_dtype(X, self._get_precision_mapped_dtype)
 
         custom_loss = jl.seval(
             str(self.elementwise_loss)
@@ -2220,11 +2204,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else "nothing"
         )
         if self.elementwise_loss is not None:
-            if self.type_spec is None:
-                assert np_dtype is not None
-                probe_value = np_dtype(1.0)
-            else:
-                probe_value = SymbolicRegression.init_value(value_type)
+            probe_value = self.type_spec_.elementwise_loss_probe(value_type, np_dtype)
             _validate_elementwise_loss(
                 custom_loss,
                 has_weights=weights is not None,
@@ -2421,15 +2401,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # Convert data to desired precision
 
         # This converts the data into a Julia array:
-        if self.type_spec is not None:
-            jl_X = self.type_spec.to_julia_array(X, transpose=True)
-            jl_y = self.type_spec.to_julia_array(y)
-        else:
-            jl_X = jl_array(np.array(X, dtype=np_dtype).T)
-            if len(y.shape) == 1:
-                jl_y = jl_array(np.array(y, dtype=np_dtype))
-            else:
-                jl_y = jl_array(np.array(y, dtype=np_dtype).T)
+        jl_X = self.type_spec_.to_julia_array(X, transpose=True, dtype=np_dtype)
+        jl_y = self.type_spec_.to_julia_array(
+            y, transpose=len(y.shape) > 1, dtype=np_dtype
+        )
         if weights is not None:
             if len(weights.shape) == 1:
                 jl_weights = jl_array(np.array(weights, dtype=np_dtype))
@@ -2487,7 +2462,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             and len(y.shape) == 1,
             verbosity=int(self.verbosity),
             logger=logger,
-            **({"loss_type": jl.seval(self.loss_type)} if self.loss_type else {}),
+            **(
+                {"loss_type": jl.seval(self.type_spec_.loss_type)}
+                if self.type_spec_.loss_type
+                else {}
+            ),
         )
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
