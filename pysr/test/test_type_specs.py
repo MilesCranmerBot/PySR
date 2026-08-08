@@ -1,5 +1,5 @@
-import uuid
 import unittest
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -50,9 +50,7 @@ class TestTypeSpecs(unittest.TestCase):
     def test_type_spec_rejects_wrong_callback_arity(self):
         name = f"InvalidTypeSpec_{uuid.uuid4().hex}"
         with self.assertRaisesRegex(ValueError, "sample_value must accept"):
-            TypeSpec(
-                name, fields={"data": "String"}, sample_value='() -> ""'
-            ).install()
+            TypeSpec(name, fields={"data": "String"}, sample_value='() -> ""').install()
 
     @staticmethod
     def _tiny_model(type_spec, operator, loss):
