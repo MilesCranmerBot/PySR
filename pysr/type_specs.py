@@ -20,9 +20,9 @@ class TypeSpec:
     count_scalar_constants: int | str | None = None
     can_optimize: bool | None = None
 
-    _installed: ClassVar[dict[str, tuple[tuple[Any, ...], AnyValue]]] = {}
+    _instantiated: ClassVar[dict[str, tuple[tuple[Any, ...], AnyValue]]] = {}
 
-    def install(self) -> AnyValue:
+    def instantiate(self) -> AnyValue:
         """Define the type and its global SymbolicRegression.jl interface methods."""
         key = (
             self.julia_type,
@@ -33,13 +33,13 @@ class TypeSpec:
             self.count_scalar_constants,
             self.can_optimize,
         )
-        installed = self._installed.get(self.julia_type)
-        if installed is not None:
-            if installed[0] != key:
+        instantiated = self._instantiated.get(self.julia_type)
+        if instantiated is not None:
+            if instantiated[0] != key:
                 raise ValueError(
-                    f"A different TypeSpec for `{self.julia_type}` is already installed."
+                    f"A different TypeSpec for `{self.julia_type}` is already instantiated."
                 )
-            return installed[1]
+            return instantiated[1]
 
         jl.seval("using Random: AbstractRNG")
         if self.fields is not None:
@@ -55,25 +55,25 @@ class TypeSpec:
             raise ValueError(f"`{self.julia_type}` is not a concrete Julia type.")
 
         if self.init_value is not None:
-            self._install("init", self.init_value, value_type)
+            self._instantiate("init", self.init_value)
         if self.sample_value is not None:
-            self._install("sample", self.sample_value, value_type)
+            self._instantiate("sample", self.sample_value)
         if self.mutate_value is not None:
-            self._install("mutate", self.mutate_value, value_type)
+            self._instantiate("mutate", self.mutate_value)
         if self.count_scalar_constants is not None:
             if isinstance(self.count_scalar_constants, int):
                 jl.seval(
-                    "(T, n) -> @eval "
-                    "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.count_scalar_constants(::$T) = $n"
-                )(value_type, self.count_scalar_constants)
+                    "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                    f"count_scalar_constants(value::{self.julia_type}) = {self.count_scalar_constants}"
+                )
             else:
-                self._install("count", self.count_scalar_constants, value_type)
+                self._instantiate("count", self.count_scalar_constants)
         if self.can_optimize is not None:
             jl.seval(
-                "(T, flag) -> @eval "
-                "SymbolicRegression.ConstantOptimizationModule.can_optimize(::Type{$T}, _) = $flag"
-            )(value_type, self.can_optimize)
-        self._installed[self.julia_type] = (key, value_type)
+                "SymbolicRegression.ConstantOptimizationModule."
+                f"can_optimize(::Type{{{self.julia_type}}}, _) = {str(self.can_optimize).lower()}"
+            )
+        self._instantiated[self.julia_type] = (key, value_type)
         return value_type
 
     def to_julia_array(self, values: Any, *, transpose: bool = False) -> AnyValue:
@@ -84,7 +84,7 @@ class TypeSpec:
         if array.ndim not in (1, 2):
             raise ValueError("TypeSpec data must be a 1D or 2D array.")
 
-        value_type = self.install()
+        value_type = self.instantiate()
         if self.fields is None:
             convert = jl.seval("(T, x) -> PythonCall.pyconvert(T, x)")
         elif len(self.fields) == 1:
@@ -99,8 +99,7 @@ class TypeSpec:
             value_type, converted, array.shape
         )
 
-    @staticmethod
-    def _install(kind: str, source: str, value_type: AnyValue) -> None:
+    def _instantiate(self, kind: str, source: str) -> None:
         function = jl.seval(source)
         arity = jl.seval("f -> only(methods(f)).nargs - 1")(function)
         expected = {"init": (0,), "sample": (1, 2), "mutate": (3, 4), "count": (1,)}[
@@ -111,30 +110,30 @@ class TypeSpec:
                 f"{kind}_value must accept {expected}; got {arity} arguments."
             )
 
-        installers = {
-            "init": "(T, f) -> @eval SymbolicRegression.init_value(::Type{$T}) = $f()",
-            "sample": (
-                "(T, f, n) -> @eval SymbolicRegression.sample_value("
-                "rng::AbstractRNG, ::Type{$T}, options) = "
-                "($n == 1 ? $f(rng) : $f(rng, options))"
-            ),
-            "mutate": (
-                "(T, f, n) -> @eval SymbolicRegression.mutate_value("
-                "rng::AbstractRNG, value::$T, temperature, options) = "
-                "($n == 3 ? $f(rng, value, temperature) : $f(rng, value, temperature, options))"
-            ),
-            "count": (
-                "(T, f) -> @eval "
-                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.count_scalar_constants(value::$T) = $f(value)"
-            ),
+        arguments = {
+            "sample": {1: "rng", 2: "rng, options"},
+            "mutate": {
+                3: "rng, value, temperature",
+                4: "rng, value, temperature, options",
+            },
         }
-        installer = jl.seval(installers[kind])
-        (
-            installer(value_type, function, arity)
-            if kind
-            in (
-                "sample",
-                "mutate",
+        if kind == "init":
+            definition = f"SymbolicRegression.init_value(::Type{{{self.julia_type}}}) = ({source})()"
+        elif kind == "sample":
+            definition = (
+                "SymbolicRegression.sample_value("
+                f"rng::AbstractRNG, ::Type{{{self.julia_type}}}, options) = "
+                f"({source})({arguments['sample'][arity]})"
             )
-            else installer(value_type, function)
-        )
+        elif kind == "mutate":
+            definition = (
+                "SymbolicRegression.mutate_value("
+                f"rng::AbstractRNG, value::{self.julia_type}, temperature, options) = "
+                f"({source})({arguments['mutate'][arity]})"
+            )
+        else:
+            definition = (
+                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                f"count_scalar_constants(value::{self.julia_type}) = ({source})(value)"
+            )
+        jl.seval(definition)

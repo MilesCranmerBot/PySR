@@ -8,7 +8,7 @@ from pysr import PySRRegressor, TypeSpec, jl
 
 
 class TestTypeSpecs(unittest.TestCase):
-    def test_type_spec_installs_compact_global_interface(self):
+    def test_type_spec_instantiates_compact_global_interface(self):
         name = f"PySRTestValue_{uuid.uuid4().hex}"
         spec = TypeSpec(
             name,
@@ -20,7 +20,7 @@ class TestTypeSpecs(unittest.TestCase):
             can_optimize=False,
         )
 
-        value_type = spec.install()
+        value_type = spec.instantiate()
         options = jl.nothing
         jl.seval("using Random")
         rng = jl.Random.Xoshiro(0)
@@ -50,11 +50,54 @@ class TestTypeSpecs(unittest.TestCase):
     def test_type_spec_rejects_wrong_callback_arity(self):
         name = f"InvalidTypeSpec_{uuid.uuid4().hex}"
         with self.assertRaisesRegex(ValueError, "sample_value must accept"):
-            TypeSpec(name, fields={"data": "String"}, sample_value='() -> ""').install()
+            TypeSpec(
+                name, fields={"data": "String"}, sample_value='() -> ""'
+            ).instantiate()
+
+    def test_type_spec_rejects_incompatible_or_invalid_definitions(self):
+        name = f"UniqueTypeSpec_{uuid.uuid4().hex}"
+        TypeSpec(name, fields={"data": "Float64"}).instantiate()
+        with self.assertRaisesRegex(ValueError, "different TypeSpec"):
+            TypeSpec(name, fields={"data": "String"}).instantiate()
+        with self.assertRaisesRegex(ValueError, "simple type name"):
+            TypeSpec("Base.Invalid", fields={"data": "Float64"}).instantiate()
+        with self.assertRaisesRegex(ValueError, "concrete Julia type"):
+            TypeSpec("nothing").instantiate()
+
+    def test_type_spec_converts_values_and_callback_constants(self):
+        float_spec = TypeSpec("Float64")
+        values = float_spec.to_julia_array([1.0, 2.0])
+        np.testing.assert_array_equal(np.asarray(list(values)), [1.0, 2.0])
+        transposed = float_spec.to_julia_array([[1.0, 2.0]], transpose=True)
+        self.assertEqual(tuple(transposed.shape), (2, 1))
+        with self.assertRaisesRegex(ValueError, "1D or 2D"):
+            TypeSpec("Float64").to_julia_array(np.zeros((1, 1, 1)))
+
+        name = f"CountingTypeSpec_{uuid.uuid4().hex}"
+        spec = TypeSpec(
+            name,
+            fields={"data": "Float64"},
+            count_scalar_constants="value -> 2",
+        )
+        spec.instantiate()
+        self.assertEqual(spec.instantiate(), jl.seval(name))
+        self.assertEqual(spec.to_julia_array([1.0])[0].data, 1.0)
+        value = jl.seval(f"{name}(1.0)")
+        self.assertEqual(
+            jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE.count_scalar_constants(
+                value
+            ),
+            2,
+        )
+        with self.assertRaises(NotImplementedError):
+            TypeSpec(
+                f"TwoFieldTypeSpec_{uuid.uuid4().hex}",
+                fields={"x": "Float64", "y": "Float64"},
+            ).to_julia_array([[1.0, 2.0]])
 
     @staticmethod
-    def _tiny_model(type_spec, operator, loss):
-        return PySRRegressor(
+    def _tiny_model(type_spec, operator, loss, **kwargs):
+        params = dict(
             type_spec=type_spec,
             operators={1: [operator]},
             elementwise_loss=loss,
@@ -72,6 +115,10 @@ class TestTypeSpecs(unittest.TestCase):
             verbosity=0,
             temp_equation_file=True,
             should_optimize_constants=False,
+        )
+        params.update(kwargs)
+        return PySRRegressor(
+            **params,
         )
 
     def test_string_type_spec_fit_and_predict(self):
@@ -122,3 +169,27 @@ class TestTypeSpecs(unittest.TestCase):
 
         prediction = model.predict(X, index=model.equations_["loss"].idxmin())
         self.assertEqual([list(value.data) for value in prediction], y.tolist())
+
+    def test_type_spec_supports_multithreading(self):
+        spec = TypeSpec(
+            "String",
+            init_value='() -> ""',
+            sample_value='rng -> rand(rng, ("a", "b"))',
+            mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
+            count_scalar_constants=1,
+            can_optimize=False,
+        )
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        model = self._tiny_model(
+            spec,
+            "identity_string_threaded(x::String) = x",
+            "string_loss_threaded(x::String, y::String) = x == y ? 0.0 : 1.0",
+            parallelism="multithreading",
+            deterministic=False,
+            random_state=None,
+        )
+
+        model.fit(X, y)
+
+        np.testing.assert_array_equal(model.predict(X), y)
