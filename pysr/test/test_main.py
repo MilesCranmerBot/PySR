@@ -50,6 +50,7 @@ from .params import (
     DEFAULT_POPULATIONS,
     skip_if_beartype,
 )
+from .test_type_specs import TestTypeSpecs
 
 # Disables local saving:
 os.environ["SYMBOLIC_REGRESSION_IS_TESTING"] = os.environ.get(
@@ -2279,6 +2280,7 @@ def runtests(just_tests=False):
         TestLaTeXTable,
         TestDimensionalConstraints,
         TestGuesses,
+        TestTypeSpecs,
     ]
     if just_tests:
         return test_cases
