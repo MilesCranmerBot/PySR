@@ -142,6 +142,47 @@ class TestTypeSpecs(unittest.TestCase):
 
         np.testing.assert_array_equal(model.predict(X), y)
 
+    def test_type_spec_supports_full_loss_function(self):
+        spec = TypeSpec(
+            "String",
+            init_value='() -> ""',
+            sample_value='rng -> rand(rng, ("a", "b"))',
+            mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
+            count_scalar_constants=1,
+            can_optimize=False,
+        )
+        X = np.array([["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b"], dtype=object)
+        for loss_kwarg, loss in (
+            ("loss_function", "full_string_loss(tree, dataset, options) = 0.0"),
+            (
+                "loss_function_expression",
+                "full_string_expression_loss(expression, dataset, options) = 0.0",
+            ),
+        ):
+            with self.subTest(loss_kwarg=loss_kwarg):
+                model = PySRRegressor(
+                    type_spec=spec,
+                    operators={1: ["identity_string_full_loss(x::String) = x"]},
+                    loss_type="Float64",
+                    niterations=1,
+                    ncycles_per_iteration=1,
+                    populations=1,
+                    population_size=5,
+                    tournament_selection_n=3,
+                    maxsize=7,
+                    parallelism="serial",
+                    deterministic=True,
+                    random_state=0,
+                    progress=False,
+                    verbosity=0,
+                    temp_equation_file=True,
+                    should_optimize_constants=False,
+                    **{loss_kwarg: loss},
+                )
+
+                model.fit(X, y)
+
     def test_struct_type_spec_fit_and_predict(self):
         name = f"RASPValue_{uuid.uuid4().hex}"
         spec = TypeSpec(

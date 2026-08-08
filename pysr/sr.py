@@ -1644,9 +1644,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # Immutable parameter validation
         # Ensure instance parameters are allowable values:
         if self.type_spec is not None:
-            if self.elementwise_loss is None or self.loss_type is None:
+            if (
+                self.elementwise_loss is None
+                and self.loss_function is None
+                and self.loss_function_expression is None
+            ) or self.loss_type is None:
                 raise ValueError(
-                    "TypeSpec requires `elementwise_loss` and `loss_type`."
+                    "TypeSpec requires a loss (`elementwise_loss`, `loss_function`, or "
+                    "`loss_function_expression`) and `loss_type`."
                 )
 
         # Validate operators vs binary_operators/unary_operators mutual exclusion
