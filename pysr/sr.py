@@ -1507,14 +1507,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     def julia_options_(self):
         """The deserialized julia options."""
         if self.type_spec is not None:
-            self.type_spec.install()
+            self.type_spec.instantiate()
         return jl_deserialize(self.julia_options_stream_)
 
     @property
     def julia_state_(self):
         """The deserialized state."""
         if self.type_spec is not None:
-            self.type_spec.install()
+            self.type_spec.instantiate()
         return cast(
             Union[Tuple[VectorValue, AnyValue], None],
             jl_deserialize(self.julia_state_stream_),
@@ -2112,7 +2112,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         # These are the parameters which may be modified from the ones
         # specified in init, so we define them here locally:
-        value_type = self.type_spec.install() if self.type_spec is not None else None
+        value_type = (
+            self.type_spec.instantiate() if self.type_spec is not None else None
+        )
         use_generic_operators = self.type_spec is not None and not bool(
             jl.seval("T -> T <: Number")(value_type)
         )
@@ -2131,11 +2133,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         parallelism, numprocs = _map_parallelism_params(
             self.parallelism, self.procs, getattr(self, "multithreading", None)
         )
-        if self.type_spec is not None and parallelism != "serial":
-            raise NotImplementedError(
-                "TypeSpec currently requires parallelism='serial'."
-            )
-
         if self.deterministic and parallelism != "serial":
             raise ValueError(
                 "To ensure deterministic searches, you must set `parallelism='serial'`. "
@@ -2453,12 +2450,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if self.worker_imports is not None
             else None
         )
-        loss_type_kw = (
-            {"loss_type": jl.seval(self.loss_type)}
-            if self.loss_type is not None
-            else {}
-        )
-
         out = SymbolicRegression.equation_search(
             jl_X,
             jl_y,
@@ -2491,7 +2482,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             and len(y.shape) == 1,
             verbosity=int(self.verbosity),
             logger=logger,
-            **loss_type_kw,
+            **({"loss_type": jl.seval(self.loss_type)} if self.loss_type else {}),
         )
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
