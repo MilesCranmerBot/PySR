@@ -2215,14 +2215,15 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else "nothing"
         )
         if self.elementwise_loss is not None:
+            if self.type_spec is None:
+                assert np_dtype is not None
+                probe_value = np_dtype(1.0)
+            else:
+                probe_value = SymbolicRegression.init_value(value_type)
             _validate_elementwise_loss(
                 custom_loss,
                 has_weights=weights is not None,
-                probe_value=(
-                    np_dtype(1.0)
-                    if self.type_spec is None
-                    else SymbolicRegression.init_value(value_type)
-                ),
+                probe_value=probe_value,
             )
 
         custom_full_objective = jl.seval(
@@ -2721,17 +2722,16 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # and then set the column/feature_names of X to be equal to those
         # generated during fit.
         if not isinstance(X, pd.DataFrame):
-            X = (
-                np.asarray(X, dtype=object)
-                if self.type_spec is not None
-                else check_array(X)
-            )
-            if X.ndim != 2:
-                raise ValueError("X must be a 2D array.")
-            if X.shape[1] != self.n_features_in_:
-                raise ValueError(
-                    "X has a different number of features than during fit."
-                )
+            if self.type_spec is not None:
+                X = np.asarray(X, dtype=object)
+                if X.ndim != 2:
+                    raise ValueError("X must be a 2D array.")
+                if X.shape[1] != self.n_features_in_:
+                    raise ValueError(
+                        "X has a different number of features than during fit."
+                    )
+            else:
+                X = check_array(X)
             X = pd.DataFrame(X)
         if isinstance(X.columns, pd.RangeIndex):
             if self.selection_mask_ is not None:
@@ -2759,9 +2759,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # order is preserved after conversion, the dataframe columns must be
         # reordered/reindexed to match those of the transformed (denoised and
         # feature selected) X in fit.
-        missing_features = set(self.feature_names_in_) - set(X.columns)
-        if missing_features:
-            raise ValueError(f"X is missing features: {sorted(missing_features)}")
+        if self.type_spec is not None:
+            missing_features = set(self.feature_names_in_) - set(X.columns)
+            if missing_features:
+                raise ValueError(f"X is missing features: {sorted(missing_features)}")
         X = X.reindex(columns=self.feature_names_in_)
         X = (
             X.to_numpy(dtype=object)
