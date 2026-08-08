@@ -89,9 +89,7 @@ class TypeSpec:
         return None
 
     @staticmethod
-    def elementwise_loss_probe(
-        value_type: AnyValue | None, np_dtype: type | None
-    ) -> AnyValue:
+    def elementwise_loss_probe(value_type: AnyValue | None, np_dtype: type | None):
         return jl.SymbolicRegression.init_value(value_type)
 
     def to_julia_array(
@@ -195,9 +193,7 @@ class _DefaultTypeSpec:
         return precision_mapper(np.array(values))
 
     @staticmethod
-    def elementwise_loss_probe(
-        value_type: AnyValue | None, np_dtype: type | None
-    ) -> Any:
+    def elementwise_loss_probe(value_type: AnyValue | None, np_dtype: type | None):
         assert np_dtype is not None
         return np_dtype(1.0)
 

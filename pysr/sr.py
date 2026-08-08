@@ -1533,8 +1533,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         return self.type_spec or _DEFAULT_TYPE_SPEC
 
     def _supports_export(self, format: str) -> bool:
-        return self.type_spec_.supports_export() and getattr(
-            self.expression_spec_, f"supports_{format}"
+        return self.type_spec_.supports_export() and bool(
+            getattr(self.expression_spec_, f"supports_{format}")
         )
 
     def get_best(
