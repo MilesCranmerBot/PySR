@@ -20,7 +20,10 @@ class AbstractPlugin(ABC):
 
 @dataclass(frozen=True)
 class SimulatedAnnealingPlugin(AbstractPlugin):
-    """Apply simulated annealing during mutation acceptance."""
+    """Apply simulated annealing during mutation acceptance.
+
+    Disabled by default in PySR (``annealing=False``).
+    """
 
     alpha: float = 0.1
 
@@ -30,7 +33,11 @@ class SimulatedAnnealingPlugin(AbstractPlugin):
 
 @dataclass(frozen=True)
 class AdaptiveParsimonyPlugin(AbstractPlugin):
-    """Apply frequency-based parsimony during selection and mutation."""
+    """Apply frequency-based parsimony during selection and mutation.
+
+    Enabled by default in PySR through ``use_frequency=True`` and
+    ``use_frequency_in_tournament=True``.
+    """
 
     tournament: bool = True
     mutation_acceptance: bool = True
@@ -44,7 +51,10 @@ class AdaptiveParsimonyPlugin(AbstractPlugin):
 
 @dataclass(frozen=True)
 class AdaptiveMutationWeightsPlugin(AbstractPlugin):
-    """Adapt mutation weights from their observed success rates."""
+    """Adapt mutation weights from their observed success rates.
+
+    Disabled by default in PySR.
+    """
 
     smoothing: float = 0.02
     floor: float = 0.05
@@ -60,7 +70,10 @@ class AdaptiveMutationWeightsPlugin(AbstractPlugin):
 
 @dataclass(frozen=True)
 class MutationBurstPlugin(AbstractPlugin):
-    """Retry rejected mutations and optionally chain accepted mutations."""
+    """Retry rejected mutations and optionally chain accepted mutations.
+
+    Disabled by default in PySR.
+    """
 
     retry_attempts: int = 4
     compound_probability: float = 0.25
