@@ -28,35 +28,45 @@ class TypeSpec:
         if self.fields is not None:
             if not self.julia_type.isidentifier():
                 raise ValueError("A TypeSpec with fields requires a simple type name.")
-            fields = "\n".join(
-                f"    {name}::{type_}" for name, type_ in self.fields.items()
-            )
-            jl.seval(f"struct {self.julia_type}\n{fields}\nend")
+            jl.seval(self._struct_definition())
 
         value_type = jl.seval(self.julia_type)
         if not jl.seval("T -> T isa Type")(value_type):
             raise ValueError(f"`{self.julia_type}` is not a concrete Julia type.")
 
-        if self.init_value is not None:
-            self._instantiate("init", self.init_value)
-        if self.sample_value is not None:
-            self._instantiate("sample", self.sample_value)
-        if self.mutate_value is not None:
-            self._instantiate("mutate", self.mutate_value)
-        if self.count_scalar_constants is not None:
-            if isinstance(self.count_scalar_constants, int):
-                jl.seval(
-                    "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
-                    f"count_scalar_constants(value::{self.julia_type}) = {self.count_scalar_constants}"
-                )
-            else:
-                self._instantiate("count", self.count_scalar_constants)
-        if self.can_optimize is not None:
-            jl.seval(
-                "SymbolicRegression.ConstantOptimizationModule."
-                f"can_optimize(::Type{{{self.julia_type}}}, _) = {str(self.can_optimize).lower()}"
-            )
+        for definition in self._interface_definitions():
+            jl.seval(definition)
         return value_type
+
+    def _wrap_addprocs_function(
+        self, addprocs_function: AnyValue | None, worker_imports: AnyValue | None
+    ) -> AnyValue:
+        """Initialize TypeSpec definitions before Julia serializes work to workers."""
+        jl.seval("using Distributed: Distributed")
+        if addprocs_function is None:
+            addprocs_function = jl.Distributed.addprocs
+        definitions = ["using Random: AbstractRNG", *self._interface_definitions()]
+        if self.fields is not None:
+            definitions.insert(1, self._struct_definition())
+        definition = jl.Meta.parse("begin\n" + "\n".join(definitions) + "\nend")
+        imports = worker_imports if worker_imports is not None else jl.nothing
+        return jl.seval("""
+            function (addprocs_function, definition, imports)
+                return function (numprocs; kws...)
+                    procs = addprocs_function(numprocs; kws...)
+                    try
+                        SymbolicRegression.import_module_on_workers(
+                            procs, pathof(SymbolicRegression), imports, 0
+                        )
+                        Distributed.remotecall_eval(Main, procs, definition)
+                    catch
+                        Distributed.rmprocs(procs)
+                        rethrow()
+                    end
+                    return procs
+                end
+            end
+            """)(addprocs_function, definition, imports)
 
     def validate_loss(
         self,
@@ -123,7 +133,39 @@ class TypeSpec:
             value_type, converted, array.shape
         )
 
-    def _instantiate(self, kind: str, source: str) -> None:
+    def _struct_definition(self) -> str:
+        assert self.fields is not None
+        fields = "\n".join(
+            f"    {name}::{type_}" for name, type_ in self.fields.items()
+        )
+        return f"struct {self.julia_type}\n{fields}\nend"
+
+    def _interface_definitions(self) -> list[str]:
+        definitions = []
+        if self.init_value is not None:
+            definitions.append(self._interface_definition("init", self.init_value))
+        if self.sample_value is not None:
+            definitions.append(self._interface_definition("sample", self.sample_value))
+        if self.mutate_value is not None:
+            definitions.append(self._interface_definition("mutate", self.mutate_value))
+        if self.count_scalar_constants is not None:
+            if isinstance(self.count_scalar_constants, int):
+                definitions.append(
+                    "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                    f"count_scalar_constants(value::{self.julia_type}) = {self.count_scalar_constants}"
+                )
+            else:
+                definitions.append(
+                    self._interface_definition("count", self.count_scalar_constants)
+                )
+        if self.can_optimize is not None:
+            definitions.append(
+                "SymbolicRegression.ConstantOptimizationModule."
+                f"can_optimize(::Type{{{self.julia_type}}}, _) = {str(self.can_optimize).lower()}"
+            )
+        return definitions
+
+    def _interface_definition(self, kind: str, source: str) -> str:
         function = jl.seval(source)
         arity = jl.seval("f -> only(methods(f)).nargs - 1")(function)
         expected = {"init": (0,), "sample": (1, 2), "mutate": (3, 4), "count": (1,)}[
@@ -160,7 +202,7 @@ class TypeSpec:
                 "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
                 f"count_scalar_constants(value::{self.julia_type}) = ({source})(value)"
             )
-        jl.seval(definition)
+        return definition
 
 
 class _DefaultTypeSpec:

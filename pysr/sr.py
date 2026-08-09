@@ -2430,6 +2430,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if self.worker_imports is not None
             else None
         )
+        addprocs_function = (
+            self.type_spec_._wrap_addprocs_function(cluster_manager, jl_worker_imports)
+            if self.type_spec is not None and parallelism == "multiprocessing"
+            else cluster_manager
+        )
         out = SymbolicRegression.equation_search(
             jl_X,
             jl_y,
@@ -2453,7 +2458,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             saved_state=self.julia_state_,
             return_state=True,
             run_id=self.run_id_,
-            addprocs_function=cluster_manager,
+            addprocs_function=addprocs_function,
             heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
             worker_timeout=self.worker_timeout,
             worker_imports=jl_worker_imports,

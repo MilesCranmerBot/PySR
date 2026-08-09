@@ -214,12 +214,25 @@ class TestTypeSpecs(unittest.TestCase):
         sequences = [[1.0, 2.0], [2.0, 3.0], [3.0, 4.0], [4.0, 5.0]]
         X = pd.DataFrame({"x": sequences})
         y = pd.Series(sequences, dtype=object)
+        operator = f"identity_rasp(x::{name}) = x"
+        loss = f"rasp_loss(x::{name}, y::{name}) = x.data == y.data ? 0.0 : 1.0"
+        model = self._tiny_model(spec, operator, loss)
+
+        model.fit(X, y)
+
+        prediction = model.predict(X, index=model.equations_["loss"].idxmin())
+        self.assertEqual([list(value.data) for value in prediction], y.tolist())
+
         model = self._tiny_model(
             spec,
-            f"identity_rasp(x::{name}) = x",
-            f"rasp_loss(x::{name}, y::{name}) = x.data == y.data ? 0.0 : 1.0",
+            operator,
+            loss,
+            parallelism="multiprocessing",
+            procs=2,
+            deterministic=False,
+            random_state=None,
+            worker_imports=["Random"],
         )
-
         model.fit(X, y)
 
         prediction = model.predict(X, index=model.equations_["loss"].idxmin())
