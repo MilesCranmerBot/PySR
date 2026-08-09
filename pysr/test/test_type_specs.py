@@ -362,6 +362,7 @@ class TestTypeSpecs(unittest.TestCase):
         payload_mse = f"payload_mse_{suffix}"
         operator = f"tensor_mul_{suffix}"
         loss = f"tensor_mse_{suffix}"
+        random_payload = f"random_payload_{suffix}"
         payload_type = "Union{Float64, Vector{Float64}, Matrix{Float64}}"
         jl.seval(f"""
             using LinearAlgebra: dot
@@ -378,18 +379,20 @@ class TestTypeSpecs(unittest.TestCase):
             {payload_mse}(a::T, b::T) where {{T<:Union{{Vector{{Float64}}, Matrix{{Float64}}}}}} =
                 size(a) == size(b) && all(isfinite, a) ? sum(abs2, a .- b) / length(a) : Inf
             {payload_mse}(::{payload_type}, ::{payload_type}) = Inf
+
+            {random_payload}(rng) = rand(rng, (randn(rng), randn(rng, 3), randn(rng, 3, 3)))
             """)
         spec = TypeSpec(
             name,
             fields={"data": payload_type},
             init_value=f"() -> {name}(0.0)",
-            sample_value=f"rng -> {name}(randn(rng))",
+            sample_value=f"rng -> {name}({random_payload}(rng))",
             mutate_value=(
-                f"(rng, value, temperature) -> {name}(value.data isa Float64 "
-                "? value.data + temperature * randn(rng) : value.data)"
+                f"(rng, value, temperature) -> rand(rng) < 0.1 "
+                f"? {name}({random_payload}(rng)) "
+                f": {name}(value.data .+ temperature .* randn(rng, size(value.data)...))"
             ),
-            count_scalar_constants=1,
-            can_optimize=False,
+            count_scalar_constants="value -> length(value.data)",
             loss_type="Float64",
         )
 
@@ -414,6 +417,12 @@ class TestTypeSpecs(unittest.TestCase):
         self.assertEqual(np.shape(converted[0, 0].data), ())
         self.assertEqual(np.shape(converted[1, 1].data), (3,))
         self.assertEqual(np.shape(converted[0, 5].data), (3, 3))
+        count = (
+            jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE.count_scalar_constants
+        )
+        self.assertEqual(count(converted[0, 0]), 1)
+        self.assertEqual(count(converted[1, 1]), 3)
+        self.assertEqual(count(converted[0, 5]), 9)
         jl.seval(f"""
             {operator}(a::{name}, b::{name}) = {name}({payload_mul}(a.data, b.data))
             {loss}(a::{name}, b::{name}) = {payload_mse}(a.data, b.data)

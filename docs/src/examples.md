@@ -303,11 +303,16 @@ import pandas as pd
 
 from pysr import PySRRegressor, TypeSpec, jl
 
+jl.seval("using LinearAlgebra: dot")
+
+# A payload is either a scalar, a 3-vector, or a 3x3 matrix:
+jl.seval("const TensorPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}")
+
+# One "multiplication" for every meaningful rank pair: scaling by a scalar,
+# contracting two vectors, applying a matrix to a vector, or composing two
+# matrices. The final method catches the remaining rank pairs (such as a
+# vector times a matrix) with a scalar NaN:
 jl.seval("""
-using LinearAlgebra: dot
-
-const TensorPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}
-
 payload_mul(a::Float64, b::Float64) = a * b
 payload_mul(a::Float64, b::Union{Vector{Float64}, Matrix{Float64}}) = a * b
 payload_mul(a::Union{Vector{Float64}, Matrix{Float64}}, b::Float64) = a * b
@@ -315,24 +320,38 @@ payload_mul(a::Vector{Float64}, b::Vector{Float64}) = dot(a, b)
 payload_mul(a::Matrix{Float64}, b::Vector{Float64}) = a * b
 payload_mul(a::Matrix{Float64}, b::Matrix{Float64}) = a * b
 payload_mul(::TensorPayload, ::TensorPayload) = NaN
+""")
 
+# Elementwise loss over matching shapes; any NaN or shape mismatch maps the
+# candidate to an infinite loss:
+jl.seval("""
 payload_mse(a::Float64, b::Float64) = isfinite(a) ? abs2(a - b) : Inf
 payload_mse(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
     size(a) == size(b) && all(isfinite, a) ? sum(abs2, a .- b) / length(a) : Inf
 payload_mse(::TensorPayload, ::TensorPayload) = Inf
 """)
 
+# Constants sample a random rank:
+jl.seval(
+    "random_payload(rng) = rand(rng, (randn(rng), randn(rng, 3), randn(rng, 3, 3)))"
+)
+
 type_spec = TypeSpec(
     "TensorValue",
     fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
     init_value="() -> TensorValue(0.0)",
-    sample_value="rng -> TensorValue(randn(rng))",
-    mutate_value=(
-        "(rng, value, temperature) -> "
-        "TensorValue(value.data isa Float64 "
-        "? value.data + temperature * randn(rng) : value.data)"
-    ),
-    count_scalar_constants=1,
+    sample_value="rng -> TensorValue(random_payload(rng))",
+    # Mutations usually perturb every scalar in the payload, but occasionally
+    # resample a fresh rank:
+    mutate_value="""
+    (rng, value, temperature) -> if rand(rng) < 0.1
+        TensorValue(random_payload(rng))
+    else
+        TensorValue(value.data .+ temperature .* randn(rng, size(value.data)...))
+    end
+    """,
+    # The number of scalar degrees of freedom in a constant: 1, 3, or 9
+    count_scalar_constants="value -> length(value.data)",
     loss_type="Float64",
 )
 ```
@@ -341,10 +360,6 @@ type_spec = TypeSpec(
 constant optimizer only understands numeric types by default. The
 `count_scalar_constants` field is still required: the search uses it to weight
 constant mutations even when the optimizer is disabled.
-
-The final `payload_mul` method catches unsupported rank pairs, such as a vector
-times a matrix. It returns a scalar `NaN`, and the loss maps any such candidate
-to `Inf`.
 
 Now generate scalar, vector, and matrix inputs for the energy law:
 
