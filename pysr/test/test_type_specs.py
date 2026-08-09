@@ -98,6 +98,21 @@ class TestTypeSpecs(unittest.TestCase):
             "b",
         )
 
+    def test_type_spec_can_optimize_defaults(self):
+        name = f"NoOptValue_{uuid.uuid4().hex}"
+        value_type = TypeSpec(name, fields={"data": "Float64"}).instantiate()
+        self.assertFalse(
+            jl.SymbolicRegression.ConstantOptimizationModule.can_optimize(
+                value_type, jl.nothing
+            )
+        )
+        float_type = TypeSpec("Float64").instantiate()
+        self.assertTrue(
+            jl.SymbolicRegression.ConstantOptimizationModule.can_optimize(
+                float_type, jl.nothing
+            )
+        )
+
     def test_type_spec_old_checkpoint_state(self):
         state = PySRRegressor().__dict__.copy()
         del state["type_spec"]

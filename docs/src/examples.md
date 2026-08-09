@@ -333,10 +333,14 @@ type_spec = TypeSpec(
         "? value.data + temperature * randn(rng) : value.data)"
     ),
     count_scalar_constants=1,
-    can_optimize=False,
     loss_type="Float64",
 )
 ```
+
+`can_optimize` defaults to `False` for non-numeric value types, since the
+constant optimizer only understands numeric types by default. The
+`count_scalar_constants` field is still required: the search uses it to weight
+constant mutations even when the optimizer is disabled.
 
 The final `payload_mul` method catches unsupported rank pairs, such as a vector
 times a matrix. It returns a scalar `NaN`, and the loss maps any such candidate

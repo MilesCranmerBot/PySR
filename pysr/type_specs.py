@@ -205,10 +205,19 @@ class TypeSpec:
                 definitions.append(
                     self._interface_definition("count", self.count_scalar_constants)
                 )
-        if self.can_optimize is not None:
+        can_optimize = self.can_optimize
+        if can_optimize is None:
+            # The backend only defines `can_optimize` for `Number` types, so
+            # non-numeric value types default to `false` rather than a
+            # `MethodError` when the optimizer runs.
+            is_number = self.fields is None and bool(
+                jl.seval(f"({self.julia_type}) <: Number")
+            )
+            can_optimize = None if is_number else False
+        if can_optimize is not None:
             definitions.append(
                 "SymbolicRegression.ConstantOptimizationModule."
-                f"can_optimize(::Type{{{self.julia_type}}}, _) = {str(self.can_optimize).lower()}"
+                f"can_optimize(::Type{{{self.julia_type}}}, _) = {str(can_optimize).lower()}"
             )
         return definitions
 
