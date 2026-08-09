@@ -396,6 +396,7 @@ class TestTypeSpecs(unittest.TestCase):
         loss = f"nn_mse_{suffix}"
         payload_matmul = f"nn_payload_matmul_{suffix}"
         payload_add = f"nn_payload_add_{suffix}"
+        random_payload = f"nn_random_payload_{suffix}"
         payload_type = "Union{Float64, Vector{Float64}, Matrix{Float64}}"
         jl.seval(f"""
             {payload_matmul}(a::Matrix{{Float64}}, b::Vector{{Float64}}) =
@@ -406,18 +407,20 @@ class TestTypeSpecs(unittest.TestCase):
                 T<:Union{{Vector{{Float64}}, Matrix{{Float64}}}}
             }} = size(a) == size(b) ? a + b : NaN
             {payload_add}(::{payload_type}, ::{payload_type}) = NaN
+            function {random_payload}(rng)
+                rank = rand(rng, 0:2)
+                rank == 0 ? randn(rng) : rank == 1 ? randn(rng, 2) : randn(rng, 2, 2)
+            end
             """)
         spec = TypeSpec(
             name,
             fields={"data": payload_type},
             init_value=f"() -> {name}(0.0)",
-            sample_value=(
-                f"rng -> {name}(rand(rng, "
-                "(randn(rng), randn(rng, 2), randn(rng, 2, 2))))"
-            ),
+            sample_value=f"rng -> {name}({random_payload}(rng))",
             mutate_value=(
-                f"(rng, value, temperature) -> {name}(value.data .+ "
-                "temperature .* randn(rng, size(value.data)...))"
+                f"(rng, value, temperature) -> rand(rng) < 0.1 "
+                f"? {name}({random_payload}(rng)) "
+                f": {name}(value.data .+ temperature .* randn(rng, size(value.data)...))"
             ),
             count_scalar_constants="value -> length(value.data)",
             pack_scalar_constants="""
@@ -469,8 +472,8 @@ class TestTypeSpecs(unittest.TestCase):
                 "size(a.data) == size(b.data) ? "
                 "sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
             ),
-            niterations=30,
-            populations=4,
+            niterations=40,
+            populations=8,
             maxsize=11,
             parallelism="serial",
             deterministic=True,

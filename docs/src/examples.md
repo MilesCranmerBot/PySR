@@ -315,17 +315,27 @@ safe_add(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
 safe_add(::NNPayload, ::NNPayload) = NaN
 """)
 
+# Constants sample a random rank, generating only the payload that was chosen:
+jl.seval("""
+function random_nn_payload(rng)
+    rank = rand(rng, 0:2)
+    rank == 0 ? randn(rng) : rank == 1 ? randn(rng, 2) : randn(rng, 2, 2)
+end
+""")
+
 type_spec = TypeSpec(
     "NNValue",
     fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
     init_value="() -> NNValue(0.0)",
-    sample_value="""
-    rng -> NNValue(rand(rng, (randn(rng), randn(rng, 2), randn(rng, 2, 2))))
-    """,
+    sample_value="rng -> NNValue(random_nn_payload(rng))",
+    # Mutations usually perturb every scalar in the payload, but occasionally
+    # resample a fresh rank:
     mutate_value="""
-    (rng, value, temperature) -> NNValue(
-        value.data .+ temperature .* randn(rng, size(value.data)...)
-    )
+    (rng, value, temperature) -> if rand(rng) < 0.1
+        NNValue(random_nn_payload(rng))
+    else
+        NNValue(value.data .+ temperature .* randn(rng, size(value.data)...))
+    end
     """,
     count_scalar_constants="value -> length(value.data)",
     pack_scalar_constants="""
@@ -401,9 +411,9 @@ print(model.equations_)
 ```
 
 The search recovers a two-layer form such as
-`nn_add(nn_matmul(W2, nn_relu(nn_matmul(W1, nn_add(x, c)))), b2)`. Here the
-hidden bias is absorbed into $c$ through $b_1 = W_1c$; each displayed
-`NNValue` contains the fitted matrix or vector payload.
+`nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. Both biases
+are absorbed into the fitted constants, through $b_1 = W_1c$ and $b_2 = W_2b$;
+each displayed `NNValue` contains the fitted matrix or vector payload.
 
 ## 8. Complex numbers
 
