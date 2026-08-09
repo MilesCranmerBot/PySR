@@ -2517,6 +2517,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         X,
         y,
         *,
+        sample_weight=None,
         Xresampled=None,
         weights=None,
         variable_names: ArrayLike[str] | None = None,
@@ -2538,12 +2539,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             Resampled training data, of shape (n_resampled, n_features),
             to generate a denoised data on. This
             will be used as the training data, rather than `X`.
-        weights : ndarray | pandas.DataFrame
+        sample_weight : ndarray | pandas.DataFrame
             Weight array of the same shape as `y`.
             Each element is how to weight the mean-square-error loss
             for that particular element of `y`. Alternatively,
             if a custom `loss` was set, it will can be used
             in arbitrary ways.
+        weights : ndarray | pandas.DataFrame
+            Deprecated alias for `sample_weight`.
         variable_names : list[str]
             A list of names for the variables, rather than "x0", "x1", etc.
             If `X` is a pandas dataframe, the column names will be used
@@ -2564,6 +2567,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self : object
             Fitted estimator.
         """
+        if sample_weight is not None:
+            if weights is not None:
+                raise ValueError(
+                    "Pass only one of `sample_weight` and `weights` "
+                    "(`weights` is a deprecated alias)."
+                )
+            weights = sample_weight
+
         # Init attributes that are not specified in BaseEstimator
         if self.warm_start and hasattr(self, "julia_state_stream_"):
             pass

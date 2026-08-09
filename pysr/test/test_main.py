@@ -111,7 +111,9 @@ class TestPipeline(unittest.TestCase):
             early_stop_condition="stop_if(loss, complexity) = loss < 1e-4 && complexity == 1",
             bumper=True,
         )
-        model.fit(self.X, y, weights=weights)
+        with self.assertRaisesRegex(ValueError, "deprecated alias"):
+            model.fit(self.X, y, sample_weight=weights, weights=weights)
+        model.fit(self.X, y, sample_weight=weights)
         print(model.equations_)
         self.assertLessEqual(model.get_best()["loss"], 1e-4)
         self.assertEqual(
