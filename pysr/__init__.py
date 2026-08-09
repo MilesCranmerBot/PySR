@@ -29,7 +29,6 @@ from .export_torch import sympy2torch
 from .expression_specs import (
     AbstractExpressionSpec,
     ExpressionSpec,
-    ParametricExpressionSpec,
     TemplateExpressionSpec,
 )
 from .julia_extensions import load_all_packages
@@ -54,7 +53,6 @@ __all__ = [
     "AbstractExpressionSpec",
     "ExpressionSpec",
     "TemplateExpressionSpec",
-    "ParametricExpressionSpec",
     "AbstractLoggerSpec",
     "TensorBoardLoggerSpec",
     "best",

@@ -23,7 +23,7 @@ const nav = [
   { text: 'API', link: '/api' },
   {
     text: 'Forum',
-    link: 'https://github.com/MilesCranmer/PySR/discussions'
+    link: 'https://github.com/astroautomata/PySR/discussions'
   },
   {
     text: 'Python',
@@ -131,16 +131,17 @@ export default defineConfig({
         text: 'Advanced',
         items: [
           { text: 'Tuning', link: '/tuning' },
+          { text: 'Slurm', link: '/slurm' },
           { text: 'Backend', link: '/backend' },
         ]
       }
     ],
     editLink: {
-      pattern: 'https://github.com/MilesCranmer/PySR/edit/master/docs/:path',
+      pattern: 'https://github.com/astroautomata/PySR/edit/master/docs/:path',
       text: 'Edit this page on GitHub'
     },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/MilesCranmer/PySR' }
+      { icon: 'github', link: 'https://github.com/astroautomata/PySR' }
     ],
     footer: {
       message: 'Made with <a href="https://vitepress.dev" target="_blank"><strong>VitePress</strong></a>',

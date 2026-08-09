@@ -463,7 +463,7 @@ that looks at the error in log-space:
 
 ```python
 elementwise_loss = """function loss_fnc(prediction, target)
-    scatter_loss = abs(log((abs(prediction)+1e-20) / (abs(target)+1e-20)))
+    scatter_loss = abs(log((abs(prediction)+1f-20) / (abs(target)+1f-20)))
     sign_loss = 10 * (sign(prediction) - sign(target))^2
     return scatter_loss + sign_loss
 end
@@ -611,7 +611,7 @@ corresponding to the index we defined in `variable_names`.
 
 ```python
 category_p_one = category + 1
-X_with_category = np.column_stack([X, category])
+X_with_category = np.column_stack([X, category_p_one])
 ```
 
 Now, we can fit our model:
