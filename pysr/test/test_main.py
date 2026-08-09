@@ -1487,6 +1487,10 @@ class TestMiscellaneous(unittest.TestCase):
                 "check_do_not_raise_errors_in_init_or_set_params",
                 # TODO:
                 "check_n_features_in_after_fitting",
+                # Weighting cannot be statistically equivalent to sample
+                # repetition for a stochastic search
+                "check_sample_weight_equivalence_on_dense_data",
+                "check_sample_weight_equivalence_on_sparse_data",
             }:
                 continue
             try:

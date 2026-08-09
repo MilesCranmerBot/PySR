@@ -198,7 +198,13 @@ def _check_assertions(
     assert len(y.shape) in [1, 2]
     assert X.shape[0] == y.shape[0]
     if weights is not None:
-        assert weights.shape == y.shape
+        if weights.shape != y.shape:
+            raise ValueError(
+                "`sample_weight` must have the same shape as `y`; "
+                f"got {weights.shape} and {y.shape}."
+            )
+        if not np.any(weights):
+            raise ValueError("`sample_weight` cannot be all zeros.")
         assert X.shape[0] == weights.shape[0]
     if use_custom_variable_names:
         assert len(variable_names) == X.shape[1]
