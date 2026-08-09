@@ -446,7 +446,7 @@ class TestTypeSpecs(unittest.TestCase):
         )
 
         rng = np.random.default_rng(0)
-        x_values = rng.normal(size=(24, 2))
+        x_values = rng.normal(size=(64, 2))
         W1 = np.array([[1.2, -0.7], [0.5, 1.1]])
         b1 = np.array([0.3, -0.2])
         W2 = np.array([[0.8, -1.0], [1.3, 0.4]])
