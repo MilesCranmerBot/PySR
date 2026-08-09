@@ -27,19 +27,17 @@ class _ParameterlessMutation(AbstractMutation):
 class ConstantMutation(AbstractMutation):
     """Perturb a constant.
 
-    Settings left as ``None`` use the SymbolicRegression.jl defaults.
+    Defaults match SymbolicRegression.jl.
     """
 
-    perturbation_factor: float | None = None
-    probability_negate: float | None = None
+    perturbation_factor: float = 0.086
+    probability_negate: float = 0.01
 
     def julia_mutation(self) -> AnyValue:
-        kwargs: dict[str, float] = {}
-        if self.perturbation_factor is not None:
-            kwargs["perturbation_factor"] = self.perturbation_factor
-        if self.probability_negate is not None:
-            kwargs["probability_negate"] = self.probability_negate
-        return SymbolicRegression.ConstantMutation(**kwargs)
+        return SymbolicRegression.ConstantMutation(
+            perturbation_factor=self.perturbation_factor,
+            probability_negate=self.probability_negate,
+        )
 
 
 @dataclass(frozen=True)
