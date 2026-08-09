@@ -775,6 +775,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         `["x0 + x1", "x0^2"]`, `[["x0"], ["x1"]]` (multi-output),
         `[{"f": "#1 + #2"}]` (TemplateExpressionSpec where `#1`, `#2` are
         placeholders for the 1st, 2nd arguments of expression `f`).
+        Julia `Expr` objects may also be passed, which is useful for
+        seeding `type_spec` searches with non-scalar constants.
         Default is `None`.
     verbosity : int
         What verbosity level to use. 0 means minimal print statements.
@@ -1051,6 +1053,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             | list[list[str]]
             | list[dict[str, str]]
             | list[list[dict[str, str]]]
+            | list[AnyValue]
+            | list[list[AnyValue]]
             | None
         ) = None,
         verbosity: int = 1,

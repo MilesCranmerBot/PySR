@@ -522,10 +522,10 @@ class TestTypeSpecs(unittest.TestCase):
             progress=False,
             verbosity=0,
             temp_equation_file=True,
+            guesses=[guess],
             should_optimize_constants=True,
             optimizer_nrestarts=0,
         )
-        model.set_params(guesses=[guess])
 
         model.fit(X, y)
 
