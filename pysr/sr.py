@@ -10,7 +10,7 @@ import re
 import sys
 import tempfile
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from io import StringIO
 from multiprocessing import cpu_count
@@ -52,6 +52,23 @@ from .julia_helpers import (
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
 from .logger_specs import AbstractLoggerSpec
+from .mutations import (
+    AbstractMutation,
+    AddNodeMutation,
+    BacksolveMutation,
+    ConstantMutation,
+    DeleteNodeMutation,
+    DoNothingMutation,
+    FeatureMutation,
+    InsertNodeMutation,
+    OperatorMutation,
+    OptimizeMutation,
+    RandomizeMutation,
+    RotateTreeMutation,
+    SimplifyMutation,
+    SwapOperandsMutation,
+)
+from .plugins import AbstractPlugin
 from .utils import (
     ArrayLike,
     PathLike,
@@ -73,6 +90,22 @@ try:
 except ImportError:
     from typing_extensions import List
 
+
+_LEGACY_MUTATION_TYPES: tuple[tuple[type[AbstractMutation], str], ...] = (
+    (AddNodeMutation, "weight_add_node"),
+    (InsertNodeMutation, "weight_insert_node"),
+    (DeleteNodeMutation, "weight_delete_node"),
+    (DoNothingMutation, "weight_do_nothing"),
+    (ConstantMutation, "weight_mutate_constant"),
+    (OperatorMutation, "weight_mutate_operator"),
+    (FeatureMutation, "weight_mutate_feature"),
+    (SwapOperandsMutation, "weight_swap_operands"),
+    (RotateTreeMutation, "weight_rotate_tree"),
+    (RandomizeMutation, "weight_randomize"),
+    (SimplifyMutation, "weight_simplify"),
+    (OptimizeMutation, "weight_optimize"),
+    (BacksolveMutation, "weight_backsolve"),
+)
 
 ALREADY_RAN = False
 
@@ -627,9 +660,20 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         every iteration. Using it as a mutation is useful if you want to use
         a large `ncycles_periteration`, and may not optimize very often.
         Default is `0.0`.
+    weight_backsolve : float
+        Relative likelihood for backsolve mutation. To configure its parameters,
+        pass `BacksolveMutation(...)` through `mutations` instead.
+        Default is `0.0`.
+    default_mutations : Mapping[AbstractMutation, float] | None
+        Default mutation configurations and their weights. This replaces the
+        defaults configured by the legacy `weight_*` parameters when provided.
+        Default is `None`.
+    mutations : Mapping[AbstractMutation, float] | None
+        Mutation configurations and their weights. Entries override or extend
+        `default_mutations` by mutation type. Default is `None`.
     crossover_probability : float
         Absolute probability of crossover-type genetic operation, instead of a mutation.
-        Default is `0.0259`.
+        Default is `0.2`.
     skip_mutation_failures : bool
         Whether to skip mutation and crossover failures, rather than
         simply re-sampling the current member.
@@ -776,6 +820,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         Logger specification for the Julia backend. See, for example,
         `TensorBoardLoggerSpec`.
         Default is `None`.
+    default_plugins : Sequence[AbstractPlugin] | None
+        Default plugin configurations. This replaces the plugins configured by
+        `annealing`, `alpha`, `use_frequency`, and
+        `use_frequency_in_tournament` when provided. Default is `None`.
+    plugins : Sequence[AbstractPlugin] | None
+        Plugin configurations. Entries override or extend `default_plugins` by
+        plugin type. Default is `None`.
     input_stream : str
         The stream to read user input from. By default, this is `"stdin"`.
         If you encounter issues with reading from `stdin`, like a hang,
@@ -993,7 +1044,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         weight_randomize: float = 0.000502,
         weight_simplify: float = 0.00209,
         weight_optimize: float = 0.0,
-        crossover_probability: float = 0.0259,
+        weight_backsolve: float = 0.0,
+        default_mutations: Mapping[AbstractMutation, float] | None = None,
+        mutations: Mapping[AbstractMutation, float] | None = None,
+        crossover_probability: float = 0.2,
         skip_mutation_failures: bool = True,
         migration: bool = True,
         hof_migration: bool = True,
@@ -1041,6 +1095,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         print_precision: int = 5,
         progress: bool = True,
         logger_spec: AbstractLoggerSpec | None = None,
+        default_plugins: Sequence[AbstractPlugin] | None = None,
+        plugins: Sequence[AbstractPlugin] | None = None,
         input_stream: str = "stdin",
         run_id: str | None = None,
         output_directory: str | None = None,
@@ -1110,6 +1166,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.weight_randomize = weight_randomize
         self.weight_simplify = weight_simplify
         self.weight_optimize = weight_optimize
+        self.weight_backsolve = weight_backsolve
+        self.default_mutations = default_mutations
+        self.mutations = mutations
         self.crossover_probability = crossover_probability
         self.skip_mutation_failures = skip_mutation_failures
         # -- Migration parameters
@@ -1156,6 +1215,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.print_precision = print_precision
         self.progress = progress
         self.logger_spec = logger_spec
+        self.default_plugins = default_plugins
+        self.plugins = plugins
         self.input_stream = input_stream
         # - Project management
         self.run_id = run_id
@@ -2169,20 +2230,43 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         else:
             autodiff_backend = None
 
-        mutation_weights = SymbolicRegression.MutationWeights(
-            mutate_constant=self.weight_mutate_constant,
-            mutate_operator=self.weight_mutate_operator,
-            mutate_feature=self.weight_mutate_feature,
-            swap_operands=self.weight_swap_operands,
-            rotate_tree=self.weight_rotate_tree,
-            add_node=self.weight_add_node,
-            insert_node=self.weight_insert_node,
-            delete_node=self.weight_delete_node,
-            simplify=self.weight_simplify,
-            randomize=self.weight_randomize,
-            do_nothing=self.weight_do_nothing,
-            optimize=self.weight_optimize,
+        configured_default_mutations = (
+            {
+                mutation_type(): getattr(self, parameter)
+                for mutation_type, parameter in _LEGACY_MUTATION_TYPES
+            }
+            if self.default_mutations is None
+            else self.default_mutations
         )
+        create_mutations = jl.seval(
+            "pairs -> Pair{AbstractMutation,Float64}[mutation => weight for (mutation, weight) in pairs]"
+        )
+
+        def convert_mutations(
+            mutation_weights: Mapping[AbstractMutation, float],
+        ) -> AnyValue:
+            mutation_pairs = jl_array(
+                [
+                    (
+                        mutation.julia_mutation(
+                            perturbation_factor=self.perturbation_factor,
+                            probability_negate_constant=self.probability_negate_constant,
+                        ),
+                        weight,
+                    )
+                    for mutation, weight in mutation_weights.items()
+                ]
+            )
+            return create_mutations(mutation_pairs)
+
+        default_mutations = convert_mutations(configured_default_mutations)
+        mutations = convert_mutations(self.mutations or {})
+        default_plugins = (
+            None
+            if self.default_plugins is None
+            else jl_array([plugin.julia_plugin() for plugin in self.default_plugins])
+        )
+        plugins = jl_array([plugin.julia_plugin() for plugin in (self.plugins or [])])
 
         # Convert operators dict to Julia format and create OperatorEnum
         # Fill in empty tuples for missing arities up to max arity
@@ -2260,7 +2344,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 )
                 else len(X)
             ),
-            mutation_weights=mutation_weights,
+            default_mutations=default_mutations,
+            mutations=mutations,
+            default_plugins=default_plugins,
+            plugins=plugins,
             tournament_selection_p=self.tournament_selection_p,
             tournament_selection_n=self.tournament_selection_n,
             # These have the same name:

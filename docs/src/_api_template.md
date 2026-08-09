@@ -94,3 +94,55 @@ PARAMSKEY
         show_root_heading: true
         heading_level: 3
         show_root_full_path: false
+
+## Mutations
+
+::: pysr.AbstractMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.ConstantMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.BacksolveMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+## Plugins
+
+::: pysr.AdaptiveMutationWeightsPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AdaptiveParsimonyPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.MutationBurstPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.SimulatedAnnealingPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AbstractPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false

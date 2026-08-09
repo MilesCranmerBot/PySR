@@ -1540,6 +1540,183 @@ class TestMiscellaneous(unittest.TestCase):
 
         self.assertTrue(any("progress bar" in str(w.message) for w in caught))
 
+    def test_builtin_mutation_and_plugin_configs(self):
+        from pysr import (
+            AdaptiveMutationWeightsPlugin,
+            BacksolveMutation,
+            MutationBurstPlugin,
+            OperatorMutation,
+        )
+
+        mutation_name = jl.seval("m -> string(nameof(typeof(m)))")
+        for mutation, expected_name in (
+            (OperatorMutation(), "OperatorMutation"),
+            (BacksolveMutation(lambda_=0.2), "BacksolveMutation"),
+        ):
+            julia_mutation = mutation.julia_mutation(
+                perturbation_factor=0.1,
+                probability_negate_constant=0.01,
+            )
+            self.assertEqual(str(mutation_name(julia_mutation)), expected_name)
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        for plugin, expected_name in (
+            (
+                AdaptiveMutationWeightsPlugin(reward="loss"),
+                "AdaptiveMutationWeightsPlugin",
+            ),
+            (MutationBurstPlugin(retry_attempts=2), "MutationBurstPlugin"),
+        ):
+            self.assertEqual(str(plugin_name(plugin.julia_plugin())), expected_name)
+
+    def test_mutation_and_plugin_configuration(self):
+        from pysr import (
+            AdaptiveParsimonyPlugin,
+            BacksolveMutation,
+            ConstantMutation,
+            RandomizeMutation,
+            SimulatedAnnealingPlugin,
+        )
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            perturbation_factor=0.7,
+            probability_negate_constant=0.8,
+            weight_randomize=0.3,
+            weight_backsolve=0.01,
+            mutations={
+                BacksolveMutation(max_library_size=123): 0.02,
+                ConstantMutation(perturbation_factor=0.2): 0.5,
+                RandomizeMutation(): 0.4,
+            },
+            plugins=[
+                SimulatedAnnealingPlugin(alpha=0.4),
+                AdaptiveParsimonyPlugin(tournament=False, mutation_acceptance=False),
+            ],
+        )
+        model.fit(X, y)
+
+        options = model.julia_options_
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        mutation_by_name = {
+            str(mutation_name(pair)): pair for pair in options.mutations
+        }
+        self.assertEqual(options.crossover_probability, 0.2)
+        expected_weights = {
+            "AddNodeMutation": 2.47,
+            "InsertNodeMutation": 0.0112,
+            "DeleteNodeMutation": 0.870,
+            "DoNothingMutation": 0.273,
+            "ConstantMutation": 0.5,
+            "OperatorMutation": 0.293,
+            "FeatureMutation": 0.1,
+            "SwapOperandsMutation": 0.198,
+            "RotateTreeMutation": 4.26,
+            "RandomizeMutation": 0.4,
+            "SimplifyMutation": 0.00209,
+            "OptimizeMutation": 0.0,
+            "BacksolveMutation": 0.02,
+        }
+        self.assertSetEqual(set(mutation_by_name), set(expected_weights))
+        for name, weight in expected_weights.items():
+            self.assertEqual(float(jl.last(mutation_by_name[name])), weight)
+        constant_mutation = jl.first(mutation_by_name["ConstantMutation"])
+        self.assertEqual(constant_mutation.perturbation_factor, 0.2)
+        self.assertEqual(constant_mutation.probability_negate, 0.8)
+        self.assertEqual(
+            jl.first(mutation_by_name["BacksolveMutation"]).max_library_size,
+            123,
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {str(plugin_name(plugin)): plugin for plugin in options.plugins}
+        self.assertSetEqual(
+            set(plugins), {"SimulatedAnnealingPlugin", "AdaptiveParsimonyPlugin"}
+        )
+        self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
+        self.assertFalse(plugins["AdaptiveParsimonyPlugin"].tournament)
+        self.assertFalse(plugins["AdaptiveParsimonyPlugin"].mutation_acceptance)
+
+    def test_default_mutation_and_plugin_configuration(self):
+        from pysr import (
+            BacksolveMutation,
+            MutationBurstPlugin,
+            OperatorMutation,
+            SimulatedAnnealingPlugin,
+        )
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            default_mutations={OperatorMutation(): 0.7},
+            mutations={BacksolveMutation(max_library_size=123): 0.2},
+            default_plugins=[MutationBurstPlugin(retry_attempts=2)],
+            plugins=[SimulatedAnnealingPlugin(alpha=0.4)],
+        )
+        model.fit(X, y)
+
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in model.julia_options_.mutations
+        }
+        self.assertDictEqual(
+            weights,
+            {"OperatorMutation": 0.7, "BacksolveMutation": 0.2},
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {
+            str(plugin_name(plugin)): plugin for plugin in model.julia_options_.plugins
+        }
+        self.assertSetEqual(
+            set(plugins), {"MutationBurstPlugin", "SimulatedAnnealingPlugin"}
+        )
+        self.assertEqual(plugins["MutationBurstPlugin"].retry_attempts, 2)
+        self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
+
+    def test_legacy_mutation_weight_override(self):
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            weight_randomize=0.3,
+            weight_backsolve=0.2,
+        )
+        model.fit(X, y)
+
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in model.julia_options_.mutations
+        }
+        self.assertEqual(weights["RandomizeMutation"], 0.3)
+        self.assertEqual(weights["BacksolveMutation"], 0.2)
+
     def test_param_groupings(self):
         """Test that param_groupings are complete"""
         param_groupings_file = Path(__file__).parent.parent / "param_groupings.yml"

@@ -33,6 +33,29 @@ from .expression_specs import (
 )
 from .julia_extensions import load_all_packages
 from .logger_specs import AbstractLoggerSpec, TensorBoardLoggerSpec
+from .mutations import (
+    AbstractMutation,
+    AddNodeMutation,
+    BacksolveMutation,
+    ConstantMutation,
+    DeleteNodeMutation,
+    DoNothingMutation,
+    FeatureMutation,
+    InsertNodeMutation,
+    OperatorMutation,
+    OptimizeMutation,
+    RandomizeMutation,
+    RotateTreeMutation,
+    SimplifyMutation,
+    SwapOperandsMutation,
+)
+from .plugins import (
+    AbstractPlugin,
+    AdaptiveMutationWeightsPlugin,
+    AdaptiveParsimonyPlugin,
+    MutationBurstPlugin,
+    SimulatedAnnealingPlugin,
+)
 from .sr import PySRRegressor
 
 try:
@@ -55,6 +78,25 @@ __all__ = [
     "TemplateExpressionSpec",
     "AbstractLoggerSpec",
     "TensorBoardLoggerSpec",
+    "AbstractMutation",
+    "ConstantMutation",
+    "OperatorMutation",
+    "FeatureMutation",
+    "SwapOperandsMutation",
+    "AddNodeMutation",
+    "InsertNodeMutation",
+    "DeleteNodeMutation",
+    "RotateTreeMutation",
+    "BacksolveMutation",
+    "SimplifyMutation",
+    "RandomizeMutation",
+    "OptimizeMutation",
+    "DoNothingMutation",
+    "AbstractPlugin",
+    "AdaptiveMutationWeightsPlugin",
+    "AdaptiveParsimonyPlugin",
+    "MutationBurstPlugin",
+    "SimulatedAnnealingPlugin",
     "best",
     "best_callable",
     "best_row",

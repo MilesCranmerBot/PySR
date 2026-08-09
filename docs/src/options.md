@@ -7,6 +7,7 @@ may find useful include:
 - [Operators](#operators)
 - [Number of outer search iterations](#iterations)
 - [Number of inner search iterations](#cycles-per-iteration)
+- [Mutations and plugins](#mutations-and-plugins)
 - [Multi-processing](#processors)
 - [Populations](#populations)
 - [Data weighting](#weighted-data)
@@ -87,6 +88,43 @@ worker needs to reduce and distribute new equations less often, and also increas
 diversity. But at the same
 time, a smaller number it might be that migrating equations from the hall of fame helps
 each population stay closer to the best current equations.
+
+## Mutations and plugins
+
+Use `mutations` to override or extend individual mutation weights:
+
+```python
+from pysr import BacksolveMutation, ConstantMutation, PySRRegressor
+
+model = PySRRegressor(
+    mutations={
+        ConstantMutation(): 0.5,
+        BacksolveMutation(max_library_size=500): 0.02,
+    }
+)
+```
+
+The existing `weight_*` parameters configure PySR's default mutation set.
+Pass `default_mutations` to replace that set, or `mutations` to override or
+extend it by mutation type.
+
+Plugins are configured as a sequence:
+
+```python
+from pysr import AdaptiveMutationWeightsPlugin, MutationBurstPlugin
+
+model = PySRRegressor(
+    plugins=[
+        AdaptiveMutationWeightsPlugin(),
+        MutationBurstPlugin(compound_probability=0.1),
+    ]
+)
+```
+
+The `annealing`, `alpha`, `use_frequency`, and
+`use_frequency_in_tournament` parameters configure the default plugins. Pass
+`default_plugins` to replace that sequence, or `plugins` to override or extend
+it by plugin type.
 
 ## Processors
 
