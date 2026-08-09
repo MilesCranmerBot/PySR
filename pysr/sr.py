@@ -52,7 +52,12 @@ from .julia_helpers import (
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
 from .logger_specs import AbstractLoggerSpec
-from .type_specs import _DEFAULT_TYPE_SPEC, TypeSpec
+from .type_specs import (
+    _DEFAULT_TYPE_SPEC,
+    TypeSpec,
+    object_array_1d,
+    object_array_2d,
+)
 from .utils import (
     ArrayLike,
     PathLike,
@@ -1451,16 +1456,22 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         ):
             pickled_state["output_torch_format"] = False
             pickled_state["output_jax_format"] = False
+            unpicklable_columns = ["jax_format", "torch_format"]
+            if getattr(self, "type_spec", None) is not None:
+                # Live Julia objects cannot be unpickled in a fresh process
+                # before the TypeSpec definitions exist; these columns are
+                # rebuilt from `julia_state_` via `refresh()`.
+                unpicklable_columns += ["julia_expression", "lambda_format"]
             if self.nout_ == 1:
                 pickled_columns = ~pickled_state["equations_"].columns.isin(
-                    ["jax_format", "torch_format"]
+                    unpicklable_columns
                 )
                 pickled_state["equations_"] = (
                     pickled_state["equations_"].loc[:, pickled_columns].copy()
                 )
             else:
                 pickled_columns = [
-                    ~dataframe.columns.isin(["jax_format", "torch_format"])
+                    ~dataframe.columns.isin(unpicklable_columns)
                     for dataframe in pickled_state["equations_"]
                 ]
                 pickled_state["equations_"] = [
@@ -1470,6 +1481,12 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     )
                 ]
         return pickled_state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # Checkpoints from before the `type_spec` parameter existed lack the
+        # attribute entirely, since `__init__` is not rerun during unpickling.
+        state.setdefault("type_spec", None)
+        self.__dict__.update(state)
 
     def _checkpoint(self):
         """Save the model's current state to a checkpoint file.
@@ -1785,12 +1802,27 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             Validated units for `y`.
 
         """
+        if (
+            complexity_of_variables is not None
+            and self.complexity_of_variables is not None
+        ):
+            raise ValueError(
+                "You cannot set `complexity_of_variables` at both `fit` and `__init__`. "
+                "Pass it at `__init__` to set it to global default, OR use `fit` to set it for "
+                "each variable individually."
+            )
+        elif complexity_of_variables is None:
+            complexity_of_variables = self.complexity_of_variables
+
         if self.type_spec is not None:
             if Xresampled is not None or self.denoise or self.select_k_features:
                 raise NotImplementedError(
                     "TypeSpec does not support resampling, denoising, or feature selection."
                 )
-            if self.expression_spec is not None:
+            if (
+                self.expression_spec is not None
+                and type(self.expression_spec) is not ExpressionSpec
+            ):
                 raise NotImplementedError(
                     "TypeSpec currently supports only the default expression shape."
                 )
@@ -1803,29 +1835,38 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 variable_names = X.columns.astype(str).to_numpy()
                 X = X.to_numpy(dtype=object)
             else:
-                X = np.asarray(X, dtype=object)
+                X = object_array_2d(X)
             if X.ndim != 2:
                 raise ValueError("TypeSpec X must be a 2D array of logical values.")
+            if variable_names is not None and any(
+                " " in name for name in variable_names
+            ):
+                variable_names = [name.replace(" ", "_") for name in variable_names]
+                warnings.warn(
+                    "Spaces in variable names are not supported. "
+                    "Spaces have been replaced with underscores. \n"
+                    "Please use valid names instead."
+                )
 
             if isinstance(y, (pd.Series, pd.DataFrame)):
                 y = y.to_numpy(dtype=object)
-                if y.ndim == 2 and y.shape[1] == 1:
-                    y = y[:, 0]
-            elif isinstance(y, np.ndarray) and y.dtype == object:
-                y = y.copy()
             else:
-                values = list(y)
-                y = np.empty(len(values), dtype=object)
-                y[:] = values
+                y = object_array_1d(y)
+            if y.ndim == 2 and y.shape[1] == 1:
+                y = y[:, 0]
             if y.ndim != 1:
                 raise NotImplementedError("TypeSpec currently supports one output.")
             if X.shape[0] != y.shape[0]:
                 raise ValueError("X and y have inconsistent numbers of samples.")
+            if X.shape[0] == 0:
+                raise ValueError("X and y must contain at least one sample.")
 
             if weights is not None:
                 raise NotImplementedError(
                     "TypeSpec does not currently support weights."
                 )
+            if X_units is not None or y_units is not None:
+                raise NotImplementedError("TypeSpec does not currently support units.")
             self.n_features_in_ = X.shape[1]
             if variable_names is None:
                 variable_names = np.array([f"x{i}" for i in range(X.shape[1])])
@@ -1869,22 +1910,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 "Spaces have been replaced with underscores. \n"
                 "Please use valid names instead."
             )
-
-        if (
-            complexity_of_variables is not None
-            and self.complexity_of_variables is not None
-        ):
-            raise ValueError(
-                "You cannot set `complexity_of_variables` at both `fit` and `__init__`. "
-                "Pass it at `__init__` to set it to global default, OR use `fit` to set it for "
-                "each variable individually."
-            )
-        elif complexity_of_variables is not None:
-            complexity_of_variables = complexity_of_variables
-        elif self.complexity_of_variables is not None:
-            complexity_of_variables = self.complexity_of_variables
-        else:
-            complexity_of_variables = None
 
         # Data validation and feature name fetching via sklearn
         # This method sets the n_features_in_ attribute
@@ -2468,7 +2493,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             verbosity=int(self.verbosity),
             logger=logger,
             **(
-                {"loss_type": jl.seval(self.type_spec_.loss_type)}
+                {"loss_type": self.type_spec_.julia_loss_type()}
                 if self.type_spec_.loss_type
                 else {}
             ),
@@ -2685,6 +2710,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         check_is_fitted(
             self, attributes=["selection_mask_", "feature_names_in_", "nout_"]
         )
+        if (
+            self.type_spec is not None
+            and isinstance(self.equations_, pd.DataFrame)
+            and "lambda_format" not in self.equations_.columns
+        ):
+            # Unpickling strips the Julia-backed columns; rebuild them.
+            self.refresh()
         best_equation = self.get_best(index=index)
 
         # When X is an numpy array or a pandas dataframe with a RangeIndex,
@@ -2695,7 +2727,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # generated during fit.
         if not isinstance(X, pd.DataFrame):
             if self.type_spec is not None:
-                X = np.asarray(X, dtype=object)
+                X = object_array_2d(X)
                 if X.ndim != 2:
                     raise ValueError("X must be a 2D array.")
                 if X.shape[1] != self.n_features_in_:
@@ -2732,6 +2764,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # reordered/reindexed to match those of the transformed (denoised and
         # feature selected) X in fit.
         if self.type_spec is not None:
+            X = X.rename(columns=str)
             missing_features = set(self.feature_names_in_) - set(X.columns)
             if missing_features:
                 raise ValueError(f"X is missing features: {sorted(missing_features)}")
@@ -2762,6 +2795,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 "`lambda x: 1/x` is a valid SymPy function defining the operator. "
                 "You can then run `model.refresh()` to re-load the expressions."
             ) from error
+
+    def score(self, X, y, sample_weight=None):
+        if self.type_spec is not None:
+            raise NotImplementedError(
+                "The R^2 `score` is not defined for models using a `type_spec`. "
+                "Evaluate predictions with a metric suited to the value type."
+            )
+        return super().score(X, y, sample_weight=sample_weight)
 
     def sympy(self, index: int | list[int] | None = None):
         """

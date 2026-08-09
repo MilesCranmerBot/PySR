@@ -11,6 +11,7 @@ import pandas as pd
 from .export import add_export_formats
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, SymbolicRegression, jl
+from .type_specs import object_array_1d, object_array_2d
 
 try:
     from typing import TypeAlias
@@ -96,6 +97,12 @@ class ExpressionSpec(AbstractExpressionSpec):
     ):
         if model.type_spec is not None:
             search_output = search_output or model.julia_state_
+            if search_output is None:
+                raise ValueError(
+                    "Cannot reconstruct TypeSpec expressions without serialized "
+                    "Julia state. Load from a run directory containing "
+                    "`checkpoint.pkl` saved by the original search."
+                )
             return _search_output_to_callable_expressions(
                 equations, search_output, i, model.type_spec
             )
@@ -326,14 +333,13 @@ class CallableJuliaExpression:
         self.type_spec = type_spec
 
     def __call__(self, X: np.ndarray, *args):
-        jl_X = (
-            self.type_spec.to_julia_array(X, transpose=True)
-            if self.type_spec is not None
-            else jl_array(X.T)
-        )
+        if self.type_spec is not None:
+            jl_X = self.type_spec.to_julia_array(object_array_2d(X), transpose=True)
+        else:
+            jl_X = jl_array(X.T)
         raw_output = self.expression(jl_X, *args)
         if self.type_spec is not None:
-            return np.asarray(list(raw_output), dtype=object).T
+            return object_array_1d(list(raw_output))
         return np.array(raw_output).T
 
 

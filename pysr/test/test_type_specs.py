@@ -1,3 +1,4 @@
+import pickle
 import unittest
 import uuid
 
@@ -5,9 +6,110 @@ import numpy as np
 import pandas as pd
 
 from pysr import PySRRegressor, TypeSpec, jl
+from pysr.expression_specs import ExpressionSpec, TemplateExpressionSpec
 
 
 class TestTypeSpecs(unittest.TestCase):
+    @staticmethod
+    def _validate_fit_params(model, X, y, **kwargs):
+        params = dict(
+            Xresampled=None,
+            weights=None,
+            variable_names=None,
+            complexity_of_variables=None,
+            X_units=None,
+            y_units=None,
+        )
+        params.update(kwargs)
+        return model._validate_and_set_fit_params(X, y, **params)
+
+    def test_type_spec_fit_validation(self):
+        spec = TypeSpec("String", loss_type="Float64")
+        model = PySRRegressor(type_spec=spec)
+
+        X_lists = [[(1.0, "one")], [(2.0, "two")]]
+        X, y, *_ = self._validate_fit_params(model, X_lists, [(1, 2), (3, 4)])
+        self.assertEqual(X.shape, (2, 1))
+        self.assertEqual(X[0, 0], (1.0, "one"))
+        self.assertEqual(y.shape, (2,))
+        self.assertEqual(y[1], (3, 4))
+
+        for column_y in (
+            np.ones((2, 1)),
+            np.ones((2, 1)).astype(object),
+            pd.DataFrame({"y": [1.0, 1.0]}),
+        ):
+            _, y, *_ = self._validate_fit_params(model, X_lists, column_y)
+            self.assertEqual(y.shape, (2,))
+            self.assertEqual(y[0], 1.0)
+
+        with self.assertRaisesRegex(ValueError, "at least one sample"):
+            self._validate_fit_params(model, np.empty((0, 2), dtype=object), [])
+        with self.assertRaisesRegex(NotImplementedError, "units"):
+            self._validate_fit_params(model, X_lists, [1.0, 2.0], X_units=["m"])
+        with self.assertRaisesRegex(NotImplementedError, "one output"):
+            self._validate_fit_params(model, X_lists, np.ones((2, 2)))
+
+        default_spec_model = PySRRegressor(
+            type_spec=spec, expression_spec=ExpressionSpec()
+        )
+        self._validate_fit_params(default_spec_model, X_lists, [1.0, 2.0])
+        template_model = PySRRegressor(
+            type_spec=spec,
+            expression_spec=TemplateExpressionSpec(
+                "f(x)", expressions=["f"], variable_names=["x"]
+            ),
+        )
+        with self.assertRaisesRegex(NotImplementedError, "expression shape"):
+            self._validate_fit_params(template_model, X_lists, [1.0, 2.0])
+
+    def test_type_spec_complexity_of_variables(self):
+        spec = TypeSpec("String", loss_type="Float64")
+        model = PySRRegressor(type_spec=spec, complexity_of_variables=[3])
+        self._validate_fit_params(model, [["a"], ["b"]], ["a", "b"])
+        self.assertEqual(model.complexity_of_variables_, [3])
+        with self.assertRaisesRegex(ValueError, "at both `fit` and `__init__`"):
+            self._validate_fit_params(
+                model, [["a"], ["b"]], ["a", "b"], complexity_of_variables=[5]
+            )
+
+    def test_type_spec_loss_type_validation(self):
+        with self.assertRaisesRegex(ValueError, "type_spec.loss_type"):
+            PySRRegressor(
+                type_spec=TypeSpec("String", loss_type=""),
+                elementwise_loss="loss(x, y) = x == y ? 0.0 : 1.0",
+            )._validate_and_modify_params()
+        with self.assertRaisesRegex(ValueError, "must evaluate to a Julia type"):
+            TypeSpec("String", loss_type="1").julia_loss_type()
+
+    def test_type_spec_accepts_multi_method_callbacks(self):
+        suffix = uuid.uuid4().hex
+        jl.seval(f"""
+            _pysr_multi_sample_{suffix}(rng) = "a"
+            _pysr_multi_sample_{suffix}(rng, options) = "b"
+            """)
+        spec = TypeSpec("String", sample_value=f"_pysr_multi_sample_{suffix}")
+        value_type = spec.instantiate()
+        jl.seval("using Random")
+        self.assertEqual(
+            jl.SymbolicRegression.sample_value(
+                jl.Random.Xoshiro(0), value_type, jl.nothing
+            ),
+            "b",
+        )
+
+    def test_type_spec_old_checkpoint_state(self):
+        state = PySRRegressor().__dict__.copy()
+        del state["type_spec"]
+        model = PySRRegressor.__new__(PySRRegressor)
+        model.__setstate__(state)
+        self.assertIsNone(model.type_spec)
+
+    def test_type_spec_score_not_implemented(self):
+        model = PySRRegressor(type_spec=TypeSpec("String", loss_type="Float64"))
+        with self.assertRaises(NotImplementedError):
+            model.score([["a"]], ["a"])
+
     def test_type_spec_instantiates_compact_global_interface(self):
         name = f"PySRTestValue_{uuid.uuid4().hex}"
         spec = TypeSpec(
@@ -395,6 +497,70 @@ class TestTypeSpecs(unittest.TestCase):
 
         prediction = model.predict(X, index=model.equations_["loss"].idxmin())
         self.assertEqual([(value.number, value.label) for value in prediction], pairs)
+
+    def test_type_spec_fit_and_predict_with_plain_lists(self):
+        name = f"ListPair_{uuid.uuid4().hex}"
+        spec = TypeSpec(
+            name,
+            fields={"number": "Float64", "label": "String"},
+            init_value=f'() -> {name}(0.0, "")',
+            sample_value=f'rng -> {name}(randn(rng), "")',
+            mutate_value=(
+                f"(rng, value, temperature) -> {name}(value.number + "
+                "temperature * randn(rng), value.label)"
+            ),
+            count_scalar_constants=1,
+            can_optimize=False,
+            loss_type="Float64",
+        )
+        pairs = [(1.0, "one"), (2.0, "two"), (3.0, "three"), (4.0, "four")]
+        X = [[pair] for pair in pairs]
+        model = self._tiny_model(
+            spec,
+            f"identity_list_pair(x::{name}) = x",
+            f"list_pair_loss(x::{name}, y::{name}) = x == y ? 0.0 : 1.0",
+        )
+
+        model.fit(X, pairs)
+
+        prediction = model.predict(X, index=model.equations_["loss"].idxmin())
+        self.assertEqual(prediction.shape, (4,))
+        self.assertEqual(prediction.dtype, object)
+        self.assertEqual([(value.number, value.label) for value in prediction], pairs)
+
+    def test_type_spec_dataframe_columns_and_pickle_round_trip(self):
+        spec = TypeSpec(
+            "String",
+            init_value='() -> ""',
+            sample_value='rng -> rand(rng, ("a", "b"))',
+            mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
+            count_scalar_constants=1,
+            can_optimize=False,
+            loss_type="Float64",
+        )
+        X = pd.DataFrame({10: ["a", "b", "a", "b"]})
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        model = self._tiny_model(
+            spec,
+            "identity_string_pickled(x::String) = x",
+            "string_loss_pickled(x::String, y::String) = x == y ? 0.0 : 1.0",
+        )
+
+        model.fit(X, y)
+
+        np.testing.assert_array_equal(model.predict(X), y)
+
+        loaded = pickle.loads(pickle.dumps(model))
+        self.assertNotIn("lambda_format", loaded.equations_.columns)
+        self.assertNotIn("julia_expression", loaded.equations_.columns)
+        np.testing.assert_array_equal(loaded.predict(X), y)
+
+        loaded.julia_state_stream_ = None
+        loaded.equations_ = loaded.equations_.drop(
+            columns=["julia_expression", "lambda_format"]
+        )
+        with self.assertRaisesRegex(ValueError, "checkpoint.pkl"):
+            loaded.predict(X)
 
     def test_type_spec_supports_multithreading(self):
         spec = TypeSpec(

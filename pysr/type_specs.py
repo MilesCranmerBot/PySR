@@ -9,6 +9,41 @@ from .julia_helpers import jl_array
 from .julia_import import AnyValue, jl
 
 
+def object_array_1d(values: Any) -> np.ndarray:
+    """Build a 1D object array whose cells are the logical values themselves.
+
+    `np.asarray(values, dtype=object)` would expand nested tuples/lists into
+    extra axes, so cells are assigned individually.
+    """
+    if isinstance(values, np.ndarray):
+        return values if values.dtype == object else values.astype(object)
+    values = list(values)
+    array = np.empty(len(values), dtype=object)
+    for i, value in enumerate(values):
+        array[i] = value
+    return array
+
+
+def object_array_2d(values: Any) -> np.ndarray:
+    """Build a 2D object array whose cells are the logical values themselves."""
+    if isinstance(values, np.ndarray):
+        return values if values.dtype == object else values.astype(object)
+    try:
+        if any(isinstance(row, (str, bytes)) for row in values):
+            raise TypeError
+        rows = [list(row) for row in values]
+    except TypeError:
+        raise ValueError("TypeSpec X must be a 2D array of logical values.")
+    n_columns = len(rows[0]) if rows else 0
+    array = np.empty((len(rows), n_columns), dtype=object)
+    for i, row in enumerate(rows):
+        if len(row) != n_columns:
+            raise ValueError("All rows of X must have the same number of features.")
+        for j, value in enumerate(row):
+            array[i, j] = value
+    return array
+
+
 @dataclass(frozen=True)
 class TypeSpec:
     """Runtime definition of a value type used by SymbolicRegression.jl."""
@@ -78,11 +113,20 @@ class TypeSpec:
             elementwise_loss is None
             and loss_function is None
             and loss_function_expression is None
-        ) or self.loss_type is None:
+        ) or not self.loss_type:
             raise ValueError(
                 "TypeSpec requires a loss (`elementwise_loss`, `loss_function`, or "
                 "`loss_function_expression`) and `type_spec.loss_type`."
             )
+
+    def julia_loss_type(self) -> AnyValue:
+        assert self.loss_type
+        loss_type = jl.seval(self.loss_type)
+        if not jl.seval("T -> T isa Type")(loss_type):
+            raise ValueError(
+                f"`loss_type` (`{self.loss_type}`) must evaluate to a Julia type."
+            )
+        return loss_type
 
     @staticmethod
     def supports_export() -> bool:
@@ -110,7 +154,10 @@ class TypeSpec:
         dtype: type | None = None,
     ) -> AnyValue:
         """Convert Python logical values into a concrete Julia array."""
-        array = np.asarray(values, dtype=object)
+        if isinstance(values, np.ndarray):
+            array = values if values.dtype == object else values.astype(object)
+        else:
+            array = np.asarray(values, dtype=object)
         if transpose:
             array = array.T
         if array.ndim not in (1, 2):
@@ -167,14 +214,19 @@ class TypeSpec:
 
     def _interface_definition(self, kind: str, source: str) -> str:
         function = jl.seval(source)
-        arity = jl.seval("f -> only(methods(f)).nargs - 1")(function)
+        arities = {
+            int(nargs) - 1
+            for nargs in jl.seval("f -> Int[m.nargs for m in methods(f)]")(function)
+        }
         expected = {"init": (0,), "sample": (1, 2), "mutate": (3, 4), "count": (1,)}[
             kind
         ]
-        if arity not in expected:
+        matching = arities.intersection(expected)
+        if not matching:
             raise ValueError(
-                f"{kind}_value must accept {expected}; got {arity} arguments."
+                f"{kind}_value must accept {expected}; got {sorted(arities)} arguments."
             )
+        arity = max(matching)
 
         arguments = {
             "sample": {1: "rng", 2: "rng, options"},
