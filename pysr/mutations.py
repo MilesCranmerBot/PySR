@@ -27,6 +27,8 @@ class _ParameterlessMutation(AbstractMutation):
 class ConstantMutation(AbstractMutation):
     """Perturb a constant.
 
+    PySR default weight: ``0.0346``.
+
     Defaults match SymbolicRegression.jl.
     """
 
@@ -42,42 +44,66 @@ class ConstantMutation(AbstractMutation):
 
 @dataclass(frozen=True)
 class OperatorMutation(_ParameterlessMutation):
-    """Replace an operator with another operator of the same arity."""
+    """Replace an operator with another operator of the same arity.
+
+    PySR default weight: ``0.293``.
+    """
 
 
 @dataclass(frozen=True)
 class FeatureMutation(_ParameterlessMutation):
-    """Change the feature referenced by a variable node."""
+    """Change the feature referenced by a variable node.
+
+    PySR default weight: ``0.1``.
+    """
 
 
 @dataclass(frozen=True)
 class SwapOperandsMutation(_ParameterlessMutation):
-    """Swap the operands of a binary operator."""
+    """Swap the operands of a binary operator.
+
+    PySR default weight: ``0.198``.
+    """
 
 
 @dataclass(frozen=True)
 class AddNodeMutation(_ParameterlessMutation):
-    """Append a node to the expression."""
+    """Append a node to the expression.
+
+    PySR default weight: ``2.47``.
+    """
 
 
 @dataclass(frozen=True)
 class InsertNodeMutation(_ParameterlessMutation):
-    """Insert a node above an existing node."""
+    """Insert a node above an existing node.
+
+    PySR default weight: ``0.0112``.
+    """
 
 
 @dataclass(frozen=True)
 class DeleteNodeMutation(_ParameterlessMutation):
-    """Delete a node from the expression."""
+    """Delete a node from the expression.
+
+    PySR default weight: ``0.870``.
+    """
 
 
 @dataclass(frozen=True)
 class RotateTreeMutation(_ParameterlessMutation):
-    """Rotate a subtree."""
+    """Rotate a subtree.
+
+    PySR default weight: ``4.26``.
+    """
 
 
 @dataclass(frozen=True)
 class BacksolveMutation(AbstractMutation):
-    """Fit a replacement expression by backsolving through the expression."""
+    """Fit a replacement expression by backsolving through the expression.
+
+    PySR default weight: ``0.0``.
+    """
 
     max_library_size: int = 500
     lambda_: float = 0.01
@@ -93,19 +119,31 @@ class BacksolveMutation(AbstractMutation):
 
 @dataclass(frozen=True)
 class SimplifyMutation(_ParameterlessMutation):
-    """Simplify constant parts of the expression."""
+    """Simplify constant parts of the expression.
+
+    PySR default weight: ``0.00209``.
+    """
 
 
 @dataclass(frozen=True)
 class RandomizeMutation(_ParameterlessMutation):
-    """Replace the expression with a random expression."""
+    """Replace the expression with a random expression.
+
+    PySR default weight: ``0.000502``.
+    """
 
 
 @dataclass(frozen=True)
 class OptimizeMutation(_ParameterlessMutation):
-    """Optimize constants as a mutation."""
+    """Optimize constants as a mutation.
+
+    PySR default weight: ``0.0``.
+    """
 
 
 @dataclass(frozen=True)
 class DoNothingMutation(_ParameterlessMutation):
-    """Leave the expression unchanged."""
+    """Leave the expression unchanged.
+
+    PySR default weight: ``0.273``.
+    """
