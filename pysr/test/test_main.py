@@ -1579,6 +1579,24 @@ class TestMiscellaneous(unittest.TestCase):
         ):
             self.assertEqual(str(plugin_name(plugin.julia_plugin())), expected_name)
 
+    def test_default_plugins_match_backend(self):
+        from pysr import SymbolicRegression
+
+        model = PySRRegressor()
+        backend_options = SymbolicRegression.Options()
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {
+            str(plugin_name(plugin)): plugin for plugin in backend_options.plugins
+        }
+
+        annealing = plugins["SimulatedAnnealingPlugin"]
+        self.assertTrue(model.annealing)
+        self.assertEqual(model.alpha, annealing.alpha)
+
+        parsimony = plugins["AdaptiveParsimonyPlugin"]
+        self.assertEqual(model.use_frequency, parsimony.mutation_acceptance)
+        self.assertEqual(model.use_frequency_in_tournament, parsimony.tournament)
+
     def test_mutation_and_plugin_configuration(self):
         from pysr import (
             AdaptiveParsimonyPlugin,

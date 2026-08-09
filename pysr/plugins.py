@@ -22,7 +22,7 @@ class AbstractPlugin(ABC):
 class SimulatedAnnealingPlugin(AbstractPlugin):
     """Apply simulated annealing during mutation acceptance.
 
-    Disabled by default in PySR (``annealing=False``).
+    Enabled by default through ``annealing=True``.
     """
 
     alpha: float = 0.1
