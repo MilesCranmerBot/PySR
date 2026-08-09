@@ -387,7 +387,7 @@ class TestTypeSpecs(unittest.TestCase):
         prediction = model.predict(X, index=model.equations_["loss"].idxmin())
         self.assertEqual([list(value.data) for value in prediction], y.tolist())
 
-    def test_type_spec_recovers_two_layer_neural_network(self):
+    def test_type_spec_optimizes_two_layer_neural_network_constants(self):
         suffix = uuid.uuid4().hex
         name = f"NNValue_{suffix}"
         matmul = f"nn_matmul_{suffix}"
@@ -452,8 +452,51 @@ class TestTypeSpecs(unittest.TestCase):
         W2 = np.array([[0.8, -1.0], [1.3, 0.4]])
         b2 = np.array([-0.4, 0.2])
         y_values = (W2 @ np.maximum(x_values @ W1.T + b1, 0).T).T + b2
-        X = pd.DataFrame({"x": list(x_values)})
+        X = pd.DataFrame(
+            {
+                "x": pd.Series(list(x_values), dtype=object),
+                "W1": pd.Series([W1] * len(x_values), dtype=object),
+                "b1": pd.Series([b1] * len(x_values), dtype=object),
+            }
+        )
         y = pd.Series(list(y_values), dtype=object)
+
+        guess_W2 = W2 + np.array([[-0.3, 0.25], [0.2, -0.25]])
+        guess_b2 = b2 + np.array([0.2, -0.15])
+        initial_prediction = (
+            guess_W2 @ np.maximum(x_values @ W1.T + b1, 0).T
+        ).T + guess_b2
+        initial_loss = np.mean((initial_prediction - y_values) ** 2)
+
+        guess_constants = np.empty(2, dtype=object)
+        guess_constants[:] = [guess_W2, guess_b2]
+        julia_constants = spec.to_julia_array(guess_constants)
+        call = jl.Symbol("call")
+        guess = jl.Expr(
+            call,
+            jl.Symbol(add),
+            jl.Expr(
+                call,
+                jl.Symbol(matmul),
+                julia_constants[0],
+                jl.Expr(
+                    call,
+                    jl.Symbol(relu),
+                    jl.Expr(
+                        call,
+                        jl.Symbol(add),
+                        jl.Expr(
+                            call,
+                            jl.Symbol(matmul),
+                            jl.Symbol("W1"),
+                            jl.Symbol("x"),
+                        ),
+                        jl.Symbol("b1"),
+                    ),
+                ),
+            ),
+            julia_constants[1],
+        )
 
         model = PySRRegressor(
             type_spec=spec,
@@ -472,9 +515,7 @@ class TestTypeSpecs(unittest.TestCase):
                 "size(a.data) == size(b.data) ? "
                 "sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
             ),
-            niterations=40,
-            populations=8,
-            maxsize=11,
+            niterations=0,
             parallelism="serial",
             deterministic=True,
             random_state=0,
@@ -484,6 +525,7 @@ class TestTypeSpecs(unittest.TestCase):
             should_optimize_constants=True,
             optimizer_nrestarts=0,
         )
+        model.set_params(guesses=[guess])
 
         model.fit(X, y)
 
@@ -493,7 +535,9 @@ class TestTypeSpecs(unittest.TestCase):
         )
         prediction_loss = np.mean((prediction - y_values) ** 2)
         self.assertEqual(prediction.shape, y_values.shape)
-        self.assertLess(prediction_loss, 0.02)
+        self.assertGreater(initial_loss, 0.01)
+        self.assertLess(prediction_loss, initial_loss / 1000)
+        self.assertLess(prediction_loss, 1e-8)
         self.assertAlmostEqual(prediction_loss, model.equations_.loc[best, "loss"])
 
     def test_multi_field_struct_type_spec_fit_and_predict(self):
