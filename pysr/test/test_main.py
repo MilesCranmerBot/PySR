@@ -1579,11 +1579,20 @@ class TestMiscellaneous(unittest.TestCase):
         ):
             self.assertEqual(str(plugin_name(plugin.julia_plugin())), expected_name)
 
-    def test_default_plugins_match_backend(self):
+    def test_default_operators_and_plugins_match_backend(self):
         from pysr import SymbolicRegression
 
         model = PySRRegressor()
         backend_options = SymbolicRegression.Options()
+
+        backend_binary_operators = jl.seval(
+            "options -> string.(options.operators.ops[2])"
+        )(backend_options)
+        self.assertListEqual(
+            model._validate_and_modify_params().operators[2],
+            [str(operator) for operator in backend_binary_operators],
+        )
+
         plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
         plugins = {
             str(plugin_name(plugin)): plugin for plugin in backend_options.plugins

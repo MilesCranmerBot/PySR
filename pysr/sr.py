@@ -1718,7 +1718,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
 
         param_container = _DynamicallySetParams(
-            operators={2: ["+", "*", "-", "/"]},
+            operators={2: ["+", "-", "/", "*"]},
             maxdepth=self.maxsize,
             constraints={},
             batch_size=None,
@@ -1735,7 +1735,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 operators_dict[2] = self.binary_operators.copy()
             else:
                 # Keep default binary operators
-                operators_dict[2] = ["+", "*", "-", "/"]
+                operators_dict[2] = ["+", "-", "/", "*"]
             if self.unary_operators is not None:
                 operators_dict[1] = self.unary_operators.copy()
             param_container.operators = operators_dict
