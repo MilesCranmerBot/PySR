@@ -109,7 +109,73 @@ PARAMSKEY
         heading_level: 3
         show_root_full_path: false
 
+::: pysr.OperatorMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.FeatureMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.SwapOperandsMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AddNodeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.InsertNodeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.DeleteNodeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.RotateTreeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
 ::: pysr.BacksolveMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.SimplifyMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.RandomizeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.OptimizeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.DoNothingMutation
     options:
         show_root_heading: true
         heading_level: 3

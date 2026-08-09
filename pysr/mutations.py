@@ -12,24 +12,14 @@ class AbstractMutation(ABC):
     """Base class for mutation configurations."""
 
     @abstractmethod
-    def julia_mutation(
-        self,
-        *,
-        perturbation_factor: float,
-        probability_negate_constant: float,
-    ) -> AnyValue:
+    def julia_mutation(self) -> AnyValue:
         """Create the corresponding SymbolicRegression.jl mutation."""
         pass  # pragma: no cover
 
 
 @dataclass(frozen=True)
 class _ParameterlessMutation(AbstractMutation):
-    def julia_mutation(
-        self,
-        *,
-        perturbation_factor: float,
-        probability_negate_constant: float,
-    ) -> AnyValue:
+    def julia_mutation(self) -> AnyValue:
         return getattr(SymbolicRegression, type(self).__name__)()
 
 
@@ -37,31 +27,19 @@ class _ParameterlessMutation(AbstractMutation):
 class ConstantMutation(AbstractMutation):
     """Perturb a constant.
 
-    Unspecified settings inherit ``perturbation_factor`` and
-    ``probability_negate_constant`` from :class:`PySRRegressor`.
+    Settings left as ``None`` use the SymbolicRegression.jl defaults.
     """
 
     perturbation_factor: float | None = None
-    probability_negate_constant: float | None = None
+    probability_negate: float | None = None
 
-    def julia_mutation(
-        self,
-        *,
-        perturbation_factor: float,
-        probability_negate_constant: float,
-    ) -> AnyValue:
-        return SymbolicRegression.ConstantMutation(
-            perturbation_factor=(
-                perturbation_factor
-                if self.perturbation_factor is None
-                else self.perturbation_factor
-            ),
-            probability_negate=(
-                probability_negate_constant
-                if self.probability_negate_constant is None
-                else self.probability_negate_constant
-            ),
-        )
+    def julia_mutation(self) -> AnyValue:
+        kwargs: dict[str, float] = {}
+        if self.perturbation_factor is not None:
+            kwargs["perturbation_factor"] = self.perturbation_factor
+        if self.probability_negate is not None:
+            kwargs["probability_negate"] = self.probability_negate
+        return SymbolicRegression.ConstantMutation(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -107,12 +85,7 @@ class BacksolveMutation(AbstractMutation):
     lambda_: float = 0.01
     max_iter: int = 10
 
-    def julia_mutation(
-        self,
-        *,
-        perturbation_factor: float,
-        probability_negate_constant: float,
-    ) -> AnyValue:
+    def julia_mutation(self) -> AnyValue:
         return SymbolicRegression.BacksolveMutation(
             max_library_size=self.max_library_size,
             max_iter=self.max_iter,

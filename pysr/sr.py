@@ -2232,7 +2232,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         configured_default_mutations = (
             {
-                mutation_type(): getattr(self, parameter)
+                (
+                    ConstantMutation(
+                        perturbation_factor=self.perturbation_factor,
+                        probability_negate=self.probability_negate_constant,
+                    )
+                    if mutation_type is ConstantMutation
+                    else mutation_type()
+                ): getattr(self, parameter)
                 for mutation_type, parameter in _LEGACY_MUTATION_TYPES
             }
             if self.default_mutations is None
@@ -2247,13 +2254,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         ) -> AnyValue:
             mutation_pairs = jl_array(
                 [
-                    (
-                        mutation.julia_mutation(
-                            perturbation_factor=self.perturbation_factor,
-                            probability_negate_constant=self.probability_negate_constant,
-                        ),
-                        weight,
-                    )
+                    (mutation.julia_mutation(), weight)
                     for mutation, weight in mutation_weights.items()
                 ]
             )

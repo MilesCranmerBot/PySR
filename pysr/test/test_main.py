@@ -1544,8 +1544,10 @@ class TestMiscellaneous(unittest.TestCase):
         from pysr import (
             AdaptiveMutationWeightsPlugin,
             BacksolveMutation,
+            ConstantMutation,
             MutationBurstPlugin,
             OperatorMutation,
+            SymbolicRegression,
         )
 
         mutation_name = jl.seval("m -> string(nameof(typeof(m)))")
@@ -1553,11 +1555,19 @@ class TestMiscellaneous(unittest.TestCase):
             (OperatorMutation(), "OperatorMutation"),
             (BacksolveMutation(lambda_=0.2), "BacksolveMutation"),
         ):
-            julia_mutation = mutation.julia_mutation(
-                perturbation_factor=0.1,
-                probability_negate_constant=0.01,
-            )
+            julia_mutation = mutation.julia_mutation()
             self.assertEqual(str(mutation_name(julia_mutation)), expected_name)
+
+        constant_mutation = ConstantMutation().julia_mutation()
+        backend_default = SymbolicRegression.ConstantMutation()
+        self.assertEqual(
+            constant_mutation.perturbation_factor,
+            backend_default.perturbation_factor,
+        )
+        self.assertEqual(
+            constant_mutation.probability_negate,
+            backend_default.probability_negate,
+        )
 
         plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
         for plugin, expected_name in (
@@ -1576,6 +1586,7 @@ class TestMiscellaneous(unittest.TestCase):
             ConstantMutation,
             RandomizeMutation,
             SimulatedAnnealingPlugin,
+            SymbolicRegression,
         )
 
         X = np.arange(12, dtype=np.float32).reshape(6, 2)
@@ -1631,7 +1642,10 @@ class TestMiscellaneous(unittest.TestCase):
             self.assertEqual(float(jl.last(mutation_by_name[name])), weight)
         constant_mutation = jl.first(mutation_by_name["ConstantMutation"])
         self.assertEqual(constant_mutation.perturbation_factor, 0.2)
-        self.assertEqual(constant_mutation.probability_negate, 0.8)
+        self.assertEqual(
+            constant_mutation.probability_negate,
+            SymbolicRegression.ConstantMutation().probability_negate,
+        )
         self.assertEqual(
             jl.first(mutation_by_name["BacksolveMutation"]).max_library_size,
             123,
@@ -1704,6 +1718,8 @@ class TestMiscellaneous(unittest.TestCase):
             tournament_selection_n=2,
             progress=False,
             temp_equation_file=True,
+            perturbation_factor=0.7,
+            probability_negate_constant=0.8,
             weight_randomize=0.3,
             weight_backsolve=0.2,
         )
@@ -1716,6 +1732,13 @@ class TestMiscellaneous(unittest.TestCase):
         }
         self.assertEqual(weights["RandomizeMutation"], 0.3)
         self.assertEqual(weights["BacksolveMutation"], 0.2)
+        constant_mutation = next(
+            jl.first(pair)
+            for pair in model.julia_options_.mutations
+            if str(mutation_name(pair)) == "ConstantMutation"
+        )
+        self.assertEqual(constant_mutation.perturbation_factor, 0.7)
+        self.assertEqual(constant_mutation.probability_negate, 0.8)
 
     def test_param_groupings(self):
         """Test that param_groupings are complete"""
