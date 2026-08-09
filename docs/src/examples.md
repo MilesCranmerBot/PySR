@@ -282,20 +282,19 @@ You can get the sympy version of the best equation with:
 model.sympy()
 ```
 
-### Heterogeneous tensor values
+### Recovering a neural network with tensor constants
 
-`TypeSpec` can place scalar, vector, and matrix values in one concrete Julia
-type. This lets one symbolic operator use multiple dispatch to implement
-rank-dependent operations.
+`TypeSpec` can place scalar, vector, and matrix constants in one Julia value
+type. The scalar-constant hooks let the optimizer flatten each constant for
+BFGS and then rebuild its original shape.
 
-For example, consider the scaled quadratic energy
+Here we recover a two-layer neural network
 
-$$ E = s\,u^\mathsf{T} K u, $$
+$$ y = W_2\operatorname{relu}(W_1x + b_1) + b_2 $$
 
-where $s$ is a scalar, $u$ is a 3-vector, and $K$ is a positive-definite
-$3\times3$ matrix. We can define one multiplication operator which scales
-tensors, contracts two vectors, multiplies a matrix by a vector, or composes
-two matrices:
+from vector-valued data. Safe operators return an invalid value for shape
+mismatches, so arbitrary expressions from the search cannot throw dimension
+errors:
 
 ```python
 import numpy as np
@@ -303,120 +302,108 @@ import pandas as pd
 
 from pysr import PySRRegressor, TypeSpec, jl
 
-jl.seval("using LinearAlgebra: dot")
-
-# A payload is either a scalar, a 3-vector, or a 3x3 matrix:
-jl.seval("const TensorPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}")
-
-# One "multiplication" for every meaningful rank pair: scaling by a scalar,
-# contracting two vectors, applying a matrix to a vector, or composing two
-# matrices. The final method catches the remaining rank pairs (such as a
-# vector times a matrix) with a scalar NaN:
 jl.seval("""
-payload_mul(a::Float64, b::Float64) = a * b
-payload_mul(a::Float64, b::Union{Vector{Float64}, Matrix{Float64}}) = a * b
-payload_mul(a::Union{Vector{Float64}, Matrix{Float64}}, b::Float64) = a * b
-payload_mul(a::Vector{Float64}, b::Vector{Float64}) = dot(a, b)
-payload_mul(a::Matrix{Float64}, b::Vector{Float64}) = a * b
-payload_mul(a::Matrix{Float64}, b::Matrix{Float64}) = a * b
-payload_mul(::TensorPayload, ::TensorPayload) = NaN
-""")
+const NNPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}
 
-# Elementwise loss over matching shapes; any NaN or shape mismatch maps the
-# candidate to an infinite loss:
-jl.seval("""
-payload_mse(a::Float64, b::Float64) = isfinite(a) ? abs2(a - b) : Inf
-payload_mse(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
-    size(a) == size(b) && all(isfinite, a) ? sum(abs2, a .- b) / length(a) : Inf
-payload_mse(::TensorPayload, ::TensorPayload) = Inf
-""")
+safe_matmul(a::Matrix{Float64}, b::Vector{Float64}) =
+    size(a, 2) == length(b) ? a * b : NaN
+safe_matmul(::NNPayload, ::NNPayload) = NaN
 
-# Constants sample a random rank:
-jl.seval(
-    "random_payload(rng) = rand(rng, (randn(rng), randn(rng, 3), randn(rng, 3, 3)))"
-)
+safe_add(a::Float64, b::Float64) = a + b
+safe_add(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
+    size(a) == size(b) ? a + b : NaN
+safe_add(::NNPayload, ::NNPayload) = NaN
+""")
 
 type_spec = TypeSpec(
-    "TensorValue",
+    "NNValue",
     fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
-    init_value="() -> TensorValue(0.0)",
-    sample_value="rng -> TensorValue(random_payload(rng))",
-    # Mutations usually perturb every scalar in the payload, but occasionally
-    # resample a fresh rank:
+    init_value="() -> NNValue(0.0)",
+    sample_value="""
+    rng -> NNValue(rand(rng, (randn(rng), randn(rng, 2), randn(rng, 2, 2))))
+    """,
     mutate_value="""
-    (rng, value, temperature) -> if rand(rng) < 0.1
-        TensorValue(random_payload(rng))
-    else
-        TensorValue(value.data .+ temperature .* randn(rng, size(value.data)...))
+    (rng, value, temperature) -> NNValue(
+        value.data .+ temperature .* randn(rng, size(value.data)...)
+    )
+    """,
+    count_scalar_constants="value -> length(value.data)",
+    pack_scalar_constants="""
+    (values, idx, value) -> begin
+        n = length(value.data)
+        values[idx:idx+n-1] .= value.data isa Float64 ? value.data : vec(value.data)
+        idx + n
     end
     """,
-    # The number of scalar degrees of freedom in a constant: 1, 3, or 9
-    count_scalar_constants="value -> length(value.data)",
+    unpack_scalar_constants="""
+    (values, idx, value) -> begin
+        n = length(value.data)
+        data = value.data isa Float64 ? values[idx] :
+            reshape(copy(values[idx:idx+n-1]), size(value.data))
+        (idx + n, NNValue(data))
+    end
+    """,
+    get_number_type="T -> Float64",
+    is_valid="value -> all(isfinite, value.data)",
+    can_optimize=True,
     loss_type="Float64",
 )
 ```
 
-`can_optimize` defaults to `False` for non-numeric value types, since the
-constant optimizer only understands numeric types by default. The
-`count_scalar_constants` field is still required: the search uses it to weight
-constant mutations even when the optimizer is disabled.
-
-Now generate scalar, vector, and matrix inputs for the energy law:
+Generate training data from fixed $2\times2$ weights and two-element biases:
 
 ```python
 rng = np.random.default_rng(0)
-n = 128
-scale = rng.uniform(0.5, 1.5, size=n)
-displacement = rng.normal(size=(n, 3))
-factors = rng.normal(size=(n, 3, 3))
-stiffness = np.einsum("nji,njk->nik", factors, factors) + 0.5 * np.eye(3)
-energy = scale * np.einsum("ni,nij,nj->n", displacement, stiffness, displacement)
+x_values = rng.normal(size=(64, 2))
+W1 = np.array([[1.2, -0.7], [0.5, 1.1]])
+b1 = np.array([0.3, -0.2])
+W2 = np.array([[0.8, -1.0], [1.3, 0.4]])
+b2 = np.array([-0.4, 0.2])
+y_values = (W2 @ np.maximum(x_values @ W1.T + b1, 0).T).T + b2
 
-X = pd.DataFrame(
-    {
-        "scale": scale,
-        "displacement": list(displacement),
-        "stiffness": list(stiffness),
-    }
-)
-y = pd.Series(energy, dtype=object)
+X = pd.DataFrame({"x": list(x_values)})
+y = pd.Series(list(y_values), dtype=object)
 ```
 
-Finally, wrap the payload-level multiplication in the generated `TensorValue`
-type and run the search:
+Search with matrix multiplication, elementwise ReLU, and addition. BFGS is the
+default constant optimizer. Restarts are disabled because the pinned backend's
+restart sampler expects the value type itself to support `randn`:
 
 ```python
 model = PySRRegressor(
     type_spec=type_spec,
     operators={
+        1: ["nn_relu(a::NNValue) = NNValue(max.(a.data, 0.0))"],
         2: [
-            "tensor_mul(a::TensorValue, b::TensorValue) = "
-            "TensorValue(payload_mul(a.data, b.data))"
-        ]
+            "nn_matmul(a::NNValue, b::NNValue) = "
+            "NNValue(safe_matmul(a.data, b.data))",
+            "nn_add(a::NNValue, b::NNValue) = "
+            "NNValue(safe_add(a.data, b.data))",
+        ],
     },
     elementwise_loss=(
-        "tensor_mse(a::TensorValue, b::TensorValue) = "
-        "payload_mse(a.data, b.data)"
+        "nn_mse(a::NNValue, b::NNValue) = "
+        "a.data isa Vector && b.data isa Vector && size(a.data) == size(b.data) "
+        "? sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
     ),
-    niterations=5,
+    niterations=100,
     populations=4,
-    population_size=64,
-    ncycles_per_iteration=50,
-    tournament_selection_n=7,
-    maxsize=9,
+    maxsize=11,
     parallelism="serial",
     deterministic=True,
     random_state=0,
-    progress=False,
-    should_optimize_constants=False,
+    should_optimize_constants=True,
+    optimizer_nrestarts=0,
 )
 
 model.fit(X, y)
 print(model.equations_)
 ```
 
-One equivalent expression found by this search is
-`tensor_mul(tensor_mul(tensor_mul(stiffness, scale), displacement), displacement)`.
+The search recovers a two-layer form such as
+`nn_add(nn_matmul(W2, nn_relu(nn_matmul(W1, nn_add(x, c)))), b2)`. Here the
+hidden bias is absorbed into $c$ through $b_1 = W_1c$; each displayed
+`NNValue` contains the fitted matrix or vector payload.
 
 ## 8. Complex numbers
 

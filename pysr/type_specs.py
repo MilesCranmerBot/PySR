@@ -54,6 +54,10 @@ class TypeSpec:
     sample_value: str | None = None
     mutate_value: str | None = None
     count_scalar_constants: int | str | None = None
+    pack_scalar_constants: str | None = None
+    unpack_scalar_constants: str | None = None
+    get_number_type: str | None = None
+    is_valid: str | None = None
     can_optimize: bool | None = None
     loss_type: str | None = None
 
@@ -205,6 +209,20 @@ class TypeSpec:
                 definitions.append(
                     self._interface_definition("count", self.count_scalar_constants)
                 )
+        if self.pack_scalar_constants is not None:
+            definitions.append(
+                self._interface_definition("pack", self.pack_scalar_constants)
+            )
+        if self.unpack_scalar_constants is not None:
+            definitions.append(
+                self._interface_definition("unpack", self.unpack_scalar_constants)
+            )
+        if self.get_number_type is not None:
+            definitions.append(
+                self._interface_definition("number_type", self.get_number_type)
+            )
+        if self.is_valid is not None:
+            definitions.append(self._interface_definition("valid", self.is_valid))
         can_optimize = self.can_optimize
         if can_optimize is None:
             # The backend only defines `can_optimize` for `Number` types, so
@@ -227,13 +245,30 @@ class TypeSpec:
             int(nargs) - 1
             for nargs in jl.seval("f -> Int[m.nargs for m in methods(f)]")(function)
         }
-        expected = {"init": (0,), "sample": (1, 2), "mutate": (3, 4), "count": (1,)}[
-            kind
-        ]
+        expected = {
+            "init": (0,),
+            "sample": (1, 2),
+            "mutate": (3, 4),
+            "count": (1,),
+            "pack": (3,),
+            "unpack": (3,),
+            "number_type": (1,),
+            "valid": (1,),
+        }[kind]
         matching = arities.intersection(expected)
         if not matching:
+            field = {
+                "init": "init_value",
+                "sample": "sample_value",
+                "mutate": "mutate_value",
+                "count": "count_scalar_constants",
+                "pack": "pack_scalar_constants",
+                "unpack": "unpack_scalar_constants",
+                "number_type": "get_number_type",
+                "valid": "is_valid",
+            }[kind]
             raise ValueError(
-                f"{kind}_value must accept {expected}; got {sorted(arities)} arguments."
+                f"{field} must accept {expected}; got {sorted(arities)} arguments."
             )
         arity = max(matching)
 
@@ -258,10 +293,32 @@ class TypeSpec:
                 f"rng::AbstractRNG, value::{self.julia_type}, temperature, options) = "
                 f"({source})({arguments['mutate'][arity]})"
             )
-        else:
+        elif kind == "count":
             definition = (
                 "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
                 f"count_scalar_constants(value::{self.julia_type}) = ({source})(value)"
+            )
+        elif kind == "pack":
+            definition = (
+                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                "pack_scalar_constants!(nvals::AbstractVector{<:Number}, "
+                f"idx::Int64, value::{self.julia_type}) = ({source})(nvals, idx, value)"
+            )
+        elif kind == "unpack":
+            definition = (
+                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                "unpack_scalar_constants(nvals::AbstractVector{<:Number}, "
+                f"idx::Int64, value::{self.julia_type}) = ({source})(nvals, idx, value)"
+            )
+        elif kind == "number_type":
+            definition = (
+                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                f"get_number_type(::Type{{{self.julia_type}}}) = ({source})({self.julia_type})"
+            )
+        else:
+            definition = (
+                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                f"is_valid(value::{self.julia_type}) = ({source})(value)"
             )
         return definition
 
