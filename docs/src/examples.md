@@ -282,6 +282,123 @@ You can get the sympy version of the best equation with:
 model.sympy()
 ```
 
+### Heterogeneous tensor values
+
+`TypeSpec` can place scalar, vector, and matrix values in one concrete Julia
+type. This lets one symbolic operator use multiple dispatch to implement
+rank-dependent operations.
+
+For example, consider the scaled quadratic energy
+
+$$ E = s\,u^\mathsf{T} K u, $$
+
+where $s$ is a scalar, $u$ is a 3-vector, and $K$ is a positive-definite
+$3\times3$ matrix. We can define one multiplication operator which scales
+tensors, contracts two vectors, multiplies a matrix by a vector, or composes
+two matrices:
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec, jl
+
+jl.seval("""
+using LinearAlgebra: dot
+
+const TensorPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}
+
+payload_mul(a::Float64, b::Float64) = a * b
+payload_mul(a::Float64, b::Union{Vector{Float64}, Matrix{Float64}}) = a * b
+payload_mul(a::Union{Vector{Float64}, Matrix{Float64}}, b::Float64) = a * b
+payload_mul(a::Vector{Float64}, b::Vector{Float64}) = dot(a, b)
+payload_mul(a::Matrix{Float64}, b::Vector{Float64}) = a * b
+payload_mul(a::Matrix{Float64}, b::Matrix{Float64}) = a * b
+payload_mul(::TensorPayload, ::TensorPayload) = NaN
+
+payload_mse(a::Float64, b::Float64) = isfinite(a) ? abs2(a - b) : Inf
+payload_mse(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
+    size(a) == size(b) && all(isfinite, a) ? sum(abs2, a .- b) / length(a) : Inf
+payload_mse(::TensorPayload, ::TensorPayload) = Inf
+""")
+
+type_spec = TypeSpec(
+    "TensorValue",
+    fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
+    init_value="() -> TensorValue(0.0)",
+    sample_value="rng -> TensorValue(randn(rng))",
+    mutate_value=(
+        "(rng, value, temperature) -> "
+        "TensorValue(value.data isa Float64 "
+        "? value.data + temperature * randn(rng) : value.data)"
+    ),
+    count_scalar_constants=1,
+    can_optimize=False,
+    loss_type="Float64",
+)
+```
+
+The final `payload_mul` method catches unsupported rank pairs, such as a vector
+times a matrix. It returns a scalar `NaN`, and the loss maps any such candidate
+to `Inf`.
+
+Now generate scalar, vector, and matrix inputs for the energy law:
+
+```python
+rng = np.random.default_rng(0)
+n = 128
+scale = rng.uniform(0.5, 1.5, size=n)
+displacement = rng.normal(size=(n, 3))
+factors = rng.normal(size=(n, 3, 3))
+stiffness = np.einsum("nji,njk->nik", factors, factors) + 0.5 * np.eye(3)
+energy = scale * np.einsum("ni,nij,nj->n", displacement, stiffness, displacement)
+
+X = pd.DataFrame(
+    {
+        "scale": scale,
+        "displacement": list(displacement),
+        "stiffness": list(stiffness),
+    }
+)
+y = pd.Series(energy, dtype=object)
+```
+
+Finally, wrap the payload-level multiplication in the generated `TensorValue`
+type and run the search:
+
+```python
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={
+        2: [
+            "tensor_mul(a::TensorValue, b::TensorValue) = "
+            "TensorValue(payload_mul(a.data, b.data))"
+        ]
+    },
+    elementwise_loss=(
+        "tensor_mse(a::TensorValue, b::TensorValue) = "
+        "payload_mse(a.data, b.data)"
+    ),
+    niterations=5,
+    populations=4,
+    population_size=64,
+    ncycles_per_iteration=50,
+    tournament_selection_n=7,
+    maxsize=9,
+    parallelism="serial",
+    deterministic=True,
+    random_state=0,
+    progress=False,
+    should_optimize_constants=False,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+One equivalent expression found by this search is
+`tensor_mul(tensor_mul(tensor_mul(stiffness, scale), displacement), displacement)`.
+
 ## 8. Complex numbers
 
 PySR can also search for complex-valued expressions. Simply pass

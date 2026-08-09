@@ -238,6 +238,135 @@ class TestTypeSpecs(unittest.TestCase):
         prediction = model.predict(X, index=model.equations_["loss"].idxmin())
         self.assertEqual([list(value.data) for value in prediction], y.tolist())
 
+    def test_tensor_type_spec_uses_multiple_dispatch(self):
+        suffix = uuid.uuid4().hex
+        name = f"TensorValue_{suffix}"
+        payload_mul = f"payload_mul_{suffix}"
+        payload_mse = f"payload_mse_{suffix}"
+        operator = f"tensor_mul_{suffix}"
+        loss = f"tensor_mse_{suffix}"
+        payload_type = "Union{Float64, Vector{Float64}, Matrix{Float64}}"
+        jl.seval(f"""
+            using LinearAlgebra: dot
+
+            {payload_mul}(a::Float64, b::Float64) = a * b
+            {payload_mul}(a::Float64, b::Union{{Vector{{Float64}}, Matrix{{Float64}}}}) = a * b
+            {payload_mul}(a::Union{{Vector{{Float64}}, Matrix{{Float64}}}}, b::Float64) = a * b
+            {payload_mul}(a::Vector{{Float64}}, b::Vector{{Float64}}) = dot(a, b)
+            {payload_mul}(a::Matrix{{Float64}}, b::Vector{{Float64}}) = a * b
+            {payload_mul}(a::Matrix{{Float64}}, b::Matrix{{Float64}}) = a * b
+            {payload_mul}(::{payload_type}, ::{payload_type}) = NaN
+
+            {payload_mse}(a::Float64, b::Float64) = isfinite(a) ? abs2(a - b) : Inf
+            {payload_mse}(a::T, b::T) where {{T<:Union{{Vector{{Float64}}, Matrix{{Float64}}}}}} =
+                size(a) == size(b) && all(isfinite, a) ? sum(abs2, a .- b) / length(a) : Inf
+            {payload_mse}(::{payload_type}, ::{payload_type}) = Inf
+            """)
+        spec = TypeSpec(
+            name,
+            fields={"data": payload_type},
+            init_value=f"() -> {name}(0.0)",
+            sample_value=f"rng -> {name}(randn(rng))",
+            mutate_value=(
+                f"(rng, value, temperature) -> {name}(value.data isa Float64 "
+                "? value.data + temperature * randn(rng) : value.data)"
+            ),
+            count_scalar_constants=1,
+            can_optimize=False,
+            loss_type="Float64",
+        )
+
+        rng = np.random.default_rng(0)
+        scalar_a, scalar_b = rng.normal(size=2)
+        vector_a, vector_b = rng.normal(size=(2, 3))
+        matrix_a, matrix_b = rng.normal(size=(2, 3, 3))
+        cases = (
+            (scalar_a, scalar_b, scalar_a * scalar_b),
+            (scalar_a, vector_b, scalar_a * vector_b),
+            (vector_a, scalar_b, vector_a * scalar_b),
+            (vector_a, vector_b, vector_a @ vector_b),
+            (matrix_a, vector_b, matrix_a @ vector_b),
+            (matrix_a, matrix_b, matrix_a @ matrix_b),
+        )
+        left, right, expected = zip(*cases)
+
+        X = pd.DataFrame({"left": left, "right": right})
+        y = pd.Series(expected, dtype=object)
+        converted = spec.to_julia_array(X.to_numpy(dtype=object), transpose=True)
+        converted_y = spec.to_julia_array(y.to_numpy(dtype=object))
+        self.assertEqual(np.shape(converted[0, 0].data), ())
+        self.assertEqual(np.shape(converted[1, 1].data), (3,))
+        self.assertEqual(np.shape(converted[0, 5].data), (3, 3))
+        jl.seval(f"""
+            {operator}(a::{name}, b::{name}) = {name}({payload_mul}(a.data, b.data))
+            {loss}(a::{name}, b::{name}) = {payload_mse}(a.data, b.data)
+            """)
+        self.assertTrue(
+            jl.seval(
+                f"Core.Compiler.return_type({operator}, Tuple{{{name}, {name}}}) === {name}"
+            )
+        )
+        julia_operator = jl.seval(operator)
+        julia_loss = jl.seval(loss)
+        for i, target in enumerate(expected):
+            actual = julia_operator(converted[0, i], converted[1, i])
+            np.testing.assert_allclose(actual.data, target, atol=1e-12, rtol=1e-12)
+            self.assertLess(julia_loss(actual, converted_y[i]), 1e-28)
+
+        vector = jl.seval("[1.0, 2.0, 3.0]")
+        matrix = jl.seval("zeros(3, 3)")
+        self.assertTrue(np.isnan(jl.seval(payload_mul)(vector, matrix)))
+        self.assertTrue(np.isinf(jl.seval(payload_mse)(vector, matrix)))
+
+        fit_values = (scalar_a, scalar_b, vector_a, vector_b, matrix_a, matrix_b)
+        fit_expected = (
+            scalar_a * scalar_a,
+            scalar_b * scalar_b,
+            vector_a @ vector_a,
+            vector_b @ vector_b,
+            matrix_a @ matrix_a,
+            matrix_b @ matrix_b,
+        )
+        fit_X = pd.DataFrame({"value": fit_values})
+        fit_y = pd.Series(fit_expected, dtype=object)
+
+        model = PySRRegressor(
+            type_spec=spec,
+            operators={
+                2: [
+                    f"{operator}(a::{name}, b::{name}) = "
+                    f"{name}({payload_mul}(a.data, b.data))"
+                ]
+            },
+            elementwise_loss=(
+                f"{loss}(a::{name}, b::{name}) = {payload_mse}(a.data, b.data)"
+            ),
+            nested_constraints={operator: {operator: 0}},
+            niterations=2,
+            ncycles_per_iteration=5,
+            populations=1,
+            population_size=10,
+            tournament_selection_n=3,
+            maxsize=7,
+            parallelism="serial",
+            deterministic=True,
+            random_state=0,
+            progress=False,
+            verbosity=0,
+            temp_equation_file=True,
+            should_optimize_constants=False,
+        )
+
+        model.fit(fit_X, fit_y)
+
+        best = model.equations_["loss"].idxmin()
+        self.assertEqual(
+            model.equations_.loc[best, "equation"], f"{operator}(value, value)"
+        )
+        prediction = [value.data for value in model.predict(fit_X, index=best)]
+        for actual, target in zip(prediction, fit_expected):
+            np.testing.assert_allclose(actual, target, atol=1e-12, rtol=1e-12)
+
     def test_multi_field_struct_type_spec_fit_and_predict(self):
         name = f"PairValue_{uuid.uuid4().hex}"
         spec = TypeSpec(
