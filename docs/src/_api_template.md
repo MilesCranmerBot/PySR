@@ -97,12 +97,6 @@ PARAMSKEY
 
 ## Mutations
 
-::: pysr.AbstractMutation
-    options:
-        show_root_heading: true
-        heading_level: 3
-        show_root_full_path: false
-
 ::: pysr.ConstantMutation
     options:
         show_root_heading: true
@@ -176,6 +170,12 @@ PARAMSKEY
         show_root_full_path: false
 
 ::: pysr.DoNothingMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AbstractMutation
     options:
         show_root_heading: true
         heading_level: 3
