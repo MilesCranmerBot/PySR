@@ -565,7 +565,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         (requires `annealing` to be `True`).
         Default is `3.17`.
     annealing : bool
-        Whether to use annealing.  Default is `False`.
+        Whether to use annealing.  Default is `True`.
     early_stop_condition : float | str
         Stop the search early if this loss is reached. You may also
         pass a string containing a Julia function which
@@ -975,7 +975,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         use_frequency_in_tournament: bool = True,
         adaptive_parsimony_scaling: float = 1040.0,
         alpha: float = 3.17,
-        annealing: bool = False,
+        annealing: bool = True,
         early_stop_condition: float | str | None = None,
         ncycles_per_iteration: int = 380,
         fraction_replaced: float = 0.00036,
