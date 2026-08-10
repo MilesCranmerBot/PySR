@@ -282,7 +282,60 @@ You can get the sympy version of the best equation with:
 model.sympy()
 ```
 
-### Recovering a neural network with tensor constants
+### String-valued symbolic regression
+
+`TypeSpec` lets PySR search over values other than numbers. For example, we can
+search for a rule which joins two strings:
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec
+
+X = pd.DataFrame(
+    {
+        "first": ["Py", "symbolic ", "hello ", "left"],
+        "second": ["SR", "regression", "world", "right"],
+    }
+)
+y = np.array([a + b for a, b in X.itertuples(index=False)], dtype=object)
+
+type_spec = TypeSpec(
+    "String",
+    init_value='() -> ""',
+    sample_value='rng -> rand(rng, ("", "a", "b"))',
+    mutate_value='(rng, value, temperature) -> rand(rng, ("", "a", "b"))',
+    count_scalar_constants=1,
+    can_optimize=False,
+    loss_type="Float64",
+)
+
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={2: ["concat(a::String, b::String) = a * b"]},
+    elementwise_loss=(
+        "string_loss(a::String, b::String) = a == b ? 0.0 : 1.0"
+    ),
+    niterations=10,
+    populations=2,
+    maxsize=7,
+    parallelism="serial",
+    deterministic=True,
+    random_state=0,
+    progress=False,
+    should_optimize_constants=False,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+The search recovers `concat(first, second)`. The `TypeSpec` tells the backend
+how to create and mutate string constants, disables numeric constant
+optimization, and declares that the loss is a real number.
+
+### Advanced: recovering a neural network with tensor constants
 
 `TypeSpec` can place scalar, vector, and matrix constants in one Julia value
 type. The scalar-constant hooks let the optimizer flatten each constant for
