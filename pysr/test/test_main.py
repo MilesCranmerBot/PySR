@@ -1629,8 +1629,6 @@ class TestMiscellaneous(unittest.TestCase):
             temp_equation_file=True,
             perturbation_factor=0.7,
             probability_negate_constant=0.8,
-            weight_randomize=0.3,
-            weight_backsolve=0.01,
             mutations={
                 BacksolveMutation(max_library_size=123): 0.02,
                 ConstantMutation(perturbation_factor=0.2): 0.5,
@@ -1759,6 +1757,7 @@ class TestMiscellaneous(unittest.TestCase):
         }
         self.assertEqual(weights["RandomizeMutation"], 0.3)
         self.assertEqual(weights["BacksolveMutation"], 0.2)
+        self.assertEqual(weights["AddNodeMutation"], 2.47)
         constant_mutation = next(
             jl.first(pair)
             for pair in model.julia_options_.mutations
@@ -1766,6 +1765,28 @@ class TestMiscellaneous(unittest.TestCase):
         )
         self.assertEqual(constant_mutation.perturbation_factor, 0.7)
         self.assertEqual(constant_mutation.probability_negate, 0.8)
+
+    def test_mutation_interfaces_are_mutually_exclusive(self):
+        from sklearn.base import clone
+
+        from pysr import OperatorMutation
+
+        model = PySRRegressor()
+        cloned_model = clone(model)
+        legacy_parameters = filter(
+            lambda parameter: parameter.startswith("weight_"), model.get_params()
+        )
+        for parameter in legacy_parameters:
+            self.assertIsNone(getattr(model, parameter))
+            self.assertIsNone(getattr(cloned_model, parameter))
+
+        for new_interface in (
+            {"default_mutations": {OperatorMutation(): 0.7}},
+            {"mutations": {OperatorMutation(): 0.7}},
+        ):
+            conflicting_model = PySRRegressor(weight_add_node=2.47, **new_interface)
+            with self.assertRaisesRegex(ValueError, "Cannot combine legacy"):
+                conflicting_model._validate_and_modify_params()
 
     def test_param_groupings(self):
         """Test that param_groupings are complete"""

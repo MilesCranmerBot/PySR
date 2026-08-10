@@ -91,20 +91,20 @@ except ImportError:
     from typing_extensions import List
 
 
-_LEGACY_MUTATION_TYPES: tuple[tuple[type[AbstractMutation], str], ...] = (
-    (AddNodeMutation, "weight_add_node"),
-    (InsertNodeMutation, "weight_insert_node"),
-    (DeleteNodeMutation, "weight_delete_node"),
-    (DoNothingMutation, "weight_do_nothing"),
-    (ConstantMutation, "weight_mutate_constant"),
-    (OperatorMutation, "weight_mutate_operator"),
-    (FeatureMutation, "weight_mutate_feature"),
-    (SwapOperandsMutation, "weight_swap_operands"),
-    (RotateTreeMutation, "weight_rotate_tree"),
-    (RandomizeMutation, "weight_randomize"),
-    (SimplifyMutation, "weight_simplify"),
-    (OptimizeMutation, "weight_optimize"),
-    (BacksolveMutation, "weight_backsolve"),
+_LEGACY_MUTATION_TYPES: tuple[tuple[type[AbstractMutation], str, float], ...] = (
+    (AddNodeMutation, "weight_add_node", 2.47),
+    (InsertNodeMutation, "weight_insert_node", 0.0112),
+    (DeleteNodeMutation, "weight_delete_node", 0.870),
+    (DoNothingMutation, "weight_do_nothing", 0.273),
+    (ConstantMutation, "weight_mutate_constant", 0.0346),
+    (OperatorMutation, "weight_mutate_operator", 0.293),
+    (FeatureMutation, "weight_mutate_feature", 0.1),
+    (SwapOperandsMutation, "weight_swap_operands", 0.198),
+    (RotateTreeMutation, "weight_rotate_tree", 4.26),
+    (RandomizeMutation, "weight_randomize", 0.000502),
+    (SimplifyMutation, "weight_simplify", 0.00209),
+    (OptimizeMutation, "weight_optimize", 0.0),
+    (BacksolveMutation, "weight_backsolve", 0.0),
 )
 
 ALREADY_RAN = False
@@ -619,51 +619,51 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     fraction_replaced_guesses : float
         How much of the population to replace with migrating equations from
         guesses. Default is `0.001`.
-    weight_add_node : float
+    weight_add_node : float | None
         Relative likelihood for mutation to add a node.
-        Default is `2.47`.
-    weight_insert_node : float
+        Default is `None` (equivalent to `2.47`).
+    weight_insert_node : float | None
         Relative likelihood for mutation to insert a node.
-        Default is `0.0112`.
-    weight_delete_node : float
+        Default is `None` (equivalent to `0.0112`).
+    weight_delete_node : float | None
         Relative likelihood for mutation to delete a node.
-        Default is `0.870`.
-    weight_do_nothing : float
+        Default is `None` (equivalent to `0.870`).
+    weight_do_nothing : float | None
         Relative likelihood for mutation to leave the individual.
-        Default is `0.273`.
-    weight_mutate_constant : float
+        Default is `None` (equivalent to `0.273`).
+    weight_mutate_constant : float | None
         Relative likelihood for mutation to change the constant slightly
         in a random direction.
-        Default is `0.0346`.
-    weight_mutate_operator : float
+        Default is `None` (equivalent to `0.0346`).
+    weight_mutate_operator : float | None
         Relative likelihood for mutation to swap an operator.
-        Default is `0.293`.
-    weight_mutate_feature : float
+        Default is `None` (equivalent to `0.293`).
+    weight_mutate_feature : float | None
         Relative likelihood for mutation to change which feature a variable node references.
-        Default is `0.1`.
-    weight_swap_operands : float
+        Default is `None` (equivalent to `0.1`).
+    weight_swap_operands : float | None
         Relative likehood for swapping operands in binary operators.
-        Default is `0.198`.
-    weight_rotate_tree : float
+        Default is `None` (equivalent to `0.198`).
+    weight_rotate_tree : float | None
         How often to perform a tree rotation at a random node.
-        Default is `4.26`.
-    weight_randomize : float
+        Default is `None` (equivalent to `4.26`).
+    weight_randomize : float | None
         Relative likelihood for mutation to completely delete and then
         randomly generate the equation
-        Default is `0.000502`.
-    weight_simplify : float
+        Default is `None` (equivalent to `0.000502`).
+    weight_simplify : float | None
         Relative likelihood for mutation to simplify constant parts by evaluation
-        Default is `0.00209`.
-    weight_optimize: float
+        Default is `None` (equivalent to `0.00209`).
+    weight_optimize: float | None
         Constant optimization can also be performed as a mutation, in addition to
         the normal strategy controlled by `optimize_probability` which happens
         every iteration. Using it as a mutation is useful if you want to use
         a large `ncycles_periteration`, and may not optimize very often.
-        Default is `0.0`.
-    weight_backsolve : float
+        Default is `None` (equivalent to `0.0`).
+    weight_backsolve : float | None
         Relative likelihood for backsolve mutation. To configure its parameters,
         pass `BacksolveMutation(...)` through `mutations` instead.
-        Default is `0.0`.
+        Default is `None` (equivalent to `0.0`).
     default_mutations : Mapping[AbstractMutation, float] | None
         Default mutation configurations and their weights. This replaces the
         defaults configured by the legacy `weight_*` parameters when provided.
@@ -1032,19 +1032,19 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         fraction_replaced: float = 0.00036,
         fraction_replaced_hof: float = 0.0614,
         fraction_replaced_guesses: float = 0.001,
-        weight_add_node: float = 2.47,
-        weight_insert_node: float = 0.0112,
-        weight_delete_node: float = 0.870,
-        weight_do_nothing: float = 0.273,
-        weight_mutate_constant: float = 0.0346,
-        weight_mutate_operator: float = 0.293,
-        weight_mutate_feature: float = 0.1,
-        weight_swap_operands: float = 0.198,
-        weight_rotate_tree: float = 4.26,
-        weight_randomize: float = 0.000502,
-        weight_simplify: float = 0.00209,
-        weight_optimize: float = 0.0,
-        weight_backsolve: float = 0.0,
+        weight_add_node: float | None = None,
+        weight_insert_node: float | None = None,
+        weight_delete_node: float | None = None,
+        weight_do_nothing: float | None = None,
+        weight_mutate_constant: float | None = None,
+        weight_mutate_operator: float | None = None,
+        weight_mutate_feature: float | None = None,
+        weight_swap_operands: float | None = None,
+        weight_rotate_tree: float | None = None,
+        weight_randomize: float | None = None,
+        weight_simplify: float | None = None,
+        weight_optimize: float | None = None,
+        weight_backsolve: float | None = None,
         default_mutations: Mapping[AbstractMutation, float] | None = None,
         mutations: Mapping[AbstractMutation, float] | None = None,
         crossover_probability: float = 0.2,
@@ -1686,6 +1686,18 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # Immutable parameter validation
         # Ensure instance parameters are allowable values:
 
+        legacy_mutation_weights_used = any(
+            getattr(self, parameter) is not None
+            for _, parameter, _ in _LEGACY_MUTATION_TYPES
+        )
+        if legacy_mutation_weights_used and (
+            self.default_mutations is not None or self.mutations is not None
+        ):
+            raise ValueError(
+                "Cannot combine legacy `weight_*` parameters with "
+                "`default_mutations` or `mutations`."
+            )
+
         # Validate operators vs binary_operators/unary_operators mutual exclusion
         if self.operators is not None:
             if self.binary_operators is not None or self.unary_operators is not None:
@@ -2239,8 +2251,12 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     )
                     if mutation_type is ConstantMutation
                     else mutation_type()
-                ): getattr(self, parameter)
-                for mutation_type, parameter in _LEGACY_MUTATION_TYPES
+                ): (
+                    default_weight
+                    if getattr(self, parameter) is None
+                    else getattr(self, parameter)
+                )
+                for mutation_type, parameter, default_weight in _LEGACY_MUTATION_TYPES
             }
             if self.default_mutations is None
             else self.default_mutations
