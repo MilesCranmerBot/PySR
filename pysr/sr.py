@@ -608,49 +608,49 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         guesses. Default is `0.001`.
     weight_add_node : float | None
         Relative likelihood for mutation to add a node.
-        Default is `None` (uses the backend default of `2.47`).
+        Default is `None` (mapping to `2.47`).
     weight_insert_node : float | None
         Relative likelihood for mutation to insert a node.
-        Default is `None` (uses the backend default of `0.0112`).
+        Default is `None` (mapping to `0.0112`).
     weight_delete_node : float | None
         Relative likelihood for mutation to delete a node.
-        Default is `None` (uses the backend default of `0.870`).
+        Default is `None` (mapping to `0.870`).
     weight_do_nothing : float | None
         Relative likelihood for mutation to leave the individual.
-        Default is `None` (uses the backend default of `0.273`).
+        Default is `None` (mapping to `0.273`).
     weight_mutate_constant : float | None
         Relative likelihood for mutation to change the constant slightly
         in a random direction.
-        Default is `None` (uses the backend default of `0.0346`).
+        Default is `None` (mapping to `0.0346`).
     weight_mutate_operator : float | None
         Relative likelihood for mutation to swap an operator.
-        Default is `None` (uses the backend default of `0.293`).
+        Default is `None` (mapping to `0.293`).
     weight_mutate_feature : float | None
         Relative likelihood for mutation to change which feature a variable node references.
-        Default is `None` (uses the backend default of `0.1`).
+        Default is `None` (mapping to `0.1`).
     weight_swap_operands : float | None
         Relative likehood for swapping operands in binary operators.
-        Default is `None` (uses the backend default of `0.198`).
+        Default is `None` (mapping to `0.198`).
     weight_rotate_tree : float | None
         How often to perform a tree rotation at a random node.
-        Default is `None` (uses the backend default of `4.26`).
+        Default is `None` (mapping to `4.26`).
     weight_randomize : float | None
         Relative likelihood for mutation to completely delete and then
         randomly generate the equation
-        Default is `None` (uses the backend default of `0.000502`).
+        Default is `None` (mapping to `0.000502`).
     weight_simplify : float | None
         Relative likelihood for mutation to simplify constant parts by evaluation
-        Default is `None` (uses the backend default of `0.00209`).
+        Default is `None` (mapping to `0.00209`).
     weight_optimize: float | None
         Constant optimization can also be performed as a mutation, in addition to
         the normal strategy controlled by `optimize_probability` which happens
         every iteration. Using it as a mutation is useful if you want to use
         a large `ncycles_periteration`, and may not optimize very often.
-        Default is `None` (uses the backend default of `0.0`).
+        Default is `None` (mapping to `0.0`).
     weight_backsolve : float | None
         Relative likelihood for backsolve mutation. To configure its parameters,
         pass `BacksolveMutation(...)` through `mutations` instead.
-        Default is `None` (uses the backend default of `0.0`).
+        Default is `None` (mapping to `0.0`).
     default_mutations : Mapping[AbstractMutation, float] | None
         Default mutation configurations and their weights. When provided, these
         replace the SymbolicRegression.jl defaults and plugin-contributed mutations.
@@ -809,9 +809,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         `TensorBoardLoggerSpec`.
         Default is `None`.
     default_plugins : Sequence[AbstractPlugin] | None
-        Default plugin configurations. This replaces the plugins configured by
-        `annealing`, `alpha`, `use_frequency`, and
-        `use_frequency_in_tournament` when provided. Default is `None`.
+        Default plugin configurations. Default is `None`.
     plugins : Sequence[AbstractPlugin] | None
         Plugin configurations. Entries override or extend `default_plugins` by
         plugin type. Default is `None`.
