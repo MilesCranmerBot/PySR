@@ -639,13 +639,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         Relative likelihood for backsolve mutation. To configure its parameters,
         pass `BacksolveMutation(...)` through `mutations` instead.
         Default is `None` (mapping to `0.0`).
+    mutations : Mapping[AbstractMutation, float] | None
+        Mutation configurations and their weights. Entries override or extend
+        `default_mutations` by mutation type. Default is `None`.
     default_mutations : Mapping[AbstractMutation, float] | None
         Default mutation configurations and their weights. When provided, these
         replace the SymbolicRegression.jl defaults and plugin-contributed mutations.
         Default is `None`.
-    mutations : Mapping[AbstractMutation, float] | None
-        Mutation configurations and their weights. Entries override or extend
-        `default_mutations` by mutation type. Default is `None`.
     crossover_probability : float
         Absolute probability of crossover-type genetic operation, instead of a mutation.
         Default is `0.2`.
@@ -796,11 +796,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         Logger specification for the Julia backend. See, for example,
         `TensorBoardLoggerSpec`.
         Default is `None`.
-    default_plugins : Sequence[AbstractPlugin] | None
-        Default plugin configurations. Default is `None`.
     plugins : Sequence[AbstractPlugin] | None
         Plugin configurations. Entries override or extend `default_plugins` by
         plugin type. Default is `None`.
+    default_plugins : Sequence[AbstractPlugin] | None
+        Default plugin configurations. Default is `None`.
     input_stream : str
         The stream to read user input from. By default, this is `"stdin"`.
         If you encounter issues with reading from `stdin`, like a hang,
@@ -1019,8 +1019,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         weight_simplify: float | None = None,
         weight_optimize: float | None = None,
         weight_backsolve: float | None = None,
-        default_mutations: Mapping[AbstractMutation, float] | None = None,
         mutations: Mapping[AbstractMutation, float] | None = None,
+        default_mutations: Mapping[AbstractMutation, float] | None = None,
         crossover_probability: float = 0.2,
         skip_mutation_failures: bool = True,
         migration: bool = True,
@@ -1069,8 +1069,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         print_precision: int = 5,
         progress: bool = True,
         logger_spec: AbstractLoggerSpec | None = None,
-        default_plugins: Sequence[AbstractPlugin] | None = None,
         plugins: Sequence[AbstractPlugin] | None = None,
+        default_plugins: Sequence[AbstractPlugin] | None = None,
         input_stream: str = "stdin",
         run_id: str | None = None,
         output_directory: str | None = None,
@@ -1141,8 +1141,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.weight_simplify = weight_simplify
         self.weight_optimize = weight_optimize
         self.weight_backsolve = weight_backsolve
-        self.default_mutations = default_mutations
         self.mutations = mutations
+        self.default_mutations = default_mutations
         self.crossover_probability = crossover_probability
         self.skip_mutation_failures = skip_mutation_failures
         # -- Migration parameters
@@ -1189,8 +1189,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.print_precision = print_precision
         self.progress = progress
         self.logger_spec = logger_spec
-        self.default_plugins = default_plugins
         self.plugins = plugins
+        self.default_plugins = default_plugins
         self.input_stream = input_stream
         # - Project management
         self.run_id = run_id
@@ -2234,20 +2234,20 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         mutation_weights = (
             jl_named_tuple(legacy_mutation_weights) if legacy_mutation_weights else None
         )
+        mutations = (
+            None if self.mutations is None else convert_mutations(self.mutations)
+        )
         default_mutations = (
             None
             if self.default_mutations is None
             else convert_mutations(self.default_mutations)
         )
-        mutations = (
-            None if self.mutations is None else convert_mutations(self.mutations)
-        )
+        plugins = jl_array([plugin.julia_plugin() for plugin in (self.plugins or [])])
         default_plugins = (
             None
             if self.default_plugins is None
             else jl_array([plugin.julia_plugin() for plugin in self.default_plugins])
         )
-        plugins = jl_array([plugin.julia_plugin() for plugin in (self.plugins or [])])
 
         # Convert operators dict to Julia format and create OperatorEnum
         # Fill in empty tuples for missing arities up to max arity
@@ -2326,10 +2326,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 else len(X)
             ),
             mutation_weights=mutation_weights,
-            default_mutations=default_mutations,
             mutations=mutations,
-            default_plugins=default_plugins,
+            default_mutations=default_mutations,
             plugins=plugins,
+            default_plugins=default_plugins,
             tournament_selection_p=self.tournament_selection_p,
             tournament_selection_n=self.tournament_selection_n,
             # These have the same name:
