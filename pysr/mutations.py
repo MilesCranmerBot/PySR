@@ -26,7 +26,7 @@ _LEGACY_MUTATION_PARAMETERS = (
 )
 
 
-def create_mutations(mutation_pairs: Sequence[AnyValue]) -> AnyValue:
+def create_mutations(mutation_pairs: Sequence[tuple[AnyValue, float]]) -> AnyValue:
     """Create a Julia vector of weighted mutations."""
     pair_type = jl.Pair[SymbolicRegression.AbstractMutation, jl.Float64]
     return jl_array(mutation_pairs, dtype=pair_type)
