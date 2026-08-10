@@ -565,7 +565,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         (requires `annealing` to be `True`).
         Default is `3.17`.
     annealing : bool
-        Whether to use annealing.  Default is `False`.
+        Whether to use annealing.  Default is `True`.
     early_stop_condition : float | str
         Stop the search early if this loss is reached. You may also
         pass a string containing a Julia function which
@@ -709,7 +709,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     batching : bool | "auto"
         Whether to compare population members on small batches during
         evolution. Still uses full dataset for comparing against hall
-        of fame. "auto" enables batching for N>1000. Default is `"auto"`.
+        of fame. `"auto"` lets SymbolicRegression.jl choose based on the
+        dataset. Default is `"auto"`.
     batch_size : int | None
         The batch size to use if batching. If None, uses the
         full dataset when N<=1000, 128 for N<5000, 256 for N<50000,
@@ -975,7 +976,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         use_frequency_in_tournament: bool = True,
         adaptive_parsimony_scaling: float = 1040.0,
         alpha: float = 3.17,
-        annealing: bool = False,
+        annealing: bool = True,
         early_stop_condition: float | str | None = None,
         ncycles_per_iteration: int = 380,
         fraction_replaced: float = 0.00036,
@@ -2251,15 +2252,12 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             maxsize=int(self.maxsize),
             output_directory=_escape_filename(self.output_directory_),
             npopulations=int(self.populations),
-            # Determine actual batching based on "auto" mode
-            batching=(self.batching if self.batching != "auto" else len(X) > 1000),
-            batch_size=int(
-                _get_batch_size(len(X), runtime_params.batch_size)
-                if (
-                    self.batching == True or (self.batching == "auto" and len(X) > 1000)
-                )
-                else len(X)
+            batching=(
+                jl.Symbol(self.batching)
+                if isinstance(self.batching, str)
+                else self.batching
             ),
+            batch_size=runtime_params.batch_size,
             mutation_weights=mutation_weights,
             tournament_selection_p=self.tournament_selection_p,
             tournament_selection_n=self.tournament_selection_n,
@@ -2486,14 +2484,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             X_units,
             y_units,
         )
-
-        if X.shape[0] > 50000:
-            warnings.warn(
-                "You are using a dataset with more than 50,000 datapoints. "
-                "Symbolic regression rarely benefits from this many points - consider "
-                "subsampling to 10,000 points or fewer. If you have high noise, "
-                "denoise the data first rather than using more points."
-            )
 
         random_state = check_random_state(self.random_state)  # For np random
         seed = cast(int, random_state.randint(0, 2**31 - 1))  # For julia random
@@ -3070,20 +3060,6 @@ def _prepare_guesses_for_julia(guesses, nout) -> VectorValue | None:
         julia_guesses.append(jl_array(julia_output_guesses))
 
     return jl_array(julia_guesses)
-
-
-def _get_batch_size(dataset_size: int, batch_size_param: int | None) -> int:
-    """Calculate the actual batch size to use."""
-    if batch_size_param is not None:
-        return min(dataset_size, batch_size_param)
-    elif dataset_size <= 1000:
-        return dataset_size
-    elif dataset_size < 5000:
-        return 128
-    elif dataset_size < 50000:
-        return 256
-    else:
-        return 512
 
 
 def _mutate_parameter(param_name: str, param_value):

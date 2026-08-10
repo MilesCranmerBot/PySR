@@ -37,12 +37,13 @@ RUN python3 -c 'import json; pkg = json.load(open("/pysr/pysr/juliapkg.json", "r
 # Remove any = or ^ or ~ from the version:
 RUN cat /pysr/sr_version | sed 's/[\^=~]//g' > /pysr/sr_version_processed
 
-# Now, we check out the version or revision of SymbolicRegression.jl that PySR is using:
-RUN git init /srjl && \
-    git -C /srjl remote add origin https://github.com/astroautomata/SymbolicRegression.jl && \
-    (git -C /srjl fetch --depth 1 origin "$(cat /pysr/sr_version_processed)" || \
-        git -C /srjl fetch --depth 1 origin "v$(cat /pysr/sr_version_processed)") && \
-    git -C /srjl checkout --detach FETCH_HEAD
+# Now, we check out the version of SymbolicRegression.jl that PySR is using:
+# If sr_version starts with 'v', use it as-is; otherwise prepend 'v'
+RUN if grep -q '^v' /pysr/sr_version_processed; then \
+        git clone -b "$(cat /pysr/sr_version_processed)" --single-branch https://github.com/astroautomata/SymbolicRegression.jl /srjl; \
+    else \
+        git clone -b "v$(cat /pysr/sr_version_processed)" --single-branch https://github.com/astroautomata/SymbolicRegression.jl /srjl; \
+    fi
 
 # Edit SymbolicRegression.jl to create a new function.
 # We want to put this function immediately after `module SymbolicRegression`:
