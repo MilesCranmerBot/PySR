@@ -9,6 +9,22 @@ from dataclasses import dataclass
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, SymbolicRegression, jl
 
+_LEGACY_MUTATION_PARAMETERS = (
+    "weight_add_node",
+    "weight_insert_node",
+    "weight_delete_node",
+    "weight_do_nothing",
+    "weight_mutate_constant",
+    "weight_mutate_operator",
+    "weight_mutate_feature",
+    "weight_swap_operands",
+    "weight_rotate_tree",
+    "weight_randomize",
+    "weight_simplify",
+    "weight_optimize",
+    "weight_backsolve",
+)
+
 
 def create_mutations(mutation_pairs: Sequence[AnyValue]) -> AnyValue:
     """Create a Julia vector of weighted mutations."""

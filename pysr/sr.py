@@ -52,7 +52,11 @@ from .julia_helpers import (
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
 from .logger_specs import AbstractLoggerSpec
-from .mutations import AbstractMutation, convert_mutations
+from .mutations import (
+    _LEGACY_MUTATION_PARAMETERS,
+    AbstractMutation,
+    convert_mutations,
+)
 from .plugins import AbstractPlugin
 from .utils import (
     ArrayLike,
@@ -75,22 +79,6 @@ try:
 except ImportError:
     from typing_extensions import List
 
-
-_LEGACY_MUTATION_PARAMETERS = (
-    "weight_add_node",
-    "weight_insert_node",
-    "weight_delete_node",
-    "weight_do_nothing",
-    "weight_mutate_constant",
-    "weight_mutate_operator",
-    "weight_mutate_feature",
-    "weight_swap_operands",
-    "weight_rotate_tree",
-    "weight_randomize",
-    "weight_simplify",
-    "weight_optimize",
-    "weight_backsolve",
-)
 
 _CHECKPOINT_SCHEMA_VERSION = 2
 
