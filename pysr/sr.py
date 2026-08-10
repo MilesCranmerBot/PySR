@@ -10,7 +10,7 @@ import re
 import sys
 import tempfile
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from io import StringIO
 from multiprocessing import cpu_count
@@ -52,6 +52,12 @@ from .julia_helpers import (
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
 from .logger_specs import AbstractLoggerSpec
+from .mutations import (
+    _LEGACY_MUTATION_PARAMETERS,
+    AbstractMutation,
+    convert_mutations,
+)
+from .plugins import AbstractPlugin
 from .utils import (
     ArrayLike,
     PathLike,
@@ -73,6 +79,8 @@ try:
 except ImportError:
     from typing_extensions import List
 
+
+_CHECKPOINT_SCHEMA_VERSION = 2
 
 ALREADY_RAN = False
 
@@ -586,50 +594,61 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     fraction_replaced_guesses : float
         How much of the population to replace with migrating equations from
         guesses. Default is `0.001`.
-    weight_add_node : float
+    weight_add_node : float | None
         Relative likelihood for mutation to add a node.
-        Default is `2.47`.
-    weight_insert_node : float
+        Default is `None` (mapping to `2.47`).
+    weight_insert_node : float | None
         Relative likelihood for mutation to insert a node.
-        Default is `0.0112`.
-    weight_delete_node : float
+        Default is `None` (mapping to `0.0112`).
+    weight_delete_node : float | None
         Relative likelihood for mutation to delete a node.
-        Default is `0.870`.
-    weight_do_nothing : float
+        Default is `None` (mapping to `0.870`).
+    weight_do_nothing : float | None
         Relative likelihood for mutation to leave the individual.
-        Default is `0.273`.
-    weight_mutate_constant : float
+        Default is `None` (mapping to `0.273`).
+    weight_mutate_constant : float | None
         Relative likelihood for mutation to change the constant slightly
         in a random direction.
-        Default is `0.0346`.
-    weight_mutate_operator : float
+        Default is `None` (mapping to `0.0346`).
+    weight_mutate_operator : float | None
         Relative likelihood for mutation to swap an operator.
-        Default is `0.293`.
-    weight_mutate_feature : float
+        Default is `None` (mapping to `0.293`).
+    weight_mutate_feature : float | None
         Relative likelihood for mutation to change which feature a variable node references.
-        Default is `0.1`.
-    weight_swap_operands : float
+        Default is `None` (mapping to `0.1`).
+    weight_swap_operands : float | None
         Relative likehood for swapping operands in binary operators.
-        Default is `0.198`.
-    weight_rotate_tree : float
+        Default is `None` (mapping to `0.198`).
+    weight_rotate_tree : float | None
         How often to perform a tree rotation at a random node.
-        Default is `4.26`.
-    weight_randomize : float
+        Default is `None` (mapping to `4.26`).
+    weight_randomize : float | None
         Relative likelihood for mutation to completely delete and then
         randomly generate the equation
-        Default is `0.000502`.
-    weight_simplify : float
+        Default is `None` (mapping to `0.000502`).
+    weight_simplify : float | None
         Relative likelihood for mutation to simplify constant parts by evaluation
-        Default is `0.00209`.
-    weight_optimize: float
+        Default is `None` (mapping to `0.00209`).
+    weight_optimize: float | None
         Constant optimization can also be performed as a mutation, in addition to
         the normal strategy controlled by `optimize_probability` which happens
         every iteration. Using it as a mutation is useful if you want to use
         a large `ncycles_periteration`, and may not optimize very often.
-        Default is `0.0`.
+        Default is `None` (mapping to `0.0`).
+    weight_backsolve : float | None
+        Relative likelihood for backsolve mutation. To configure its parameters,
+        pass `BacksolveMutation(...)` through `mutations` instead.
+        Default is `None` (mapping to `0.0`).
+    mutations : Mapping[AbstractMutation, float] | None
+        Mutation configurations and their weights. Entries override or extend
+        `default_mutations` by mutation type. Default is `None`.
+    default_mutations : Mapping[AbstractMutation, float] | None
+        Default mutation configurations and their weights. When provided, these
+        replace the SymbolicRegression.jl defaults and plugin-contributed mutations.
+        Default is `None`.
     crossover_probability : float
         Absolute probability of crossover-type genetic operation, instead of a mutation.
-        Default is `0.0259`.
+        Default is `0.2`.
     skip_mutation_failures : bool
         Whether to skip mutation and crossover failures, rather than
         simply re-sampling the current member.
@@ -754,6 +773,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     warm_start : bool
         Tells fit to continue from where the last call to fit finished.
         If false, each call to fit will be fresh, overwriting previous results.
+        Plugin runtime state is reinitialized for each call to `fit`.
         Default is `False`.
     guesses : list[str] | list[list[str]] | list[dict[str, str]] | list[list[dict[str, str]]] | None
         Initial guesses for expressions to seed the search. Examples:
@@ -777,6 +797,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         Logger specification for the Julia backend. See, for example,
         `TensorBoardLoggerSpec`.
         Default is `None`.
+    plugins : Sequence[AbstractPlugin] | None
+        Plugin configurations. Entries override or extend `default_plugins` by
+        plugin type. Default is `None`.
+    default_plugins : Sequence[AbstractPlugin] | None
+        Default plugin configurations. Default is `None`.
     input_stream : str
         The stream to read user input from. By default, this is `"stdin"`.
         If you encounter issues with reading from `stdin`, like a hang,
@@ -982,19 +1007,22 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         fraction_replaced: float = 0.00036,
         fraction_replaced_hof: float = 0.0614,
         fraction_replaced_guesses: float = 0.001,
-        weight_add_node: float = 2.47,
-        weight_insert_node: float = 0.0112,
-        weight_delete_node: float = 0.870,
-        weight_do_nothing: float = 0.273,
-        weight_mutate_constant: float = 0.0346,
-        weight_mutate_operator: float = 0.293,
-        weight_mutate_feature: float = 0.1,
-        weight_swap_operands: float = 0.198,
-        weight_rotate_tree: float = 4.26,
-        weight_randomize: float = 0.000502,
-        weight_simplify: float = 0.00209,
-        weight_optimize: float = 0.0,
-        crossover_probability: float = 0.0259,
+        weight_add_node: float | None = None,
+        weight_insert_node: float | None = None,
+        weight_delete_node: float | None = None,
+        weight_do_nothing: float | None = None,
+        weight_mutate_constant: float | None = None,
+        weight_mutate_operator: float | None = None,
+        weight_mutate_feature: float | None = None,
+        weight_swap_operands: float | None = None,
+        weight_rotate_tree: float | None = None,
+        weight_randomize: float | None = None,
+        weight_simplify: float | None = None,
+        weight_optimize: float | None = None,
+        weight_backsolve: float | None = None,
+        mutations: Mapping[AbstractMutation, float] | None = None,
+        default_mutations: Mapping[AbstractMutation, float] | None = None,
+        crossover_probability: float = 0.2,
         skip_mutation_failures: bool = True,
         migration: bool = True,
         hof_migration: bool = True,
@@ -1042,6 +1070,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         print_precision: int = 5,
         progress: bool = True,
         logger_spec: AbstractLoggerSpec | None = None,
+        plugins: Sequence[AbstractPlugin] | None = None,
+        default_plugins: Sequence[AbstractPlugin] | None = None,
         input_stream: str = "stdin",
         run_id: str | None = None,
         output_directory: str | None = None,
@@ -1111,6 +1141,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.weight_randomize = weight_randomize
         self.weight_simplify = weight_simplify
         self.weight_optimize = weight_optimize
+        self.weight_backsolve = weight_backsolve
+        self.mutations = mutations
+        self.default_mutations = default_mutations
         self.crossover_probability = crossover_probability
         self.skip_mutation_failures = skip_mutation_failures
         # -- Migration parameters
@@ -1157,6 +1190,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.print_precision = print_precision
         self.progress = progress
         self.logger_spec = logger_spec
+        self.plugins = plugins
+        self.default_plugins = default_plugins
         self.input_stream = input_stream
         # - Project management
         self.run_id = run_id
@@ -1440,6 +1475,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             key: (None if key in state_keys_to_clear else value)
             for key, value in state.items()
         }
+        pickled_state["_checkpoint_schema_version"] = _CHECKPOINT_SCHEMA_VERSION
         if ("equations_" in pickled_state) and (
             pickled_state["equations_"] is not None
         ):
@@ -1464,6 +1500,15 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     )
                 ]
         return pickled_state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        schema_version = state.pop("_checkpoint_schema_version", None)
+        if schema_version != _CHECKPOINT_SCHEMA_VERSION:
+            raise ValueError(
+                "Unsupported PySR checkpoint schema: "
+                f"expected {_CHECKPOINT_SCHEMA_VERSION}, found {schema_version!r}."
+            )
+        self.__dict__.update(state)
 
     def _checkpoint(self):
         """Save the model's current state to a checkpoint file.
@@ -1626,6 +1671,18 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # Immutable parameter validation
         # Ensure instance parameters are allowable values:
 
+        legacy_mutation_weights_used = any(
+            getattr(self, parameter) is not None
+            for parameter in _LEGACY_MUTATION_PARAMETERS
+        )
+        if legacy_mutation_weights_used and (
+            self.default_mutations is not None or self.mutations is not None
+        ):
+            raise ValueError(
+                "Cannot combine legacy `weight_*` parameters with "
+                "`default_mutations` or `mutations`."
+            )
+
         # Validate operators vs binary_operators/unary_operators mutual exclusion
         if self.operators is not None:
             if self.binary_operators is not None or self.unary_operators is not None:
@@ -1658,7 +1715,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
 
         param_container = _DynamicallySetParams(
-            operators={2: ["+", "*", "-", "/"]},
+            operators={2: ["+", "-", "/", "*"]},
             maxdepth=self.maxsize,
             constraints={},
             batch_size=None,
@@ -1675,7 +1732,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 operators_dict[2] = self.binary_operators.copy()
             else:
                 # Keep default binary operators
-                operators_dict[2] = ["+", "*", "-", "/"]
+                operators_dict[2] = ["+", "-", "/", "*"]
             if self.unary_operators is not None:
                 operators_dict[1] = self.unary_operators.copy()
             param_container.operators = operators_dict
@@ -2170,19 +2227,27 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         else:
             autodiff_backend = None
 
-        mutation_weights = SymbolicRegression.MutationWeights(
-            mutate_constant=self.weight_mutate_constant,
-            mutate_operator=self.weight_mutate_operator,
-            mutate_feature=self.weight_mutate_feature,
-            swap_operands=self.weight_swap_operands,
-            rotate_tree=self.weight_rotate_tree,
-            add_node=self.weight_add_node,
-            insert_node=self.weight_insert_node,
-            delete_node=self.weight_delete_node,
-            simplify=self.weight_simplify,
-            randomize=self.weight_randomize,
-            do_nothing=self.weight_do_nothing,
-            optimize=self.weight_optimize,
+        legacy_mutation_weights = {
+            parameter.removeprefix("weight_"): getattr(self, parameter)
+            for parameter in _LEGACY_MUTATION_PARAMETERS
+            if getattr(self, parameter) is not None
+        }
+        mutation_weights = (
+            jl_named_tuple(legacy_mutation_weights) if legacy_mutation_weights else None
+        )
+        mutations = (
+            None if self.mutations is None else convert_mutations(self.mutations)
+        )
+        default_mutations = (
+            None
+            if self.default_mutations is None
+            else convert_mutations(self.default_mutations)
+        )
+        plugins = jl_array([plugin.julia_plugin() for plugin in (self.plugins or [])])
+        default_plugins = (
+            None
+            if self.default_plugins is None
+            else jl_array([plugin.julia_plugin() for plugin in self.default_plugins])
         )
 
         # Convert operators dict to Julia format and create OperatorEnum
@@ -2259,6 +2324,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             ),
             batch_size=runtime_params.batch_size,
             mutation_weights=mutation_weights,
+            mutations=mutations,
+            default_mutations=default_mutations,
+            plugins=plugins,
+            default_plugins=default_plugins,
             tournament_selection_p=self.tournament_selection_p,
             tournament_selection_n=self.tournament_selection_n,
             # These have the same name:
@@ -2305,6 +2374,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             define_helper_functions=False,
         )
 
+        if self.warm_start and self.julia_options_stream_ is not None:
+            SymbolicRegression.CoreModule.check_warm_start_compatibility(
+                self.julia_options_, options
+            )
         self.julia_options_stream_ = jl_serialize(options)
 
         # Convert data to desired precision
