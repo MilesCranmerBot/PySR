@@ -521,48 +521,13 @@ See [Expression Specifications](/api/#expression-specifications) for more detail
 You can use this approach for more complex cases,
 where you have multiple expressions in the template and parameters that vary by category.
 
+### Learning multiple outputs jointly
 
-## 11. Using TensorBoard for Logging
-
-You can use TensorBoard to visualize the search progress, as well as
-record hyperparameters and final metrics (like `min_loss` and `pareto_volume` - the latter of which
-is a performance measure of the entire Pareto front).
-
-```python
-import numpy as np
-from pysr import PySRRegressor, TensorBoardLoggerSpec
-
-rstate = np.random.RandomState(42)
-
-# Uniform dist between -3 and 3:
-X = rstate.uniform(-3, 3, (1000, 2))
-y = np.exp(X[:, 0]) + X[:, 1]
-
-# Create a logger that writes to "logs/run*":
-logger_spec = TensorBoardLoggerSpec(
-    log_dir="logs/run",
-    log_interval=10,  # Log every 10 iterations
-)
-
-model = PySRRegressor(
-    binary_operators=["+", "*", "-", "/"],
-    logger_spec=logger_spec,
-)
-model.fit(X, y)
-```
-
-You can then view the logs with:
-
-```bash
-tensorboard --logdir logs/
-```
-
-## 12. Vector-valued expressions
-
-You can use `TemplateExpressionSpec` to find expressions for vector-valued data,
-where each component might share a common structure.
-The trick is to put each vector element into your feature matrix `X`,
-and then use a template expression to define the relationships.
+You can use `TemplateExpressionSpec` to learn several scalar expressions jointly
+and compare their combined predictions with a vector target. This is useful when
+the outputs share a known outer structure. Each learned expression still operates
+on scalar values; the template combines their predictions and computes a scalar
+residual.
 
 For example, say we have 3-dimensional vectors where each component
 follows a pattern with a shared term. Say the true model is:
@@ -683,7 +648,42 @@ print(f"f1 at (1,2,3): {f1_result[0]}")  # Should be ~4.0 for x2^2
 print(f"shared at (1,2,3): {shared_result[0]}")  # Should be ~2.718 for exp(1)
 ```
 
-## 13. Using differential operators
+## 11. Using TensorBoard for Logging
+
+You can use TensorBoard to visualize the search progress, as well as
+record hyperparameters and final metrics (like `min_loss` and `pareto_volume` - the latter of which
+is a performance measure of the entire Pareto front).
+
+```python
+import numpy as np
+from pysr import PySRRegressor, TensorBoardLoggerSpec
+
+rstate = np.random.RandomState(42)
+
+# Uniform dist between -3 and 3:
+X = rstate.uniform(-3, 3, (1000, 2))
+y = np.exp(X[:, 0]) + X[:, 1]
+
+# Create a logger that writes to "logs/run*":
+logger_spec = TensorBoardLoggerSpec(
+    log_dir="logs/run",
+    log_interval=10,  # Log every 10 iterations
+)
+
+model = PySRRegressor(
+    binary_operators=["+", "*", "-", "/"],
+    logger_spec=logger_spec,
+)
+model.fit(X, y)
+```
+
+You can then view the logs with:
+
+```bash
+tensorboard --logdir logs/
+```
+
+## 12. Using differential operators
 
 As part of the `TemplateExpressionSpec` described above,
 you can also use differential operators within the template.
@@ -723,12 +723,16 @@ If everything works, you should find something that simplifies to $\frac{\sqrt{x
 
 Here, we write out a full function in Julia.
 
-## 14. Custom value types
+## 13. Custom value types
 
 After working with custom operators, losses, and expression specifications,
 `TypeSpec` lets you change the value type used throughout a search.
 
-### Vector-valued symbolic regression
+The template example above coordinates several scalar-valued expression trees.
+With `TypeSpec`, vectors or tensors flow through each expression, constant, and
+operator.
+
+### Vector-valued expression trees
 
 This example searches for a program over two-dimensional vectors:
 
