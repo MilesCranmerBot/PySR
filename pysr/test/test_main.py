@@ -1965,17 +1965,6 @@ class TestHelpMessages(unittest.TestCase):
 
             self.assertIn("must provide either `operators`", str(cm.exception))
 
-    def test_size_warning(self):
-        """Ensure that a warning is given for a large input size."""
-        model = PySRRegressor()
-        X = np.random.randn(50001, 2)
-        y = np.random.randn(50001)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            with self.assertRaises(Exception) as context:
-                model.fit(X, y)
-            self.assertIn("more than 50,000", str(context.exception))
-
     def test_deterministic_warnings(self):
         """Ensure that warnings are given for determinism"""
         model = PySRRegressor(random_state=0)

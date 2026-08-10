@@ -2587,14 +2587,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             y_units,
         )
 
-        if X.shape[0] > 50000:
-            warnings.warn(
-                "You are using a dataset with more than 50,000 datapoints. "
-                "Symbolic regression rarely benefits from this many points - consider "
-                "subsampling to 10,000 points or fewer. If you have high noise, "
-                "denoise the data first rather than using more points."
-            )
-
         random_state = check_random_state(self.random_state)  # For np random
         seed = cast(int, random_state.randint(0, 2**31 - 1))  # For julia random
 
