@@ -1710,7 +1710,12 @@ class TestMiscellaneous(unittest.TestCase):
         plugins = {str(plugin_name(plugin)): plugin for plugin in options.plugins}
         self.assertSetEqual(
             set(plugins),
-            {"SimulatedAnnealingPlugin", "AdaptiveParsimonyPlugin", "Plugin"},
+            {
+                "SimulatedAnnealingPlugin",
+                "AdaptiveParsimonyPlugin",
+                "AdaptiveMutationWeightsPlugin",
+                "Plugin",
+            },
         )
         self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
         self.assertFalse(plugins["AdaptiveParsimonyPlugin"].tournament)
@@ -1858,30 +1863,8 @@ class TestMiscellaneous(unittest.TestCase):
             with self.assertRaisesRegex(JuliaError, "allocation has 2 tasks"):
                 _load_cluster_manager("slurm")(1)
 
-    def test_get_batch_size(self):
-        """Test the _get_batch_size function."""
-        from pysr.sr import _get_batch_size
-
-        # Test None (auto) mode with different dataset sizes
-        self.assertEqual(_get_batch_size(500, None), 500)
-        self.assertEqual(_get_batch_size(999, None), 999)
-        self.assertEqual(_get_batch_size(1000, None), 1000)
-        self.assertEqual(_get_batch_size(1001, None), 128)
-        self.assertEqual(_get_batch_size(1500, None), 128)
-        self.assertEqual(_get_batch_size(4999, None), 128)
-        self.assertEqual(_get_batch_size(5000, None), 256)
-        self.assertEqual(_get_batch_size(10000, None), 256)
-        self.assertEqual(_get_batch_size(49999, None), 256)
-        self.assertEqual(_get_batch_size(50000, None), 512)
-        self.assertEqual(_get_batch_size(100000, None), 512)
-
-        # Test explicit batch_size
-        self.assertEqual(_get_batch_size(1000, 64), 64)
-        self.assertEqual(_get_batch_size(1000, 2000), 1000)  # Capped at dataset size
-        self.assertEqual(_get_batch_size(50, 100), 50)  # Capped at dataset size
-
     def test_batching_auto(self):
-        """Test that batching='auto' works correctly."""
+        """Test that batching configuration is passed to SymbolicRegression.jl."""
         model = PySRRegressor()
         self.assertEqual(model.batching, "auto")
 
@@ -1889,11 +1872,13 @@ class TestMiscellaneous(unittest.TestCase):
         y_small = np.random.randn(100)
         model = PySRRegressor(batching="auto", niterations=0)
         model.fit(X_small, y_small)
+        self.assertEqual(model.julia_options_.batching, jl.Symbol("auto"))
+        self.assertIsNone(model.julia_options_.batch_size)
 
-        X_large = np.random.randn(1001, 2)
-        y_large = np.random.randn(1001)
-        model2 = PySRRegressor(batching="auto", niterations=0)
-        model2.fit(X_large, y_large)
+        explicit = PySRRegressor(batching=True, batch_size=64, niterations=0)
+        explicit.fit(X_small, y_small)
+        self.assertTrue(explicit.julia_options_.batching)
+        self.assertEqual(explicit.julia_options_.batch_size, 64)
 
     def test_batch_size_negative_warning(self):
         """Test that batch_size < 1 gives a warning for integers only."""
