@@ -158,8 +158,8 @@ class TestTypeSpecs(unittest.TestCase):
             )
         )
 
-    def test_type_spec_old_checkpoint_state(self):
-        state = PySRRegressor().__dict__.copy()
+    def test_type_spec_schema_2_checkpoint_state(self):
+        state = PySRRegressor().__getstate__()
         del state["type_spec"]
         model = PySRRegressor.__new__(PySRRegressor)
         model.__setstate__(state)

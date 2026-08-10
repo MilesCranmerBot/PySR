@@ -621,6 +621,10 @@ class TestPipeline(unittest.TestCase):
         regressor = PySRRegressor(warm_start=True, max_evals=10)
         regressor.fit(self.X, y)
 
+        regressor.set_params(binary_operators=["+", "*", "-", "/"])
+        with self.assertRaisesRegex(JuliaError, "Warm start incompatible.*operators"):
+            regressor.fit(self.X, y)
+
     def test_noisy_builtin_variable_names(self):
         y = self.X[:, [0, 1]] ** 2 + self.rstate.randn(self.X.shape[0], 1) * 0.05
         model = PySRRegressor(
@@ -1463,6 +1467,23 @@ class TestMiscellaneous(unittest.TestCase):
         y_predictions2 = model2.predict(X)
         np.testing.assert_array_almost_equal(y_predictions, y_predictions2)
 
+    def test_checkpoint_schema(self):
+        state = PySRRegressor().__getstate__()
+        self.assertEqual(state["_checkpoint_schema_version"], 2)
+
+        for schema_version in (None, 1, 3):
+            incompatible_state = state.copy()
+            if schema_version is None:
+                incompatible_state.pop("_checkpoint_schema_version")
+            else:
+                incompatible_state["_checkpoint_schema_version"] = schema_version
+
+            model = PySRRegressor.__new__(PySRRegressor)
+            with self.assertRaisesRegex(
+                ValueError, "Unsupported PySR checkpoint schema"
+            ):
+                model.__setstate__(incompatible_state)
+
     def test_scikit_learn_compatibility(self):
         """Test PySRRegressor compatibility with scikit-learn."""
         model = PySRRegressor(
@@ -1546,6 +1567,275 @@ class TestMiscellaneous(unittest.TestCase):
                 model.fit(X, y)
 
         self.assertTrue(any("progress bar" in str(w.message) for w in caught))
+
+    def test_builtin_mutation_and_plugin_configs(self):
+        from pysr import (
+            AdaptiveMutationWeightsPlugin,
+            BacksolveMutation,
+            ConstantMutation,
+            MutationBurstPlugin,
+            OperatorMutation,
+            SymbolicRegression,
+        )
+
+        mutation_name = jl.seval("m -> string(nameof(typeof(m)))")
+        for mutation, expected_name in (
+            (OperatorMutation(), "OperatorMutation"),
+            (BacksolveMutation(lambda_=0.2), "BacksolveMutation"),
+        ):
+            julia_mutation = mutation.julia_mutation()
+            self.assertEqual(str(mutation_name(julia_mutation)), expected_name)
+
+        constant_mutation = ConstantMutation().julia_mutation()
+        backend_default = SymbolicRegression.ConstantMutation()
+        self.assertEqual(
+            constant_mutation.perturbation_factor,
+            backend_default.perturbation_factor,
+        )
+        self.assertEqual(
+            constant_mutation.probability_negate,
+            backend_default.probability_negate,
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        for plugin, expected_name in (
+            (
+                AdaptiveMutationWeightsPlugin(reward="loss"),
+                "AdaptiveMutationWeightsPlugin",
+            ),
+            (MutationBurstPlugin(retry_attempts=2), "MutationBurstPlugin"),
+        ):
+            self.assertEqual(str(plugin_name(plugin.julia_plugin())), expected_name)
+
+    def test_default_operators_and_plugins_match_backend(self):
+        from pysr import SymbolicRegression
+
+        model = PySRRegressor()
+        backend_options = SymbolicRegression.Options()
+
+        backend_binary_operators = jl.seval(
+            "options -> string.(options.operators.ops[2])"
+        )(backend_options)
+        self.assertListEqual(
+            model._validate_and_modify_params().operators[2],
+            [str(operator) for operator in backend_binary_operators],
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {
+            str(plugin_name(plugin)): plugin for plugin in backend_options.plugins
+        }
+
+        parsimony = plugins["AdaptiveParsimonyPlugin"]
+        self.assertEqual(model.use_frequency, parsimony.mutation_acceptance)
+        self.assertEqual(model.use_frequency_in_tournament, parsimony.tournament)
+
+    def test_mutation_and_plugin_configuration(self):
+        from pysr import (
+            AbstractPlugin,
+            AdaptiveParsimonyPlugin,
+            BacksolveMutation,
+            ConstantMutation,
+            RandomizeMutation,
+            SimulatedAnnealingPlugin,
+            SymbolicRegression,
+        )
+
+        jl.seval("""
+            if !isdefined(Main, :PySRPluginMutationTest)
+                @eval module PySRPluginMutationTest
+                    using SymbolicRegression
+                    struct PluginMutation <: SymbolicRegression.AbstractMutation end
+                    struct Plugin <: SymbolicRegression.AbstractPlugin end
+                    SymbolicRegression.plugin_mutations(::Plugin) =
+                        (PluginMutation() => 0.25,)
+                end
+            end
+            """)
+
+        class PluginConfig(AbstractPlugin):
+            def julia_plugin(self):
+                return jl.seval("PySRPluginMutationTest.Plugin()")
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            perturbation_factor=0.7,
+            probability_negate_constant=0.8,
+            mutations={
+                BacksolveMutation(max_library_size=123): 0.02,
+                ConstantMutation(perturbation_factor=0.2): 0.5,
+                RandomizeMutation(): 0.4,
+            },
+            plugins=[
+                SimulatedAnnealingPlugin(alpha=0.4),
+                AdaptiveParsimonyPlugin(tournament=False, mutation_acceptance=False),
+                PluginConfig(),
+            ],
+        )
+        model.fit(X, y)
+
+        options = model.julia_options_
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        mutation_by_name = {
+            str(mutation_name(pair)): pair for pair in options.mutations
+        }
+        self.assertEqual(options.crossover_probability, 0.2)
+        expected_weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in SymbolicRegression.Options().mutations
+        }
+        expected_weights.update(
+            ConstantMutation=0.5,
+            RandomizeMutation=0.4,
+            BacksolveMutation=0.02,
+            PluginMutation=0.25,
+        )
+        self.assertSetEqual(set(mutation_by_name), set(expected_weights))
+        for name, weight in expected_weights.items():
+            self.assertEqual(float(jl.last(mutation_by_name[name])), weight)
+        constant_mutation = jl.first(mutation_by_name["ConstantMutation"])
+        self.assertEqual(constant_mutation.perturbation_factor, 0.2)
+        self.assertEqual(
+            constant_mutation.probability_negate,
+            SymbolicRegression.ConstantMutation().probability_negate,
+        )
+        self.assertEqual(
+            jl.first(mutation_by_name["BacksolveMutation"]).max_library_size,
+            123,
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {str(plugin_name(plugin)): plugin for plugin in options.plugins}
+        self.assertSetEqual(
+            set(plugins),
+            {
+                "SimulatedAnnealingPlugin",
+                "AdaptiveParsimonyPlugin",
+                "AdaptiveMutationWeightsPlugin",
+                "Plugin",
+            },
+        )
+        self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
+        self.assertFalse(plugins["AdaptiveParsimonyPlugin"].tournament)
+        self.assertFalse(plugins["AdaptiveParsimonyPlugin"].mutation_acceptance)
+
+    def test_default_mutation_and_plugin_configuration(self):
+        from pysr import (
+            BacksolveMutation,
+            MutationBurstPlugin,
+            OperatorMutation,
+            SimulatedAnnealingPlugin,
+        )
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            default_mutations={OperatorMutation(): 0.7},
+            mutations={BacksolveMutation(max_library_size=123): 0.2},
+            default_plugins=[MutationBurstPlugin(retry_attempts=2)],
+            plugins=[SimulatedAnnealingPlugin(alpha=0.4)],
+        )
+        model.fit(X, y)
+
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in model.julia_options_.mutations
+        }
+        self.assertDictEqual(
+            weights,
+            {"OperatorMutation": 0.7, "BacksolveMutation": 0.2},
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {
+            str(plugin_name(plugin)): plugin for plugin in model.julia_options_.plugins
+        }
+        self.assertSetEqual(
+            set(plugins), {"MutationBurstPlugin", "SimulatedAnnealingPlugin"}
+        )
+        self.assertEqual(plugins["MutationBurstPlugin"].retry_attempts, 2)
+        self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
+
+    def test_legacy_mutation_weight_override(self):
+        from pysr import SymbolicRegression
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            perturbation_factor=0.7,
+            probability_negate_constant=0.8,
+            weight_randomize=0.3,
+            weight_backsolve=0.2,
+        )
+        model.fit(X, y)
+
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in model.julia_options_.mutations
+        }
+        self.assertEqual(weights["RandomizeMutation"], 0.3)
+        self.assertEqual(weights["BacksolveMutation"], 0.2)
+        backend_weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in SymbolicRegression.default_mutations()
+        }
+        self.assertEqual(weights["AddNodeMutation"], backend_weights["AddNodeMutation"])
+        constant_mutation = next(
+            jl.first(pair)
+            for pair in model.julia_options_.mutations
+            if str(mutation_name(pair)) == "ConstantMutation"
+        )
+        self.assertEqual(constant_mutation.perturbation_factor, 0.7)
+        self.assertEqual(constant_mutation.probability_negate, 0.8)
+
+    def test_mutation_interfaces_are_mutually_exclusive(self):
+        from sklearn.base import clone
+
+        from pysr import OperatorMutation
+
+        model = PySRRegressor()
+        cloned_model = clone(model)
+        legacy_parameters = filter(
+            lambda parameter: parameter.startswith("weight_"), model.get_params()
+        )
+        for parameter in legacy_parameters:
+            self.assertIsNone(getattr(model, parameter))
+            self.assertIsNone(getattr(cloned_model, parameter))
+
+        for new_interface in (
+            {"default_mutations": {OperatorMutation(): 0.7}},
+            {"mutations": {OperatorMutation(): 0.7}},
+        ):
+            conflicting_model = PySRRegressor(weight_add_node=2.47, **new_interface)
+            with self.assertRaisesRegex(ValueError, "Cannot combine legacy"):
+                conflicting_model._validate_and_modify_params()
 
     def test_param_groupings(self):
         """Test that param_groupings are complete"""
