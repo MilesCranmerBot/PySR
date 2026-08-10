@@ -190,7 +190,7 @@ def _create_julia_operators_and_loss_functions(
     elementwise_loss: str | None,
     loss_function: str | None,
     loss_function_expression: str | None,
-) -> tuple[dict[int, list[str]], AnyValue, AnyValue, AnyValue]:
+) -> tuple[dict[int, list[str]], AnyValue | None, AnyValue | None, AnyValue | None]:
     operators = _maybe_create_inline_operators(
         operators=operators,
         extra_sympy_mappings=extra_sympy_mappings,
@@ -1689,7 +1689,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
     def _instantiate_julia_definitions(
         self, operators: dict[int, list[str]] | None = None
-    ) -> tuple[AnyValue, dict[int, list[str]], AnyValue, AnyValue, AnyValue]:
+    ) -> tuple[
+        AnyValue | None,
+        dict[int, list[str]],
+        AnyValue | None,
+        AnyValue | None,
+        AnyValue | None,
+    ]:
         value_type = self.type_spec_.instantiate()
         operators, custom_loss, custom_full_objective, custom_loss_expression = (
             _create_julia_operators_and_loss_functions(
