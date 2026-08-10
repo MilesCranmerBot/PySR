@@ -46,7 +46,68 @@ def object_array_2d(values: Any) -> np.ndarray:
 
 @dataclass(frozen=True)
 class TypeSpec:
-    """Runtime definition of a value type used by SymbolicRegression.jl."""
+    """Runtime definition of a value type used by SymbolicRegression.jl.
+
+    Parameters
+    ----------
+    julia_type : str
+        Julia expression that evaluates to the value type used for features,
+        targets, constants, and expression evaluation.
+    fields : dict[str, str], optional
+        Ordered mapping from field names to Julia field types. When provided,
+        ``julia_type`` must be a simple name and a Julia ``struct`` with these
+        fields is defined. A one-field value is converted from one Python value;
+        a multi-field value is converted from a sequence in field order.
+    init_value : str, optional
+        Julia function with signature ``() -> value`` used to define
+        ``SymbolicRegression.init_value``.
+    sample_value : str, optional
+        Julia function with signature ``(rng) -> value`` or
+        ``(rng, options) -> value`` used to sample constants.
+    mutate_value : str, optional
+        Julia function with signature ``(rng, value, temperature) -> value`` or
+        ``(rng, value, temperature, options) -> value`` used to mutate constants.
+    count_scalar_constants : int or str, optional
+        Fixed scalar count or Julia function with signature ``(value) -> Int``.
+        The count must match the number of entries consumed by the pack and
+        unpack hooks.
+    pack_scalar_constants : str, optional
+        Julia function with signature ``(buffer, idx, value) -> next_idx``. It
+        must write the scalar representation of ``value`` into ``buffer``
+        starting at Julia's one-based ``idx`` and return the first unused index.
+    unpack_scalar_constants : str, optional
+        Julia function with signature
+        ``(buffer, idx, value) -> (next_idx, unpacked_value)``. It must rebuild
+        a value with the same shape or structure as ``value`` and return the
+        first unused index.
+    get_number_type : str, optional
+        Julia function with signature ``(value_type) -> scalar_type``. The
+        returned type must be a subtype of ``Number`` used by optimization.
+    is_valid : str, optional
+        Julia function with signature ``(value) -> Bool`` indicating whether a
+        value is valid for evaluation and optimization.
+    can_optimize : bool, optional
+        Whether constants of ``julia_type`` can be optimized. Custom non-number
+        types require ``count_scalar_constants``, ``pack_scalar_constants``,
+        ``unpack_scalar_constants``, ``get_number_type``, and ``is_valid`` when
+        this is ``True``. The pack and unpack hooks are checked against
+        ``init_value`` when both are provided.
+    loss_type : str, optional
+        Julia expression for the concrete ``Real`` type returned by the custom
+        loss, such as ``"Float64"``.
+
+    Notes
+    -----
+    Hook methods are installed in Julia's global method table. Instantiating
+    another specification for the same ``julia_type`` in the same process
+    replaces methods with matching signatures, so the last definition wins.
+
+    TypeSpec training accepts a two-dimensional ``X`` with shape
+    ``(n_samples, n_features)`` and a one-dimensional, single-output ``y`` with
+    shape ``(n_samples,)``. Prediction accepts the same two-dimensional feature
+    shape. Each array cell is one logical Julia value; nested Python values are
+    preserved when passed through object arrays.
+    """
 
     julia_type: str
     fields: dict[str, str] | None = None
@@ -71,11 +132,41 @@ class TypeSpec:
 
         value_type = jl.seval(self.julia_type)
         if not jl.seval("T -> T isa Type")(value_type):
-            raise ValueError(f"`{self.julia_type}` is not a concrete Julia type.")
+            raise ValueError(f"`{self.julia_type}` does not evaluate to a Julia type.")
 
         for definition in self._interface_definitions():
             jl.seval(definition)
+        if (
+            self.can_optimize is True
+            and self.pack_scalar_constants is not None
+            and self.unpack_scalar_constants is not None
+        ):
+            self._validate_optimization_round_trip(value_type)
         return value_type
+
+    def _validate_optimization_round_trip(self, value_type: AnyValue) -> None:
+        interface = jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE
+        value = jl.SymbolicRegression.init_value(value_type)
+        n = int(interface.count_scalar_constants(value))
+        idx = 1
+        packed = jl.seval("n -> Vector{Float64}(undef, n)")(n)
+        packed_idx = int(interface.pack_scalar_constants_b(packed, idx, value))
+        if packed_idx != idx + n:
+            raise ValueError(
+                "`pack_scalar_constants` must return the first unused index "
+                "after packing `init_value`."
+            )
+        unpacked_idx, unpacked = interface.unpack_scalar_constants(packed, idx, value)
+        if int(unpacked_idx) != idx + n:
+            raise ValueError(
+                "`unpack_scalar_constants` must return the first unused index "
+                "after unpacking `init_value`."
+            )
+        if not bool(jl.isequal(unpacked, value)):
+            raise ValueError(
+                "`pack_scalar_constants` and `unpack_scalar_constants` must "
+                "round-trip `init_value`."
+            )
 
     def _wrap_addprocs_function(
         self, addprocs_function: AnyValue | None, worker_imports: AnyValue | None
@@ -126,9 +217,10 @@ class TypeSpec:
     def julia_loss_type(self) -> AnyValue:
         assert self.loss_type
         loss_type = jl.seval(self.loss_type)
-        if not jl.seval("T -> T isa Type")(loss_type):
+        if not jl.seval("T -> isconcretetype(T) && T <: Real")(loss_type):
             raise ValueError(
-                f"`loss_type` (`{self.loss_type}`) must evaluate to a Julia type."
+                f"`loss_type` (`{self.loss_type}`) must evaluate to a concrete "
+                "subtype of `Real`."
             )
         return loss_type
 

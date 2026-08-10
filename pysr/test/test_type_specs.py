@@ -79,8 +79,14 @@ class TestTypeSpecs(unittest.TestCase):
                 type_spec=TypeSpec("String", loss_type=""),
                 elementwise_loss="loss(x, y) = x == y ? 0.0 : 1.0",
             )._validate_and_modify_params()
-        with self.assertRaisesRegex(ValueError, "must evaluate to a Julia type"):
+        with self.assertRaisesRegex(ValueError, "concrete subtype of `Real`"):
             TypeSpec("String", loss_type="1").julia_loss_type()
+        for loss_type in ("String", "Real"):
+            with self.subTest(loss_type=loss_type):
+                with self.assertRaisesRegex(
+                    ValueError, f"`loss_type` \\(`{loss_type}`\\)"
+                ):
+                    TypeSpec("String", loss_type=loss_type).julia_loss_type()
 
     def test_type_spec_accepts_multi_method_callbacks(self):
         suffix = uuid.uuid4().hex
@@ -203,10 +209,48 @@ class TestTypeSpecs(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, f"{field} must accept"):
                     TypeSpec("String", **{field: "() -> nothing"}).instantiate()
 
+    def test_type_spec_rejects_broken_optimization_round_trip(self):
+        cases = (
+            (
+                "pack_scalar_constants",
+                "(nvals, idx, value) -> (nvals[idx] = value.data; idx)",
+                "(nvals, idx, value) -> (idx + 1, value)",
+                "first unused index after packing",
+            ),
+            (
+                "unpack_scalar_constants index",
+                "(nvals, idx, value) -> (nvals[idx] = value.data; idx + 1)",
+                "(nvals, idx, value) -> (idx, value)",
+                "first unused index after unpacking",
+            ),
+            (
+                "unpack_scalar_constants value",
+                "(nvals, idx, value) -> (nvals[idx] = value.data; idx + 1)",
+                None,
+                "round-trip `init_value`",
+            ),
+        )
+        for label, pack, unpack, message in cases:
+            with self.subTest(label=label):
+                name = f"BrokenRoundTrip_{uuid.uuid4().hex}"
+                unpack = unpack or (
+                    f"(nvals, idx, value) -> (idx + 1, {name}(value.data + 1))"
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    TypeSpec(
+                        name,
+                        fields={"data": "Float64"},
+                        init_value=f"() -> {name}(0.0)",
+                        count_scalar_constants=1,
+                        pack_scalar_constants=pack,
+                        unpack_scalar_constants=unpack,
+                        can_optimize=True,
+                    ).instantiate()
+
     def test_type_spec_rejects_incompatible_or_invalid_definitions(self):
         with self.assertRaisesRegex(ValueError, "simple type name"):
             TypeSpec("Base.Invalid", fields={"data": "Float64"}).instantiate()
-        with self.assertRaisesRegex(ValueError, "concrete Julia type"):
+        with self.assertRaisesRegex(ValueError, "does not evaluate to a Julia type"):
             TypeSpec("nothing").instantiate()
 
     def test_type_spec_requires_loss_and_loss_type(self):
@@ -625,6 +669,13 @@ class TestTypeSpecs(unittest.TestCase):
         self.assertNotIn("lambda_format", loaded.equations_.columns)
         self.assertNotIn("julia_expression", loaded.equations_.columns)
         np.testing.assert_array_equal(loaded.predict(X), y)
+
+        def fail_prediction(_):
+            raise RuntimeError("TypeSpec prediction failure")
+
+        loaded.equations_["lambda_format"] = [fail_prediction] * len(loaded.equations_)
+        with self.assertRaisesRegex(RuntimeError, "TypeSpec prediction failure"):
+            loaded.predict(X)
 
         loaded.julia_state_stream_ = None
         loaded.equations_ = loaded.equations_.drop(

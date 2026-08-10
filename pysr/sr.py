@@ -183,6 +183,26 @@ def _maybe_create_inline_operators(
     return operators
 
 
+def _create_julia_operators_and_loss_functions(
+    operators: dict[int, list[str]],
+    extra_sympy_mappings: dict[str, Callable] | None,
+    supports_sympy: bool,
+    elementwise_loss: str | None,
+    loss_function: str | None,
+    loss_function_expression: str | None,
+) -> tuple[dict[int, list[str]], AnyValue, AnyValue, AnyValue]:
+    operators = _maybe_create_inline_operators(
+        operators=operators,
+        extra_sympy_mappings=extra_sympy_mappings,
+        supports_sympy=supports_sympy,
+    )
+    custom_loss, custom_full_objective, custom_loss_expression = (
+        jl.seval(str(loss) if loss is not None else "nothing")
+        for loss in (elementwise_loss, loss_function, loss_function_expression)
+    )
+    return operators, custom_loss, custom_full_objective, custom_loss_expression
+
+
 def _check_assertions(
     X,
     use_custom_variable_names,
@@ -1529,13 +1549,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     @property
     def julia_options_(self):
         """The deserialized julia options."""
-        self.type_spec_.instantiate()
+        self._instantiate_julia_definitions()
         return jl_deserialize(self.julia_options_stream_)
 
     @property
     def julia_state_(self):
         """The deserialized state."""
-        self.type_spec_.instantiate()
+        self._instantiate_julia_definitions()
         return cast(
             Union[Tuple[VectorValue, AnyValue], None],
             jl_deserialize(self.julia_state_stream_),
@@ -1653,6 +1673,45 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     def _clear_equation_file_contents(self):
         self.equation_file_contents_ = None
 
+    def _operators_from_params(self) -> dict[int, list[str]]:
+        if self.operators is not None:
+            return {arity: values.copy() for arity, values in self.operators.items()}
+        operators = {
+            2: (
+                self.binary_operators.copy()
+                if self.binary_operators is not None
+                else ["+", "*", "-", "/"]
+            )
+        }
+        if self.unary_operators is not None:
+            operators[1] = self.unary_operators.copy()
+        return operators
+
+    def _instantiate_julia_definitions(
+        self, operators: dict[int, list[str]] | None = None
+    ) -> tuple[AnyValue, dict[int, list[str]], AnyValue, AnyValue, AnyValue]:
+        value_type = self.type_spec_.instantiate()
+        operators, custom_loss, custom_full_objective, custom_loss_expression = (
+            _create_julia_operators_and_loss_functions(
+                operators=(
+                    self._operators_from_params() if operators is None else operators
+                ),
+                extra_sympy_mappings=self.extra_sympy_mappings,
+                supports_sympy=self.type_spec_.supports_export()
+                and self.expression_spec_.supports_sympy,
+                elementwise_loss=self.elementwise_loss,
+                loss_function=self.loss_function,
+                loss_function_expression=self.loss_function_expression,
+            )
+        )
+        return (
+            value_type,
+            operators,
+            custom_loss,
+            custom_full_objective,
+            custom_loss_expression,
+        )
+
     def _validate_and_modify_params(self) -> _DynamicallySetParams:
         """
         Ensure parameters passed at initialization are valid.
@@ -1717,17 +1776,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         )
 
         # Convert binary_operators/unary_operators to operators format if needed
-        if self.operators is None:
-            # Build operators dict from binary_operators and unary_operators
-            operators_dict = {}
-            if self.binary_operators is not None:
-                operators_dict[2] = self.binary_operators.copy()
-            else:
-                # Keep default binary operators
-                operators_dict[2] = ["+", "*", "-", "/"]
-            if self.unary_operators is not None:
-                operators_dict[1] = self.unary_operators.copy()
-            param_container.operators = operators_dict
+        param_container.operators = self._operators_from_params()
 
         for param_name in map(lambda x: x.name, fields(_DynamicallySetParams)):
             user_param_value = getattr(self, param_name)
@@ -2146,9 +2195,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         # These are the parameters which may be modified from the ones
         # specified in init, so we define them here locally:
-        value_type = self.type_spec_.instantiate()
+        (
+            value_type,
+            operators,
+            custom_loss,
+            custom_full_objective,
+            custom_loss_expression,
+        ) = self._instantiate_julia_definitions(runtime_params.operators)
         use_generic_operators = self.type_spec_.uses_generic_operators(value_type)
-        operators = runtime_params.operators
         constraints = runtime_params.constraints
 
         nested_constraints = self.nested_constraints
@@ -2182,13 +2236,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     "To use cluster managers, you must set `parallelism='multiprocessing'`."
                 )
 
-        # TODO(mcranmer): These functions should be part of this class.
-        operators = _maybe_create_inline_operators(
-            operators=operators,
-            extra_sympy_mappings=self.extra_sympy_mappings,
-            supports_sympy=self.type_spec_.supports_export()
-            and self.expression_spec_.supports_sympy,
-        )
         if constraints is not None:
             _constraints = _process_constraints(
                 operators=operators,
@@ -2233,11 +2280,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         np_dtype = self.type_spec_.numpy_dtype(X, self._get_precision_mapped_dtype)
 
-        custom_loss = jl.seval(
-            str(self.elementwise_loss)
-            if self.elementwise_loss is not None
-            else "nothing"
-        )
         if self.elementwise_loss is not None:
             probe_value = self.type_spec_.elementwise_loss_probe(value_type, np_dtype)
             _validate_elementwise_loss(
@@ -2246,17 +2288,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 probe_value=probe_value,
             )
 
-        custom_full_objective = jl.seval(
-            str(self.loss_function) if self.loss_function is not None else "nothing"
-        )
         if self.loss_function is not None:
             _validate_custom_full_objective(custom_full_objective)
 
-        custom_loss_expression = jl.seval(
-            str(self.loss_function_expression)
-            if self.loss_function_expression is not None
-            else "nothing"
-        )
         if self.loss_function_expression is not None:
             _validate_custom_expression_objective(custom_loss_expression)
 
@@ -2809,6 +2843,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else:
                 return cast(ndarray, best_equation["lambda_format"](X))
         except Exception as error:
+            if self.type_spec is not None:
+                raise
             raise ValueError(
                 "Failed to evaluate the expression. "
                 "If you are using a custom operator, make sure to define it in `extra_sympy_mappings`, "
