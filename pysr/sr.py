@@ -52,7 +52,7 @@ from .julia_helpers import (
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
 from .logger_specs import AbstractLoggerSpec
-from .mutations import AbstractMutation
+from .mutations import AbstractMutation, convert_mutations
 from .plugins import AbstractPlugin
 from .utils import (
     ArrayLike,
@@ -2246,21 +2246,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         mutation_weights = (
             jl_named_tuple(legacy_mutation_weights) if legacy_mutation_weights else None
         )
-        create_mutations = jl.seval(
-            "pairs -> Pair{AbstractMutation,Float64}[mutation => weight for (mutation, weight) in pairs]"
-        )
-
-        def convert_mutations(
-            mutation_weights: Mapping[AbstractMutation, float],
-        ) -> AnyValue:
-            mutation_pairs = jl_array(
-                [
-                    (mutation.julia_mutation(), weight)
-                    for mutation, weight in mutation_weights.items()
-                ]
-            )
-            return create_mutations(mutation_pairs)
-
         default_mutations = (
             None
             if self.default_mutations is None

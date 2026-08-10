@@ -3,9 +3,29 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .julia_import import AnyValue, SymbolicRegression
+from .julia_helpers import jl_array
+from .julia_import import AnyValue, SymbolicRegression, jl
+
+
+def create_mutations(mutation_pairs: Sequence[AnyValue]) -> AnyValue:
+    """Create a Julia vector of weighted mutations."""
+    pair_type = jl.Pair[SymbolicRegression.AbstractMutation, jl.Float64]
+    return jl_array(mutation_pairs, dtype=pair_type)
+
+
+def convert_mutations(
+    mutation_weights: Mapping[AbstractMutation, float],
+) -> AnyValue:
+    """Convert Python mutation weights to their Julia representation."""
+    return create_mutations(
+        [
+            jl.Pair(mutation.julia_mutation(), weight)
+            for mutation, weight in mutation_weights.items()
+        ]
+    )
 
 
 class AbstractMutation(ABC):
