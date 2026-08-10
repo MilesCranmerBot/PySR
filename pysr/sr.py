@@ -2218,7 +2218,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             custom_full_objective,
             custom_loss_expression,
         ) = self._instantiate_julia_definitions(runtime_params.operators)
-        use_generic_operators = self.type_spec_.uses_generic_operators(value_type)
         constraints = runtime_params.constraints
 
         nested_constraints = self.nested_constraints
@@ -2370,6 +2369,15 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                         raise ValueError(
                             f"When building operators for arity {arity}, `'{op}'` did not return a Julia function"
                         )
+                    if value_type is not None:
+                        return_type = jl.Base.promote_op(jl_op, *([value_type] * arity))
+                        if not bool(jl.isequal(return_type, value_type)):
+                            arguments = "argument" if arity == 1 else "arguments"
+                            raise ValueError(
+                                f"TypeSpec operator `'{op}'` must accept {arity} "
+                                f"{arguments} of type `{value_type}` and return "
+                                f"`{value_type}`, but Julia inferred `{return_type}`."
+                            )
                     jl_op_list.append(jl_op)
                 jl_operators_dict[arity] = tuple(jl_op_list)
             else:
@@ -2387,14 +2395,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         self.logger_ = logger
 
-        # Use Julia function to create OperatorEnum from Dict{Int,Tuple}
-        enum_type = (
-            "SymbolicRegression.GenericOperatorEnum"
-            if use_generic_operators
-            else "OperatorEnum"
-        )
         create_operator_enum = jl.seval(
-            f"ops_dict -> {enum_type}([k => v for (k, v) in ops_dict]...)"
+            "ops_dict -> OperatorEnum([k => v for (k, v) in ops_dict]...)"
         )
         jl_operator_enum = create_operator_enum(jl_operators_dict)
 

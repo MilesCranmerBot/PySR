@@ -282,192 +282,6 @@ You can get the sympy version of the best equation with:
 model.sympy()
 ```
 
-### String-valued symbolic regression
-
-`TypeSpec` lets PySR search over values other than numbers. For example, we can
-search for a rule which joins two strings:
-
-```python
-import numpy as np
-import pandas as pd
-
-from pysr import PySRRegressor, TypeSpec
-
-X = pd.DataFrame(
-    {
-        "first": ["Py", "symbolic ", "hello ", "left"],
-        "second": ["SR", "regression", "world", "right"],
-    }
-)
-y = np.array([a + b for a, b in X.itertuples(index=False)], dtype=object)
-
-type_spec = TypeSpec(
-    "String",
-    init_value='() -> ""',
-    sample_value='rng -> rand(rng, ("", "a", "b"))',
-    mutate_value='(rng, value, temperature) -> rand(rng, ("", "a", "b"))',
-    count_scalar_constants=1,
-    can_optimize=False,
-    loss_type="Float64",
-)
-
-model = PySRRegressor(
-    type_spec=type_spec,
-    operators={2: ["concat(a::String, b::String) = a * b"]},
-    elementwise_loss=(
-        "string_loss(a::String, b::String) = a == b ? 0.0 : 1.0"
-    ),
-    niterations=10,
-    populations=2,
-    maxsize=7,
-    parallelism="serial",
-    deterministic=True,
-    random_state=0,
-    progress=False,
-    should_optimize_constants=False,
-)
-
-model.fit(X, y)
-print(model.equations_)
-```
-
-The search recovers `concat(first, second)`. The `TypeSpec` tells the backend
-how to create and mutate string constants, disables numeric constant
-optimization, and declares that the loss is a real number.
-
-### Advanced: recovering a neural network with tensor constants
-
-`TypeSpec` can place scalar, vector, and matrix constants in one Julia value
-type. The scalar-constant hooks let the optimizer flatten each constant for
-BFGS and then rebuild its original shape.
-
-Here we recover a two-layer neural network
-
-$$ y = W_2\operatorname{relu}(W_1x + b_1) + b_2 $$
-
-from vector-valued data. Safe operators return an invalid value for shape
-mismatches, so arbitrary expressions from the search cannot throw dimension
-errors:
-
-```python
-import numpy as np
-import pandas as pd
-
-from pysr import PySRRegressor, TypeSpec, jl
-
-jl.seval("""
-const NNPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}
-
-safe_matmul(a::Matrix{Float64}, b::Vector{Float64}) =
-    size(a, 2) == length(b) ? a * b : NaN
-safe_matmul(::NNPayload, ::NNPayload) = NaN
-
-safe_add(a::Float64, b::Float64) = a + b
-safe_add(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
-    size(a) == size(b) ? a + b : NaN
-safe_add(::NNPayload, ::NNPayload) = NaN
-""")
-
-# Constants sample a random rank, generating only the payload that was chosen:
-jl.seval("""
-function random_nn_payload(rng)
-    rank = rand(rng, 0:2)
-    rank == 0 ? randn(rng) : rank == 1 ? randn(rng, 2) : randn(rng, 2, 2)
-end
-""")
-
-type_spec = TypeSpec(
-    "NNValue",
-    fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
-    init_value="() -> NNValue(0.0)",
-    sample_value="rng -> NNValue(random_nn_payload(rng))",
-    # Mutations usually perturb every scalar in the payload, but occasionally
-    # resample a fresh rank:
-    mutate_value="""
-    (rng, value, temperature) -> if rand(rng) < 0.1
-        NNValue(random_nn_payload(rng))
-    else
-        NNValue(value.data .+ temperature .* randn(rng, size(value.data)...))
-    end
-    """,
-    count_scalar_constants="value -> length(value.data)",
-    pack_scalar_constants="""
-    (values, idx, value) -> begin
-        n = length(value.data)
-        values[idx:idx+n-1] .= value.data isa Float64 ? value.data : vec(value.data)
-        idx + n
-    end
-    """,
-    unpack_scalar_constants="""
-    (values, idx, value) -> begin
-        n = length(value.data)
-        data = value.data isa Float64 ? values[idx] :
-            reshape(copy(values[idx:idx+n-1]), size(value.data))
-        (idx + n, NNValue(data))
-    end
-    """,
-    get_number_type="T -> Float64",
-    is_valid="value -> all(isfinite, value.data)",
-    can_optimize=True,
-    loss_type="Float64",
-)
-```
-
-Generate training data from fixed $2\times2$ weights and two-element biases:
-
-```python
-rng = np.random.default_rng(0)
-x_values = rng.normal(size=(64, 2))
-W1 = np.array([[1.2, -0.7], [0.5, 1.1]])
-b1 = np.array([0.3, -0.2])
-W2 = np.array([[0.8, -1.0], [1.3, 0.4]])
-b2 = np.array([-0.4, 0.2])
-y_values = (W2 @ np.maximum(x_values @ W1.T + b1, 0).T).T + b2
-
-X = pd.DataFrame({"x": list(x_values)})
-y = pd.Series(list(y_values), dtype=object)
-```
-
-Search with matrix multiplication, elementwise ReLU, and addition. BFGS is the
-default constant optimizer. Restarts are disabled because the pinned backend's
-restart sampler expects the value type itself to support `randn`:
-
-```python
-model = PySRRegressor(
-    type_spec=type_spec,
-    operators={
-        1: ["nn_relu(a::NNValue) = NNValue(max.(a.data, 0.0))"],
-        2: [
-            "nn_matmul(a::NNValue, b::NNValue) = "
-            "NNValue(safe_matmul(a.data, b.data))",
-            "nn_add(a::NNValue, b::NNValue) = "
-            "NNValue(safe_add(a.data, b.data))",
-        ],
-    },
-    elementwise_loss=(
-        "nn_mse(a::NNValue, b::NNValue) = "
-        "a.data isa Vector && b.data isa Vector && size(a.data) == size(b.data) "
-        "? sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
-    ),
-    niterations=100,
-    populations=4,
-    maxsize=11,
-    parallelism="serial",
-    deterministic=True,
-    random_state=0,
-    should_optimize_constants=True,
-    optimizer_nrestarts=0,
-)
-
-model.fit(X, y)
-print(model.equations_)
-```
-
-The search recovers a two-layer form such as
-`nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. Both biases
-are absorbed into the fitted constants, through $b_1 = W_1c$ and $b_2 = W_2b$;
-each displayed `NNValue` contains the fitted matrix or vector payload.
-
 ## 8. Complex numbers
 
 PySR can also search for complex-valued expressions. Simply pass
@@ -502,122 +316,7 @@ model.predict(X, -1)
 
 to make predictions with the most accurate expression.
 
-## 9. Custom objectives
-
-You can also pass a custom objectives as a snippet of Julia code,
-which might include symbolic manipulations or custom functional forms.
-These do not even need to be differentiable! First, let's look at the
-default objective used (a simplified version, without weights
-and with mean square error), so that you can see how to write your own:
-
-```julia
-function default_objective(tree, dataset::Dataset{T,L}, options)::L where {T,L}
-    (prediction, completion) = eval_tree_array(tree, dataset.X, options)
-    if !completion
-        return L(Inf)
-    end
-
-    diffs = prediction .- dataset.y
-
-    return sum(diffs .^ 2) / length(diffs)
-end
-```
-
-Here, the `where {T,L}` syntax defines the function for arbitrary types `T` and `L`.
-If you have `precision=32` (default) and pass in regular floating point data,
-then both `T` and `L` will be equal to `Float32`. If you pass in complex data,
-then `T` will be `ComplexF32` and `L` will be `Float32` (since we need to return
-a real number from the loss function). But, you don't need to worry about this, just
-make sure to return a scalar number of type `L`.
-
-The `tree` argument is the current expression being evaluated. You can read
-about the `tree` fields [here](https://ai.damtp.cam.ac.uk/symbolicregression/stable/types/).
-
-For example, let's fix a symbolic form of an expression,
-as a rational function. i.e., $P(X)/Q(X)$ for polynomials $P$ and $Q$.
-
-```python
-objective = """
-function my_custom_objective(tree, dataset::Dataset{T,L}, options) where {T,L}
-    # Require root node to be binary, so we can split it,
-    # otherwise return a large loss:
-    tree.degree != 2 && return L(Inf)
-
-    P = tree.l
-    Q = tree.r
-
-    # Evaluate numerator:
-    P_prediction, flag = eval_tree_array(P, dataset.X, options)
-    !flag && return L(Inf)
-
-    # Evaluate denominator:
-    Q_prediction, flag = eval_tree_array(Q, dataset.X, options)
-    !flag && return L(Inf)
-
-    # Impose functional form:
-    prediction = P_prediction ./ Q_prediction
-
-    diffs = prediction .- dataset.y
-
-    return sum(diffs .^ 2) / length(diffs)
-end
-"""
-
-model = PySRRegressor(
-    niterations=100,
-    binary_operators=["*", "+", "-"],
-    loss_function=objective,
-)
-```
-
-> **Warning**: When using a custom objective like this that performs symbolic
-> manipulations, many functionalities of PySR will not work, such as `.sympy()`,
-> `.predict()`, etc. This is because the SymPy parsing does not know about
-> how you are manipulating the expression, so you will need to do this yourself.
-
-Note how we did not pass `/` as a binary operator; it will just be implicit
-in the functional form.
-
-Let's generate an equation of the form $\frac{x_0^2 x_1 - 2}{x_2^2 + 1}$:
-
-```python
-X = np.random.randn(1000, 3)
-y = (X[:, 0]**2 * X[:, 1] - 2) / (X[:, 2]**2 + 1)
-```
-
-Finally, let's fit:
-
-```python
-model.fit(X, y)
-```
-
-> Note that the printed equation is not the same as the evaluated equation,
-> because the printing functionality does not know about the functional form.
-
-We can get the string format with:
-
-```python
-model.get_best().equation
-```
-
-(or, you could use `model.equations_.iloc[-1].equation`)
-
-For me, this equation was:
-
-```text
-(((2.3554819 + -0.3554746) - (x1 * (x0 * x0))) - (-1.0000019 - (x2 * x2)))
-```
-
-looking at the bracket structure of the equation, we can see that the outermost
-bracket is split at the `-` operator (note that we ignore the root operator in
-the evaluation, as we simply evaluated each argument and divided the result) into
-`((2.3554819 + -0.3554746) - (x1 * (x0 * x0)))` and
-`(-1.0000019 - (x2 * x2))`, meaning that our discovered equation is
-equal to:
-$\frac{x_0^2 x_1 - 2.0000073}{x_2^2 + 1.0000019}$, which
-is nearly the same as the true equation!
-
-## 10. Dimensional constraints
+## 9. Dimensional constraints
 
 One other feature we can exploit is dimensional analysis.
 Say that we know the physical units of each feature and output,
@@ -709,9 +408,11 @@ Note that this expression has a large dynamic range so may be difficult to find.
 Note that you can also search for exclusively dimensionless constants by settings
 `dimensionless_constants_only` to `true`.
 
-## 11. Expression Specifications
+## 10. Expression Specifications
 
-PySR 1.0 introduces powerful expression specifications that allow you to define structured equations. Here are two examples:
+Expression specifications let you define a structured equation while retaining
+normal prediction and export behavior. Use `TemplateExpressionSpec` when the
+outer form is known and one or more inner expressions must be learned.
 
 ### Template Expressions
 
@@ -821,7 +522,7 @@ You can use this approach for more complex cases,
 where you have multiple expressions in the template and parameters that vary by category.
 
 
-## 12. Using TensorBoard for Logging
+## 11. Using TensorBoard for Logging
 
 You can use TensorBoard to visualize the search progress, as well as
 record hyperparameters and final metrics (like `min_loss` and `pareto_volume` - the latter of which
@@ -856,7 +557,7 @@ You can then view the logs with:
 tensorboard --logdir logs/
 ```
 
-## 13. Vector-valued expressions
+## 12. Vector-valued expressions
 
 You can use `TemplateExpressionSpec` to find expressions for vector-valued data,
 where each component might share a common structure.
@@ -982,7 +683,7 @@ print(f"f1 at (1,2,3): {f1_result[0]}")  # Should be ~4.0 for x2^2
 print(f"shared at (1,2,3): {shared_result[0]}")  # Should be ~2.718 for exp(1)
 ```
 
-## 14. Using differential operators
+## 13. Using differential operators
 
 As part of the `TemplateExpressionSpec` described above,
 you can also use differential operators within the template.
@@ -1021,6 +722,220 @@ model.fit(x[:, np.newaxis], y)
 If everything works, you should find something that simplifies to $\frac{\sqrt{x^2 - 1}}{x}$.
 
 Here, we write out a full function in Julia.
+
+## 14. Custom value types
+
+After working with custom operators, losses, and expression specifications,
+`TypeSpec` lets you change the value type used throughout a search.
+
+### Vector-valued symbolic regression
+
+This example searches for a program over two-dimensional vectors:
+
+$$
+y = \operatorname{rotate90}(x_1) + 2x_2 +
+\begin{bmatrix}0.5 \\ -1.0\end{bmatrix}.
+$$
+
+Each cell of `X` and `y` contains one vector:
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec, jl
+
+rng = np.random.default_rng(0)
+x1 = [rng.normal(size=2) for _ in range(128)]
+x2 = [rng.normal(size=2) for _ in range(128)]
+X = pd.DataFrame({"x1": x1, "x2": x2})
+y = np.empty(128, dtype=object)
+offset = np.array([0.5, -1.0])
+y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
+```
+
+The search operators all accept and return `Vector{Float64}`, allowing PySR to
+use its standard `OperatorEnum` representation:
+
+```python
+jl.seval("""
+add_vectors(a::Vector{Float64}, b::Vector{Float64}) = a + b
+rotate90(a::Vector{Float64}) = [-a[2], a[1]]
+double(a::Vector{Float64}) = 2a
+vector_loss(a::Vector{Float64}, b::Vector{Float64})::Float64 = sum(abs2, a - b)
+""")
+```
+
+The `TypeSpec` hooks explain how vectors participate in evolution:
+
+```python
+type_spec = TypeSpec(
+    # Which Julia type flows through every feature, constant, and operator?
+    "Vector{Float64}",
+    # What is an empty or zero-like value of this type?
+    init_value="() -> zeros(2)",
+    # How should a new constant be sampled?
+    sample_value="rng -> randn(rng, 2)",
+    # How should evolution mutate an existing constant?
+    mutate_value="(rng, value, temperature) -> value + temperature * randn(rng, 2)",
+    # How many scalar constants does one vector contain?
+    count_scalar_constants=2,
+    # Should BFGS optimize vectors? Evolution still samples and mutates them.
+    can_optimize=False,
+    # What concrete real type does the loss return?
+    loss_type="Float64",
+)
+
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={1: ["rotate90", "double"], 2: ["add_vectors"]},
+    elementwise_loss="vector_loss",
+    niterations=40,
+    populations=4,
+    maxsize=10,
+    progress=False,
+    should_optimize_constants=False,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+The target can be represented as
+`add_vectors(add_vectors(rotate90(x1), double(x2)), [0.5, -1.0])`, including a
+learned vector-valued constant. PySR searches over both the program structure
+and the two components of that constant.
+
+### Advanced: recovering a neural network with tensor constants
+
+`TypeSpec` can place scalar, vector, and matrix constants in one Julia value
+type. The scalar-constant hooks let the optimizer flatten each constant for
+BFGS and then rebuild its original shape.
+
+Here we recover a two-layer neural network
+
+$$ y = W_2\operatorname{relu}(W_1x + b_1) + b_2 $$
+
+from vector-valued data. Safe operators return an invalid value for shape
+mismatches, so arbitrary expressions from the search cannot throw dimension
+errors:
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec, jl
+
+jl.seval("""
+const NNPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}
+
+safe_matmul(a::Matrix{Float64}, b::Vector{Float64}) =
+    size(a, 2) == length(b) ? a * b : NaN
+safe_matmul(::NNPayload, ::NNPayload) = NaN
+
+safe_add(a::Float64, b::Float64) = a + b
+safe_add(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
+    size(a) == size(b) ? a + b : NaN
+safe_add(::NNPayload, ::NNPayload) = NaN
+""")
+
+# Constants sample a random rank, generating only the payload that was chosen:
+jl.seval("""
+function random_nn_payload(rng)
+    rank = rand(rng, 0:2)
+    rank == 0 ? randn(rng) : rank == 1 ? randn(rng, 2) : randn(rng, 2, 2)
+end
+""")
+
+type_spec = TypeSpec(
+    "NNValue",
+    fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
+    init_value="() -> NNValue(0.0)",
+    sample_value="rng -> NNValue(random_nn_payload(rng))",
+    # Mutations usually perturb every scalar in the payload, but occasionally
+    # resample a fresh rank:
+    mutate_value="""
+    (rng, value, temperature) -> if rand(rng) < 0.1
+        NNValue(random_nn_payload(rng))
+    else
+        NNValue(value.data .+ temperature .* randn(rng, size(value.data)...))
+    end
+    """,
+    count_scalar_constants="value -> length(value.data)",
+    pack_scalar_constants="""
+    (values, idx, value) -> begin
+        n = length(value.data)
+        values[idx:idx+n-1] .= value.data isa Float64 ? value.data : vec(value.data)
+        idx + n
+    end
+    """,
+    unpack_scalar_constants="""
+    (values, idx, value) -> begin
+        n = length(value.data)
+        data = value.data isa Float64 ? values[idx] :
+            reshape(copy(values[idx:idx+n-1]), size(value.data))
+        (idx + n, NNValue(data))
+    end
+    """,
+    get_number_type="T -> Float64",
+    is_valid="value -> all(isfinite, value.data)",
+    can_optimize=True,
+    loss_type="Float64",
+)
+```
+
+Generate training data from fixed $2\times2$ weights and two-element biases:
+
+```python
+rng = np.random.default_rng(0)
+x_values = rng.normal(size=(64, 2))
+W1 = np.array([[1.2, -0.7], [0.5, 1.1]])
+b1 = np.array([0.3, -0.2])
+W2 = np.array([[0.8, -1.0], [1.3, 0.4]])
+b2 = np.array([-0.4, 0.2])
+y_values = (W2 @ np.maximum(x_values @ W1.T + b1, 0).T).T + b2
+
+X = pd.DataFrame({"x": list(x_values)})
+y = pd.Series(list(y_values), dtype=object)
+```
+
+Search with matrix multiplication, elementwise ReLU, and addition. BFGS is the
+default constant optimizer. Restarts are disabled because the pinned backend's
+restart sampler expects the value type itself to support `randn`:
+
+```python
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={
+        1: ["nn_relu(a::NNValue) = NNValue(max.(a.data, 0.0))"],
+        2: [
+            "nn_matmul(a::NNValue, b::NNValue) = NNValue(safe_matmul(a.data, b.data))",
+            "nn_add(a::NNValue, b::NNValue) = NNValue(safe_add(a.data, b.data))",
+        ],
+    },
+    elementwise_loss=(
+        "nn_mse(a::NNValue, b::NNValue) = "
+        "a.data isa Vector && b.data isa Vector && size(a.data) == size(b.data) "
+        "? sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
+    ),
+    niterations=100,
+    populations=4,
+    maxsize=11,
+    parallelism="serial",
+    deterministic=True,
+    random_state=0,
+    should_optimize_constants=True,
+    optimizer_nrestarts=0,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+The search recovers a two-layer form such as
+`nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. Both biases
+are absorbed into the fitted constants, through $b_1 = W_1c$ and $b_2 = W_2b$;
+each displayed `NNValue` contains the fitted matrix or vector payload.
 
 ## 15. Additional features
 

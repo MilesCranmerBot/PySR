@@ -107,6 +107,11 @@ class TypeSpec:
     shape ``(n_samples,)``. Prediction accepts the same two-dimensional feature
     shape. Each array cell is one logical Julia value; nested Python values are
     preserved when passed through object arrays.
+
+    Every search operator must accept ``julia_type`` for each argument and
+    infer ``julia_type`` as its return type. For heterogeneous inner payloads,
+    define a typed wrapper such as
+    ``op(x::T, y::T)::T = ...`` and dispatch on the payloads inside it.
     """
 
     julia_type: str
@@ -227,10 +232,6 @@ class TypeSpec:
     @staticmethod
     def supports_export() -> bool:
         return False
-
-    @staticmethod
-    def uses_generic_operators(value_type: AnyValue | None) -> bool:
-        return not bool(jl.seval("T -> T <: Number")(value_type))
 
     @staticmethod
     def numpy_dtype(
@@ -433,10 +434,6 @@ class _DefaultTypeSpec:
     @staticmethod
     def supports_export() -> bool:
         return True
-
-    @staticmethod
-    def uses_generic_operators(value_type: AnyValue | None) -> bool:
-        return False
 
     @staticmethod
     def numpy_dtype(

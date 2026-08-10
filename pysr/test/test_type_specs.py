@@ -402,7 +402,44 @@ class TestTypeSpecs(unittest.TestCase):
 
         model.fit(X, y)
 
+        self.assertTrue(
+            bool(
+                jl.isa(
+                    model.julia_options_.operators,
+                    jl.SymbolicRegression.OperatorEnum,
+                )
+            )
+        )
         np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_type_spec_validates_operator_signature(self):
+        spec = TypeSpec(
+            "String",
+            init_value='() -> ""',
+            sample_value='rng -> ""',
+            mutate_value="(rng, value, temperature) -> value",
+            count_scalar_constants=1,
+            can_optimize=False,
+            loss_type="Float64",
+        )
+        for operator in (
+            "string_length(x::String) = length(x)",
+            "float_identity(x::Float64) = x",
+        ):
+            with self.subTest(operator=operator):
+                model = self._tiny_model(
+                    spec,
+                    operator,
+                    "string_loss(x::String, y::String) = x == y ? 0.0 : 1.0",
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"must accept 1 argument of type `String` and return `String`",
+                ):
+                    model.fit(
+                        np.array([["a"], ["bb"]], dtype=object),
+                        np.array(["a", "bb"], dtype=object),
+                    )
 
     def test_type_spec_supports_full_loss_function(self):
         spec = TypeSpec(
