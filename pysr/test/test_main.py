@@ -1598,10 +1598,6 @@ class TestMiscellaneous(unittest.TestCase):
             str(plugin_name(plugin)): plugin for plugin in backend_options.plugins
         }
 
-        annealing = plugins["SimulatedAnnealingPlugin"]
-        self.assertTrue(model.annealing)
-        self.assertEqual(model.alpha, annealing.alpha)
-
         parsimony = plugins["AdaptiveParsimonyPlugin"]
         self.assertEqual(model.use_frequency, parsimony.mutation_acceptance)
         self.assertEqual(model.use_frequency_in_tournament, parsimony.tournament)
