@@ -618,6 +618,10 @@ class TestPipeline(unittest.TestCase):
         regressor = PySRRegressor(warm_start=True, max_evals=10)
         regressor.fit(self.X, y)
 
+        regressor.set_params(binary_operators=["+", "*", "-", "/"])
+        with self.assertRaisesRegex(JuliaError, "Warm start incompatible.*operators"):
+            regressor.fit(self.X, y)
+
     def test_noisy_builtin_variable_names(self):
         y = self.X[:, [0, 1]] ** 2 + self.rstate.randn(self.X.shape[0], 1) * 0.05
         model = PySRRegressor(
@@ -1460,6 +1464,23 @@ class TestMiscellaneous(unittest.TestCase):
         y_predictions2 = model2.predict(X)
         np.testing.assert_array_almost_equal(y_predictions, y_predictions2)
 
+    def test_checkpoint_schema(self):
+        state = PySRRegressor().__getstate__()
+        self.assertEqual(state["_checkpoint_schema_version"], 2)
+
+        for schema_version in (None, 1, 3):
+            incompatible_state = state.copy()
+            if schema_version is None:
+                incompatible_state.pop("_checkpoint_schema_version")
+            else:
+                incompatible_state["_checkpoint_schema_version"] = schema_version
+
+            model = PySRRegressor.__new__(PySRRegressor)
+            with self.assertRaisesRegex(
+                ValueError, "Unsupported PySR checkpoint schema"
+            ):
+                model.__setstate__(incompatible_state)
+
     def test_scikit_learn_compatibility(self):
         """Test PySRRegressor compatibility with scikit-learn."""
         model = PySRRegressor(
@@ -1604,6 +1625,7 @@ class TestMiscellaneous(unittest.TestCase):
 
     def test_mutation_and_plugin_configuration(self):
         from pysr import (
+            AbstractPlugin,
             AdaptiveParsimonyPlugin,
             BacksolveMutation,
             ConstantMutation,
@@ -1611,6 +1633,22 @@ class TestMiscellaneous(unittest.TestCase):
             SimulatedAnnealingPlugin,
             SymbolicRegression,
         )
+
+        jl.seval("""
+            if !isdefined(Main, :PySRPluginMutationTest)
+                @eval module PySRPluginMutationTest
+                    using SymbolicRegression
+                    struct PluginMutation <: SymbolicRegression.AbstractMutation end
+                    struct Plugin <: SymbolicRegression.AbstractPlugin end
+                    SymbolicRegression.plugin_mutations(::Plugin) =
+                        (PluginMutation() => 0.25,)
+                end
+            end
+            """)
+
+        class PluginConfig(AbstractPlugin):
+            def julia_plugin(self):
+                return jl.seval("PySRPluginMutationTest.Plugin()")
 
         X = np.arange(12, dtype=np.float32).reshape(6, 2)
         y = X[:, 0]
@@ -1633,6 +1671,7 @@ class TestMiscellaneous(unittest.TestCase):
             plugins=[
                 SimulatedAnnealingPlugin(alpha=0.4),
                 AdaptiveParsimonyPlugin(tournament=False, mutation_acceptance=False),
+                PluginConfig(),
             ],
         )
         model.fit(X, y)
@@ -1644,20 +1683,15 @@ class TestMiscellaneous(unittest.TestCase):
         }
         self.assertEqual(options.crossover_probability, 0.2)
         expected_weights = {
-            "AddNodeMutation": 2.47,
-            "InsertNodeMutation": 0.0112,
-            "DeleteNodeMutation": 0.870,
-            "DoNothingMutation": 0.273,
-            "ConstantMutation": 0.5,
-            "OperatorMutation": 0.293,
-            "FeatureMutation": 0.1,
-            "SwapOperandsMutation": 0.198,
-            "RotateTreeMutation": 4.26,
-            "RandomizeMutation": 0.4,
-            "SimplifyMutation": 0.00209,
-            "OptimizeMutation": 0.0,
-            "BacksolveMutation": 0.02,
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in SymbolicRegression.Options().mutations
         }
+        expected_weights.update(
+            ConstantMutation=0.5,
+            RandomizeMutation=0.4,
+            BacksolveMutation=0.02,
+            PluginMutation=0.25,
+        )
         self.assertSetEqual(set(mutation_by_name), set(expected_weights))
         for name, weight in expected_weights.items():
             self.assertEqual(float(jl.last(mutation_by_name[name])), weight)
@@ -1675,7 +1709,8 @@ class TestMiscellaneous(unittest.TestCase):
         plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
         plugins = {str(plugin_name(plugin)): plugin for plugin in options.plugins}
         self.assertSetEqual(
-            set(plugins), {"SimulatedAnnealingPlugin", "AdaptiveParsimonyPlugin"}
+            set(plugins),
+            {"SimulatedAnnealingPlugin", "AdaptiveParsimonyPlugin", "Plugin"},
         )
         self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
         self.assertFalse(plugins["AdaptiveParsimonyPlugin"].tournament)
@@ -1728,6 +1763,8 @@ class TestMiscellaneous(unittest.TestCase):
         self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
 
     def test_legacy_mutation_weight_override(self):
+        from pysr import SymbolicRegression
+
         X = np.arange(12, dtype=np.float32).reshape(6, 2)
         y = X[:, 0]
         model = PySRRegressor(
@@ -1753,7 +1790,11 @@ class TestMiscellaneous(unittest.TestCase):
         }
         self.assertEqual(weights["RandomizeMutation"], 0.3)
         self.assertEqual(weights["BacksolveMutation"], 0.2)
-        self.assertEqual(weights["AddNodeMutation"], 2.47)
+        backend_weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in SymbolicRegression.default_mutations()
+        }
+        self.assertEqual(weights["AddNodeMutation"], backend_weights["AddNodeMutation"])
         constant_mutation = next(
             jl.first(pair)
             for pair in model.julia_options_.mutations

@@ -54,6 +54,7 @@ class AdaptiveMutationWeightsPlugin(AbstractPlugin):
     """Adapt mutation weights from their observed success rates.
 
     Disabled by default in PySR.
+    Learned runtime state is reinitialized for each call to ``fit``.
     """
 
     smoothing: float = 0.02

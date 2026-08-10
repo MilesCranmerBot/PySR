@@ -27,7 +27,7 @@ class _ParameterlessMutation(AbstractMutation):
 class ConstantMutation(AbstractMutation):
     """Perturb a constant.
 
-    PySR default weight: ``0.0346``.
+    SymbolicRegression.jl default weight: ``0.0346``.
 
     Defaults match SymbolicRegression.jl.
     """
@@ -46,7 +46,7 @@ class ConstantMutation(AbstractMutation):
 class OperatorMutation(_ParameterlessMutation):
     """Replace an operator with another operator of the same arity.
 
-    PySR default weight: ``0.293``.
+    SymbolicRegression.jl default weight: ``0.293``.
     """
 
 
@@ -54,7 +54,7 @@ class OperatorMutation(_ParameterlessMutation):
 class FeatureMutation(_ParameterlessMutation):
     """Change the feature referenced by a variable node.
 
-    PySR default weight: ``0.1``.
+    SymbolicRegression.jl default weight: ``0.1``.
     """
 
 
@@ -62,7 +62,7 @@ class FeatureMutation(_ParameterlessMutation):
 class SwapOperandsMutation(_ParameterlessMutation):
     """Swap the operands of a binary operator.
 
-    PySR default weight: ``0.198``.
+    SymbolicRegression.jl default weight: ``0.198``.
     """
 
 
@@ -70,7 +70,7 @@ class SwapOperandsMutation(_ParameterlessMutation):
 class AddNodeMutation(_ParameterlessMutation):
     """Append a node to the expression.
 
-    PySR default weight: ``2.47``.
+    SymbolicRegression.jl default weight: ``2.47``.
     """
 
 
@@ -78,7 +78,7 @@ class AddNodeMutation(_ParameterlessMutation):
 class InsertNodeMutation(_ParameterlessMutation):
     """Insert a node above an existing node.
 
-    PySR default weight: ``0.0112``.
+    SymbolicRegression.jl default weight: ``0.0112``.
     """
 
 
@@ -86,7 +86,7 @@ class InsertNodeMutation(_ParameterlessMutation):
 class DeleteNodeMutation(_ParameterlessMutation):
     """Delete a node from the expression.
 
-    PySR default weight: ``0.870``.
+    SymbolicRegression.jl default weight: ``0.870``.
     """
 
 
@@ -94,7 +94,7 @@ class DeleteNodeMutation(_ParameterlessMutation):
 class RotateTreeMutation(_ParameterlessMutation):
     """Rotate a subtree.
 
-    PySR default weight: ``4.26``.
+    SymbolicRegression.jl default weight: ``4.26``.
     """
 
 
@@ -102,7 +102,7 @@ class RotateTreeMutation(_ParameterlessMutation):
 class BacksolveMutation(AbstractMutation):
     """Fit a replacement expression by backsolving through the expression.
 
-    PySR default weight: ``0.0``.
+    SymbolicRegression.jl default weight: ``0.0``.
     """
 
     max_library_size: int = 500
@@ -121,7 +121,7 @@ class BacksolveMutation(AbstractMutation):
 class SimplifyMutation(_ParameterlessMutation):
     """Simplify constant parts of the expression.
 
-    PySR default weight: ``0.00209``.
+    SymbolicRegression.jl default weight: ``0.00209``.
     """
 
 
@@ -129,7 +129,7 @@ class SimplifyMutation(_ParameterlessMutation):
 class RandomizeMutation(_ParameterlessMutation):
     """Replace the expression with a random expression.
 
-    PySR default weight: ``0.000502``.
+    SymbolicRegression.jl default weight: ``0.000502``.
     """
 
 
@@ -137,7 +137,7 @@ class RandomizeMutation(_ParameterlessMutation):
 class OptimizeMutation(_ParameterlessMutation):
     """Optimize constants as a mutation.
 
-    PySR default weight: ``0.0``.
+    SymbolicRegression.jl default weight: ``0.0``.
     """
 
 
@@ -145,5 +145,5 @@ class OptimizeMutation(_ParameterlessMutation):
 class DoNothingMutation(_ParameterlessMutation):
     """Leave the expression unchanged.
 
-    PySR default weight: ``0.273``.
+    SymbolicRegression.jl default weight: ``0.273``.
     """
