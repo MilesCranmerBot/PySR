@@ -49,6 +49,45 @@ class TestTypeSpecs(unittest.TestCase):
             self._validate_fit_params(model, X_lists, [1.0, 2.0], X_units=["m"])
         with self.assertRaisesRegex(NotImplementedError, "one output"):
             self._validate_fit_params(model, X_lists, np.ones((2, 2)))
+        with self.assertRaisesRegex(ValueError, "2D array"):
+            self._validate_fit_params(model, "invalid", [1.0])
+        with self.assertRaisesRegex(ValueError, "same number of features"):
+            self._validate_fit_params(model, [["a"], ["b", "c"]], [1.0, 2.0])
+        with self.assertRaisesRegex(ValueError, "2D array"):
+            self._validate_fit_params(
+                model, np.array(["a", "b"], dtype=object), [1.0, 2.0]
+            )
+        with self.assertRaisesRegex(ValueError, "inconsistent numbers of samples"):
+            self._validate_fit_params(model, [["a"], ["b"]], [1.0])
+        with self.assertRaisesRegex(NotImplementedError, "weights"):
+            self._validate_fit_params(
+                model, [["a"], ["b"]], [1.0, 2.0], weights=np.ones(2)
+            )
+        with self.assertRaisesRegex(NotImplementedError, "resampling"):
+            self._validate_fit_params(
+                model,
+                [["a"], ["b"]],
+                [1.0, 2.0],
+                Xresampled=np.array([["a"], ["b"]], dtype=object),
+            )
+
+        with self.assertWarnsRegex(UserWarning, "variable_names"):
+            *_, feature_names, _, _, _ = self._validate_fit_params(
+                model,
+                pd.DataFrame({"dataframe_name": ["a", "b"]}),
+                [1.0, 2.0],
+                variable_names=["ignored_name"],
+            )
+        self.assertEqual(feature_names.tolist(), ["dataframe_name"])
+
+        with self.assertWarnsRegex(UserWarning, "Spaces in variable names"):
+            *_, feature_names, _, _, _ = self._validate_fit_params(
+                model,
+                [["a"], ["b"]],
+                [1.0, 2.0],
+                variable_names=["spaced name"],
+            )
+        self.assertEqual(feature_names.tolist(), ["spaced_name"])
 
         default_spec_model = PySRRegressor(
             type_spec=spec, expression_spec=ExpressionSpec()
@@ -130,6 +169,23 @@ class TestTypeSpecs(unittest.TestCase):
         model = PySRRegressor(type_spec=TypeSpec("String", loss_type="Float64"))
         with self.assertRaises(NotImplementedError):
             model.score([["a"]], ["a"])
+
+    def test_type_spec_predict_validation(self):
+        model = PySRRegressor(type_spec=TypeSpec("String", loss_type="Float64"))
+        model.selection_mask_ = None
+        model.feature_names_in_ = np.array(["x0"])
+        model.n_features_in_ = 1
+        model.nout_ = 1
+        model.equations_ = pd.DataFrame(
+            {"lambda_format": [lambda X: X[:, 0]], "loss": [0.0], "score": [0.0]}
+        )
+
+        with self.assertRaisesRegex(ValueError, "2D array"):
+            model.predict(np.array(["a"], dtype=object), index=0)
+        with self.assertRaisesRegex(ValueError, "different number of features"):
+            model.predict(np.array([["a", "b"]], dtype=object), index=0)
+        with self.assertRaisesRegex(ValueError, "missing features"):
+            model.predict(pd.DataFrame({"x1": ["a"]}), index=0)
 
     def test_type_spec_instantiates_compact_global_interface(self):
         name = f"PySRTestValue_{uuid.uuid4().hex}"
