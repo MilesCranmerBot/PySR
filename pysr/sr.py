@@ -196,9 +196,19 @@ def _create_julia_operators_and_loss_functions(
         extra_sympy_mappings=extra_sympy_mappings,
         supports_sympy=supports_sympy,
     )
-    custom_loss, custom_full_objective, custom_loss_expression = (
-        jl.seval(str(loss) if loss is not None else "nothing")
-        for loss in (elementwise_loss, loss_function, loss_function_expression)
+
+    def eval_loss(source: str | None, knob: str) -> AnyValue | None:
+        if source is None:
+            return None
+        loss = jl.seval(str(source))
+        if not jl_is_function(loss):
+            raise ValueError(f"`{knob}` must evaluate to a callable Julia function.")
+        return loss
+
+    custom_loss = eval_loss(elementwise_loss, "elementwise_loss")
+    custom_full_objective = eval_loss(loss_function, "loss_function")
+    custom_loss_expression = eval_loss(
+        loss_function_expression, "loss_function_expression"
     )
     return operators, custom_loss, custom_full_objective, custom_loss_expression
 
