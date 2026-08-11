@@ -353,6 +353,12 @@ class TestPipeline(unittest.TestCase):
     def test_validation_helpers_skip_nonfunction(self):
         _validate_elementwise_loss(jl.seval("1.0"), has_weights=False)
 
+    def test_elementwise_loss_accepts_lossfunctions_object(self):
+        _, _, custom_loss, _, _ = PySRRegressor(
+            elementwise_loss="LPDistLoss{3}()"
+        )._instantiate_julia_definitions()
+        self.assertTrue(jl.applicable(custom_loss, 1.0, 1.0))
+
     def test_validate_export_mappings_typechecks(self):
         with self.assertRaises(ValueError):
             _validate_export_mappings({"a": 1}, None)

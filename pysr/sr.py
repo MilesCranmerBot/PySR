@@ -205,7 +205,7 @@ def _create_julia_operators_and_loss_functions(
         supports_sympy=supports_sympy,
     )
 
-    def eval_loss(source: str | None, knob: str) -> AnyValue | None:
+    def eval_objective(source: str | None, knob: str) -> AnyValue | None:
         if source is None:
             return None
         loss = jl.seval(str(source))
@@ -213,9 +213,9 @@ def _create_julia_operators_and_loss_functions(
             raise ValueError(f"`{knob}` must evaluate to a callable Julia function.")
         return loss
 
-    custom_loss = eval_loss(elementwise_loss, "elementwise_loss")
-    custom_full_objective = eval_loss(loss_function, "loss_function")
-    custom_loss_expression = eval_loss(
+    custom_loss = None if elementwise_loss is None else jl.seval(str(elementwise_loss))
+    custom_full_objective = eval_objective(loss_function, "loss_function")
+    custom_loss_expression = eval_objective(
         loss_function_expression, "loss_function_expression"
     )
     return operators, custom_loss, custom_full_objective, custom_loss_expression

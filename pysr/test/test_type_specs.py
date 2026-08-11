@@ -249,6 +249,33 @@ class TestTypeSpecs(unittest.TestCase):
             )
         )
 
+    def test_type_spec_round_trip_uses_configured_number_type(self):
+        name = f"BigFloatValue_{uuid.uuid4().hex}"
+        spec = TypeSpec(
+            name,
+            fields={"data": "BigFloat"},
+            init_value=f'() -> {name}(big"0.12345678901234567890123456789")',
+            count_scalar_constants=1,
+            pack_scalar_constants=(
+                "(nvals::AbstractVector{BigFloat}, idx, value) -> "
+                "(nvals[idx] = value.data; idx + 1)"
+            ),
+            unpack_scalar_constants=(
+                f"(nvals::AbstractVector{{BigFloat}}, idx, value) -> "
+                f"(idx + 1, {name}(nvals[idx]))"
+            ),
+            get_number_type="T -> BigFloat",
+            can_optimize=True,
+        )
+
+        value_type = spec.instantiate()
+        self.assertEqual(
+            jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE.get_number_type(
+                value_type
+            ),
+            jl.BigFloat,
+        )
+
     def test_type_spec_rejects_wrong_callback_arity(self):
         name = f"InvalidTypeSpec_{uuid.uuid4().hex}"
         with self.assertRaisesRegex(ValueError, "sample_value must accept"):
@@ -300,6 +327,7 @@ class TestTypeSpecs(unittest.TestCase):
                         count_scalar_constants=1,
                         pack_scalar_constants=pack,
                         unpack_scalar_constants=unpack,
+                        get_number_type="T -> Float64",
                         can_optimize=True,
                     ).instantiate()
 

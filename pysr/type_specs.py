@@ -162,7 +162,8 @@ class TypeSpec:
         value = jl.SymbolicRegression.init_value(value_type)
         n = int(interface.count_scalar_constants(value))
         idx = 1
-        packed = jl.seval("n -> Vector{Float64}(undef, n)")(n)
+        number_type = interface.get_number_type(value_type)
+        packed = jl.seval("(T, n) -> Vector{T}(undef, n)")(number_type, n)
         packed_idx = int(interface.pack_scalar_constants_b(packed, idx, value))
         if packed_idx != idx + n:
             raise ValueError(
