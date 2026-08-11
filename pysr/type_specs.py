@@ -53,6 +53,12 @@ class TypeSpec:
     julia_type : str
         Julia expression that evaluates to the value type used for features,
         targets, constants, and expression evaluation.
+    preamble : str, optional
+        Julia code evaluated before the generated struct and interface methods.
+        With multiprocessing, this code is also evaluated on every worker. It
+        may be evaluated multiple times, so it must be idempotent. When
+        ``fields`` generates the struct, preamble code cannot refer to that
+        struct by name.
     fields : dict[str, str], optional
         Ordered mapping from field names to Julia field types. When provided,
         ``julia_type`` must be a simple name and a Julia ``struct`` with these
@@ -115,6 +121,7 @@ class TypeSpec:
     """
 
     julia_type: str
+    preamble: str | None = None
     fields: dict[str, str] | None = None
     init_value: str | None = None
     sample_value: str | None = None
@@ -129,11 +136,12 @@ class TypeSpec:
 
     def instantiate(self) -> AnyValue:
         """Define the type and its global SymbolicRegression.jl interface methods."""
-        jl.seval("using Random: AbstractRNG")
         if self.fields is not None:
             if not self.julia_type.isidentifier():
                 raise ValueError("A TypeSpec with fields requires a simple type name.")
-            jl.seval(self._struct_definition())
+
+        for definition in self._base_definitions():
+            jl.seval(definition)
 
         value_type = jl.seval(self.julia_type)
         if not jl.seval("T -> T isa Type")(value_type):
@@ -180,9 +188,7 @@ class TypeSpec:
         jl.seval("using Distributed: Distributed")
         if addprocs_function is None:
             addprocs_function = jl.Distributed.addprocs
-        definitions = ["using Random: AbstractRNG", *self._interface_definitions()]
-        if self.fields is not None:
-            definitions.insert(1, self._struct_definition())
+        definitions = [*self._base_definitions(), *self._interface_definitions()]
         definition = jl.Meta.parse("begin\n" + "\n".join(definitions) + "\nend")
         imports = worker_imports if worker_imports is not None else jl.nothing
         return jl.seval("""
@@ -283,6 +289,14 @@ class TypeSpec:
             f"    {name}::{type_}" for name, type_ in self.fields.items()
         )
         return f"struct {self.julia_type}\n{fields}\nend"
+
+    def _base_definitions(self) -> list[str]:
+        definitions = ["using Random: AbstractRNG"]
+        if self.preamble is not None:
+            definitions.append(self.preamble)
+        if self.fields is not None:
+            definitions.append(self._struct_definition())
+        return definitions
 
     def _interface_definitions(self) -> list[str]:
         definitions = []

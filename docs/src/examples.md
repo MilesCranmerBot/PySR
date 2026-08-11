@@ -747,7 +747,7 @@ Each cell of `X` and `y` contains one vector:
 import numpy as np
 import pandas as pd
 
-from pysr import PySRRegressor, TypeSpec, jl
+from pysr import PySRRegressor, TypeSpec
 
 rng = np.random.default_rng(0)
 x1 = [rng.normal(size=2) for _ in range(128)]
@@ -759,23 +759,20 @@ y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
 ```
 
 The search operators all accept and return `Vector{Float64}`, allowing PySR to
-use its standard `OperatorEnum` representation:
-
-```python
-jl.seval("""
-add_vectors(a::Vector{Float64}, b::Vector{Float64}) = a + b
-rotate90(a::Vector{Float64}) = [-a[2], a[1]]
-double(a::Vector{Float64}) = 2a
-vector_loss(a::Vector{Float64}, b::Vector{Float64})::Float64 = sum(abs2, a - b)
-""")
-```
-
-The `TypeSpec` hooks explain how vectors participate in evolution:
+use its standard `OperatorEnum` representation. Shared Julia definitions belong
+in the `TypeSpec` preamble, which is also evaluated on every worker before the
+search begins. The remaining hooks explain how vectors participate in evolution:
 
 ```python
 type_spec = TypeSpec(
     # Which Julia type flows through every feature, constant, and operator?
     "Vector{Float64}",
+    preamble="""
+    add_vectors(a::Vector{Float64}, b::Vector{Float64}) = a + b
+    rotate90(a::Vector{Float64}) = [-a[2], a[1]]
+    double(a::Vector{Float64}) = 2a
+    vector_loss(a::Vector{Float64}, b::Vector{Float64})::Float64 = sum(abs2, a - b)
+    """,
     # What is an empty or zero-like value of this type?
     init_value="() -> zeros(2)",
     # How should a new constant be sampled?
@@ -828,9 +825,9 @@ errors:
 import numpy as np
 import pandas as pd
 
-from pysr import PySRRegressor, TypeSpec, jl
+from pysr import PySRRegressor, TypeSpec
 
-jl.seval("""
+preamble = """
 const NNPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}
 
 safe_matmul(a::Matrix{Float64}, b::Vector{Float64}) =
@@ -841,19 +838,18 @@ safe_add(a::Float64, b::Float64) = a + b
 safe_add(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
     size(a) == size(b) ? a + b : NaN
 safe_add(::NNPayload, ::NNPayload) = NaN
-""")
 
 # Constants sample a random rank, generating only the payload that was chosen:
-jl.seval("""
 function random_nn_payload(rng)
     rank = rand(rng, 0:2)
     rank == 0 ? randn(rng) : rank == 1 ? randn(rng, 2) : randn(rng, 2, 2)
 end
-""")
+"""
 
 type_spec = TypeSpec(
     "NNValue",
-    fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
+    preamble=preamble,
+    fields={"data": "NNPayload"},
     init_value="() -> NNValue(0.0)",
     sample_value="rng -> NNValue(random_nn_payload(rng))",
     # Mutations usually perturb every scalar in the payload, but occasionally
@@ -925,9 +921,8 @@ model = PySRRegressor(
     niterations=100,
     populations=4,
     maxsize=11,
-    parallelism="serial",
-    deterministic=True,
-    random_state=0,
+    parallelism="multiprocessing",
+    procs=4,
     should_optimize_constants=True,
     optimizer_nrestarts=0,
 )

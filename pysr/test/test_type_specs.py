@@ -484,10 +484,16 @@ class TestTypeSpecs(unittest.TestCase):
 
     def test_struct_type_spec_fit_and_predict(self):
         name = f"RASPValue_{uuid.uuid4().hex}"
+        payload_type = f"RASPPayload_{uuid.uuid4().hex}"
+        helper = f"rasp_identity_{uuid.uuid4().hex}"
         spec = TypeSpec(
             name,
-            fields={"data": "Union{Float64, Vector{Float64}}"},
-            init_value=f"() -> {name}(0.0)",
+            preamble=(
+                f"const {payload_type} = Union{{Float64, Vector{{Float64}}}}\n"
+                f"{helper}(x) = x"
+            ),
+            fields={"data": payload_type},
+            init_value=f"() -> {name}({helper}(0.0))",
             sample_value=f"rng -> {name}(randn(rng))",
             mutate_value=(
                 f"(rng, value, temperature) -> {name}(value.data isa Vector "
@@ -500,8 +506,11 @@ class TestTypeSpecs(unittest.TestCase):
         sequences = [[1.0, 2.0], [2.0, 3.0], [3.0, 4.0], [4.0, 5.0]]
         X = pd.DataFrame({"x": sequences})
         y = pd.Series(sequences, dtype=object)
-        operator = f"identity_rasp(x::{name}) = x"
-        loss = f"rasp_loss(x::{name}, y::{name}) = x.data == y.data ? 0.0 : 1.0"
+        operator = f"identity_rasp(x::{name}) = {helper}(x)"
+        loss = (
+            f"rasp_loss(x::{name}, y::{name}) = "
+            f"{helper}(x.data == y.data ? 0.0 : 1.0)"
+        )
         model = self._tiny_model(spec, operator, loss)
 
         model.fit(X, y)
