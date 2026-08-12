@@ -732,6 +732,18 @@ The template example above coordinates several scalar-valued expression trees.
 With `TypeSpec`, vectors or tensors flow through each expression, constant, and
 operator.
 
+Each specification creates a private Julia `Value` type. Its preamble,
+operators, and loss are replayed on multiprocessing workers and when loading a
+checkpoint. Put every required Julia definition in those source fields or use a
+package-qualified name.
+
+TypeSpec supports the default expression shape, prediction, checkpoint reload,
+and serial, multithreaded, or multiprocessing search. It does not support
+guesses, weights, units, denoising, feature selection, resampling, multi-output
+targets, turbo or bumper evaluation, autodiff backends, alternate expression
+specifications, or SymPy, JAX, Torch, and LaTeX export. Restoring a TypeSpec
+model requires its `checkpoint.pkl`; a hall-of-fame CSV is insufficient.
+
 ### Vector-valued expression trees
 
 This example searches for a program over two-dimensional vectors:
@@ -758,44 +770,57 @@ offset = np.array([0.5, -1.0])
 y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
 ```
 
-The search operators all accept and return `Vector{Float64}`, allowing PySR to
-use its standard `OperatorEnum` representation. Shared Julia definitions belong
-in the `TypeSpec` preamble, which is also evaluated on every worker before the
-search begins. The remaining hooks explain how vectors participate in evolution:
+PySR wraps each vector in a private Julia `Value` type. Operator and loss source
+can use `Value` directly, while the hooks explain how vectors participate in
+evolution and constant optimization:
 
 ```python
 type_spec = TypeSpec(
-    # Which Julia type flows through every feature, constant, and operator?
-    "Vector{Float64}",
-    preamble="""
-    add_vectors(a::Vector{Float64}, b::Vector{Float64}) = a + b
-    rotate90(a::Vector{Float64}) = [-a[2], a[1]]
-    double(a::Vector{Float64}) = 2a
-    vector_loss(a::Vector{Float64}, b::Vector{Float64})::Float64 = sum(abs2, a - b)
-    """,
+    fields={"data": "Vector{Float64}"},
     # What is an empty or zero-like value of this type?
-    init_value="() -> zeros(2)",
+    init_value="() -> Value(zeros(2))",
     # How should a new constant be sampled?
-    sample_value="rng -> randn(rng, 2)",
+    sample_value="(rng, options) -> Value(randn(rng, 2))",
     # How should evolution mutate an existing constant?
-    mutate_value="(rng, value, temperature) -> value + temperature * randn(rng, 2)",
+    mutate_value=(
+        "(rng, value, temperature, options) -> "
+        "Value(value.data + temperature * randn(rng, 2))"
+    ),
     # How many scalar constants does one vector contain?
     count_scalar_constants=2,
-    # Should BFGS optimize vectors? Evolution still samples and mutates them.
-    can_optimize=False,
-    # What concrete real type does the loss return?
-    loss_type="Float64",
+    is_valid="value -> all(isfinite, value.data)",
+    can_optimize=True,
+    # Flatten a vector into the optimizer's buffer, starting at one-based `idx`:
+    pack_scalar_constants="""
+    (buffer, idx, value) -> begin
+        buffer[idx:idx+1] .= value.data
+        idx + 2
+    end
+    """,
+    # Rebuild the vector and return `(first_unused_index, rebuilt_value)`:
+    unpack_scalar_constants="""
+    (buffer, idx, value) -> (idx + 2, Value(copy(buffer[idx:idx+1])))
+    """,
+    number_type="Float64",
 )
 
 model = PySRRegressor(
     type_spec=type_spec,
-    operators={1: ["rotate90", "double"], 2: ["add_vectors"]},
-    elementwise_loss="vector_loss",
+    operators={
+        1: [
+            "rotate90(a::Value) = Value([-a.data[2], a.data[1]])",
+            "double(a::Value) = Value(2a.data)",
+        ],
+        2: ["add_vectors(a::Value, b::Value) = Value(a.data + b.data)"],
+    },
+    elementwise_loss=(
+        "vector_loss(a::Value, b::Value)::Float64 = "
+        "sum(abs2, a.data - b.data)"
+    ),
     niterations=40,
     populations=4,
     maxsize=10,
     progress=False,
-    should_optimize_constants=False,
 )
 
 model.fit(X, y)
@@ -807,7 +832,71 @@ The target can be represented as
 learned vector-valued constant. PySR searches over both the program structure
 and the two components of that constant.
 
-### Advanced: recovering a neural network with tensor constants
+<details>
+<summary>String-valued expressions and discrete constants</summary>
+
+Strings demonstrate a value type whose constants are evolved discretely rather
+than optimized with BFGS. This search learns to join two transformed strings
+with a sampled separator:
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec
+
+X = pd.DataFrame(
+    {
+        "first": ["Py", "symbolic", "hello", "left"],
+        "second": ["SR", "regression", "world", "right"],
+    }
+)
+y = np.array(
+    [f"{a.lower()}-{b.upper()}" for a, b in X.itertuples(index=False)],
+    dtype=object,
+)
+
+type_spec = TypeSpec(
+    fields={"data": "String"},
+    init_value='() -> Value("")',
+    sample_value='(rng, options) -> Value(rand(rng, ("", "-", "_")))',
+    mutate_value=(
+        '(rng, value, temperature, options) -> '
+        'Value(rand(rng, ("", "-", "_")))'
+    ),
+    count_scalar_constants=1,
+    is_valid="value -> true",
+    can_optimize=False,
+)
+
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={
+        1: [
+            "string_lowercase(x::Value) = Value(lowercase(x.data))",
+            "string_uppercase(x::Value) = Value(uppercase(x.data))",
+        ],
+        2: ["string_concat(a::Value, b::Value) = Value(a.data * b.data)"],
+    },
+    elementwise_loss=(
+        "string_loss(a::Value, b::Value)::Float64 = "
+        "Float64(Base.editdistance(a.data, b.data))"
+    ),
+    niterations=40,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+Here `can_optimize=False` is appropriate because a string has no continuous
+scalar representation for BFGS. Evolution still samples and mutates string
+constants such as the separator.
+
+</details>
+
+<details>
+<summary>Advanced: recovering a neural network with tensor constants</summary>
 
 `TypeSpec` can place scalar, vector, and matrix constants in one Julia value
 type. The scalar-constant hooks let the optimizer flatten each constant for
@@ -847,40 +936,42 @@ end
 """
 
 type_spec = TypeSpec(
-    "NNValue",
-    preamble=preamble,
     fields={"data": "NNPayload"},
-    init_value="() -> NNValue(0.0)",
-    sample_value="rng -> NNValue(random_nn_payload(rng))",
+    init_value="() -> Value(0.0)",
+    sample_value="(rng, options) -> Value(random_nn_payload(rng))",
     # Mutations usually perturb every scalar in the payload, but occasionally
     # resample a fresh rank:
     mutate_value="""
-    (rng, value, temperature) -> if rand(rng) < 0.1
-        NNValue(random_nn_payload(rng))
+    (rng, value, temperature, options) -> if rand(rng) < 0.1
+        Value(random_nn_payload(rng))
     else
-        NNValue(value.data .+ temperature .* randn(rng, size(value.data)...))
+        Value(value.data .+ temperature .* randn(rng, size(value.data)...))
     end
     """,
+    # Return the number of Float64 entries used to represent one constant:
     count_scalar_constants="value -> length(value.data)",
+    # Write those entries into `buffer` from the one-based `idx`, then return
+    # the first unused index:
     pack_scalar_constants="""
-    (values, idx, value) -> begin
+    (buffer, idx, value) -> begin
         n = length(value.data)
-        values[idx:idx+n-1] .= value.data isa Float64 ? value.data : vec(value.data)
+        buffer[idx:idx+n-1] .= value.data isa Float64 ? value.data : vec(value.data)
         idx + n
     end
     """,
+    # Read the entries back and return `(first_unused_index, rebuilt_value)`:
     unpack_scalar_constants="""
-    (values, idx, value) -> begin
+    (buffer, idx, value) -> begin
         n = length(value.data)
-        data = value.data isa Float64 ? values[idx] :
-            reshape(copy(values[idx:idx+n-1]), size(value.data))
-        (idx + n, NNValue(data))
+        data = value.data isa Float64 ? buffer[idx] :
+            reshape(copy(buffer[idx:idx+n-1]), size(value.data))
+        (idx + n, Value(data))
     end
     """,
-    get_number_type="T -> Float64",
+    number_type="Float64",
     is_valid="value -> all(isfinite, value.data)",
     can_optimize=True,
-    loss_type="Float64",
+    preamble=preamble,
 )
 ```
 
@@ -900,31 +991,26 @@ y = pd.Series(list(y_values), dtype=object)
 ```
 
 Search with matrix multiplication, elementwise ReLU, and addition. BFGS is the
-default constant optimizer. Restarts are disabled because the pinned backend's
-restart sampler expects the value type itself to support `randn`:
+default constant optimizer:
 
 ```python
 model = PySRRegressor(
     type_spec=type_spec,
     operators={
-        1: ["nn_relu(a::NNValue) = NNValue(max.(a.data, 0.0))"],
+        1: ["nn_relu(a::Value) = Value(max.(a.data, 0.0))"],
         2: [
-            "nn_matmul(a::NNValue, b::NNValue) = NNValue(safe_matmul(a.data, b.data))",
-            "nn_add(a::NNValue, b::NNValue) = NNValue(safe_add(a.data, b.data))",
+            "nn_matmul(a::Value, b::Value) = Value(safe_matmul(a.data, b.data))",
+            "nn_add(a::Value, b::Value) = Value(safe_add(a.data, b.data))",
         ],
     },
     elementwise_loss=(
-        "nn_mse(a::NNValue, b::NNValue) = "
+        "nn_mse(a::Value, b::Value)::Float64 = "
         "a.data isa Vector && b.data isa Vector && size(a.data) == size(b.data) "
         "? sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
     ),
     niterations=100,
     populations=4,
     maxsize=11,
-    parallelism="multiprocessing",
-    procs=4,
-    should_optimize_constants=True,
-    optimizer_nrestarts=0,
 )
 
 model.fit(X, y)
@@ -934,7 +1020,9 @@ print(model.equations_)
 The search recovers a two-layer form such as
 `nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. Both biases
 are absorbed into the fitted constants, through $b_1 = W_1c$ and $b_2 = W_2b$;
-each displayed `NNValue` contains the fitted matrix or vector payload.
+each displayed `Value` contains the fitted matrix or vector payload.
+
+</details>
 
 ## 15. Additional features
 

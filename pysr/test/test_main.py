@@ -111,9 +111,7 @@ class TestPipeline(unittest.TestCase):
             early_stop_condition="stop_if(loss, complexity) = loss < 1e-4 && complexity == 1",
             bumper=True,
         )
-        with self.assertRaisesRegex(ValueError, "deprecated alias"):
-            model.fit(self.X, y, sample_weight=weights, weights=weights)
-        model.fit(self.X, y, sample_weight=weights)
+        model.fit(self.X, y, weights=weights)
         print(model.equations_)
         self.assertLessEqual(model.get_best()["loss"], 1e-4)
         self.assertEqual(
@@ -354,7 +352,7 @@ class TestPipeline(unittest.TestCase):
         _validate_elementwise_loss(jl.seval("1.0"), has_weights=False)
 
     def test_elementwise_loss_accepts_lossfunctions_object(self):
-        _, _, custom_loss, _, _ = PySRRegressor(
+        _, _, custom_loss, _, _, _ = PySRRegressor(
             elementwise_loss="LPDistLoss{3}()"
         )._instantiate_julia_definitions()
         self.assertTrue(jl.applicable(custom_loss, 1.0, 1.0))
@@ -1514,10 +1512,6 @@ class TestMiscellaneous(unittest.TestCase):
                 "check_do_not_raise_errors_in_init_or_set_params",
                 # TODO:
                 "check_n_features_in_after_fitting",
-                # Weighting cannot be statistically equivalent to sample
-                # repetition for a stochastic search
-                "check_sample_weight_equivalence_on_dense_data",
-                "check_sample_weight_equivalence_on_sparse_data",
             }:
                 continue
             try:

@@ -11,7 +11,12 @@ import pandas as pd
 from .export import add_export_formats
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, SymbolicRegression, jl
-from .type_specs import object_array_1d, object_array_2d
+from .type_specs import (
+    _TypeSpecRuntime,
+    object_array_2d,
+    type_spec_to_julia_array,
+    type_spec_to_python_array,
+)
 
 try:
     from typing import TypeAlias
@@ -96,7 +101,8 @@ class ExpressionSpec(AbstractExpressionSpec):
         i: int | None = None,
     ):
         if model.type_spec is not None:
-            search_output = search_output or model.julia_state_
+            if search_output is None and hasattr(model, "julia_state_stream_"):
+                search_output = model.julia_state_
             if search_output is None:
                 raise ValueError(
                     "Cannot reconstruct TypeSpec expressions without serialized "
@@ -104,7 +110,7 @@ class ExpressionSpec(AbstractExpressionSpec):
                     "`checkpoint.pkl` saved by the original search."
                 )
             return _search_output_to_callable_expressions(
-                equations, search_output, i, model.type_spec
+                equations, search_output, i, model._load_fitted_type_spec_runtime()
             )
         return add_export_formats(
             equations,
@@ -328,23 +334,28 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
 
 
 class CallableJuliaExpression:
-    def __init__(self, expression, type_spec=None):
+    def __init__(self, expression, type_spec_runtime: _TypeSpecRuntime | None = None):
         self.expression = expression
-        self.type_spec = type_spec
+        self.type_spec_runtime = type_spec_runtime
 
     def __call__(self, X: np.ndarray, *args):
-        if self.type_spec is not None:
-            jl_X = self.type_spec.to_julia_array(object_array_2d(X), transpose=True)
+        if self.type_spec_runtime is not None:
+            jl_X = type_spec_to_julia_array(
+                self.type_spec_runtime, object_array_2d(X), transpose=True
+            )
         else:
             jl_X = jl_array(X.T)
         raw_output = self.expression(jl_X, *args)
-        if self.type_spec is not None:
-            return object_array_1d(list(raw_output))
+        if self.type_spec_runtime is not None:
+            return type_spec_to_python_array(self.type_spec_runtime, raw_output)
         return np.array(raw_output).T
 
 
 def _search_output_to_callable_expressions(
-    equations: pd.DataFrame, search_output, i: int | None, type_spec=None
+    equations: pd.DataFrame,
+    search_output,
+    i: int | None,
+    type_spec_runtime: _TypeSpecRuntime | None = None,
 ) -> pd.DataFrame:
     equations = copy.deepcopy(equations)
     _, all_out_hof = search_output
@@ -356,7 +367,7 @@ def _search_output_to_callable_expressions(
         curComplexity = row["complexity"]
         expression = out_hof.members[curComplexity - 1].tree
         expressions.append(expression)
-        callables.append(CallableJuliaExpression(expression, type_spec))
+        callables.append(CallableJuliaExpression(expression, type_spec_runtime))
 
     df = pd.DataFrame(
         {"julia_expression": expressions, "lambda_format": callables},

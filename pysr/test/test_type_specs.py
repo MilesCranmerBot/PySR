@@ -1,400 +1,542 @@
-import pickle
+import json
+import subprocess
+import sys
+import tempfile
 import unittest
-import uuid
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from pysr import PySRRegressor, TypeSpec, jl
-from pysr.expression_specs import ExpressionSpec, TemplateExpressionSpec
+from pysr.expression_specs import ExpressionSpec
+from pysr.type_specs import (
+    build_type_spec_module_source,
+    load_type_spec_runtime,
+    object_array_1d,
+    object_array_2d,
+    type_spec_to_julia_array,
+    type_spec_to_python_array,
+)
 
 
-class TestTypeSpecs(unittest.TestCase):
-    @staticmethod
-    def _validate_fit_params(model, X, y, **kwargs):
-        params = dict(
-            Xresampled=None,
-            weights=None,
-            variable_names=None,
-            complexity_of_variables=None,
-            X_units=None,
-            y_units=None,
-        )
-        params.update(kwargs)
-        return model._validate_and_set_fit_params(X, y, **params)
+def string_spec(**overrides):
+    parameters = {
+        "fields": {"data": "String"},
+        "init_value": '() -> Value("")',
+        "sample_value": '(rng, options) -> Value(rand(rng, ("a", "b")))',
+        "mutate_value": (
+            '(rng, value, temperature, options) -> Value(rand(rng, ("a", "b")))'
+        ),
+        "count_scalar_constants": 1,
+        "is_valid": "value -> true",
+        "can_optimize": False,
+    }
+    parameters.update(overrides)
+    return TypeSpec(**parameters)
 
-    def test_type_spec_fit_validation(self):
-        spec = TypeSpec("String", loss_type="Float64")
-        model = PySRRegressor(type_spec=spec)
 
-        X_lists = [[(1.0, "one")], [(2.0, "two")]]
-        X, y, *_ = self._validate_fit_params(model, X_lists, [(1, 2), (3, 4)])
-        self.assertEqual(X.shape, (2, 1))
-        self.assertEqual(X[0, 0], (1.0, "one"))
-        self.assertEqual(y.shape, (2,))
-        self.assertEqual(y[1], (3, 4))
+def vector_spec(**overrides):
+    parameters = {
+        "fields": {"data": "Vector{Float64}"},
+        "init_value": "() -> Value([1.0, 2.0])",
+        "sample_value": "(rng, options) -> Value([3.0, 4.0])",
+        "mutate_value": "(rng, value, temperature, options) -> value",
+        "count_scalar_constants": "value -> length(value.data)",
+        "is_valid": "value -> all(isfinite, value.data)",
+        "can_optimize": True,
+        "pack_scalar_constants": (
+            "(buffer, idx, value) -> " "(buffer[idx:idx+1] .= value.data; idx + 2)"
+        ),
+        "unpack_scalar_constants": (
+            "(buffer, idx, value) -> " "(idx + 2, Value(copy(buffer[idx:idx+1])))"
+        ),
+        "number_type": "Float64",
+    }
+    parameters.update(overrides)
+    return TypeSpec(**parameters)
 
-        for column_y in (
-            np.ones((2, 1)),
-            np.ones((2, 1)).astype(object),
-            pd.DataFrame({"y": [1.0, 1.0]}),
-        ):
-            _, y, *_ = self._validate_fit_params(model, X_lists, column_y)
-            self.assertEqual(y.shape, (2,))
-            self.assertEqual(y[0], 1.0)
 
-        with self.assertRaisesRegex(ValueError, "at least one sample"):
-            self._validate_fit_params(model, np.empty((0, 2), dtype=object), [])
-        with self.assertRaisesRegex(NotImplementedError, "units"):
-            self._validate_fit_params(model, X_lists, [1.0, 2.0], X_units=["m"])
-        with self.assertRaisesRegex(NotImplementedError, "one output"):
-            self._validate_fit_params(model, X_lists, np.ones((2, 2)))
-        with self.assertRaisesRegex(ValueError, "2D array"):
-            self._validate_fit_params(model, "invalid", [1.0])
-        with self.assertRaisesRegex(ValueError, "same number of features"):
-            self._validate_fit_params(model, [["a"], ["b", "c"]], [1.0, 2.0])
-        with self.assertRaisesRegex(ValueError, "2D array"):
-            self._validate_fit_params(
-                model, np.array(["a", "b"], dtype=object), [1.0, 2.0]
-            )
-        with self.assertRaisesRegex(ValueError, "inconsistent numbers of samples"):
-            self._validate_fit_params(model, [["a"], ["b"]], [1.0])
-        with self.assertRaisesRegex(NotImplementedError, "weights"):
-            self._validate_fit_params(
-                model, [["a"], ["b"]], [1.0, 2.0], weights=np.ones(2)
-            )
-        with self.assertRaisesRegex(NotImplementedError, "resampling"):
-            self._validate_fit_params(
-                model,
-                [["a"], ["b"]],
-                [1.0, 2.0],
-                Xresampled=np.array([["a"], ["b"]], dtype=object),
-            )
+def module_source(
+    spec,
+    operators=None,
+    *,
+    elementwise_loss=("value_loss(x::Value, y::Value)::Float64 = x == y ? 0.0 : 1.0"),
+    loss_function=None,
+    loss_function_expression=None,
+):
+    return build_type_spec_module_source(
+        spec,
+        operators or {1: ["identity_value(x::Value) = x"]},
+        elementwise_loss=elementwise_loss,
+        loss_function=loss_function,
+        loss_function_expression=loss_function_expression,
+    )
 
-        with self.assertWarnsRegex(UserWarning, "variable_names"):
-            *_, feature_names, _, _, _ = self._validate_fit_params(
-                model,
-                pd.DataFrame({"dataframe_name": ["a", "b"]}),
-                [1.0, 2.0],
-                variable_names=["ignored_name"],
-            )
-        self.assertEqual(feature_names.tolist(), ["dataframe_name"])
 
-        with self.assertWarnsRegex(UserWarning, "Spaces in variable names"):
-            *_, feature_names, _, _, _ = self._validate_fit_params(
-                model,
-                [["a"], ["b"]],
-                [1.0, 2.0],
-                variable_names=["spaced name"],
-            )
-        self.assertEqual(feature_names.tolist(), ["spaced_name"])
+def tiny_model(spec, *, parallelism="serial", procs=None, **overrides):
+    parameters = {
+        "type_spec": spec,
+        "operators": {1: ["identity_value(x::Value) = x"]},
+        "elementwise_loss": (
+            "value_loss(x::Value, y::Value)::Float64 = " "x == y ? 0.0 : 1.0"
+        ),
+        "niterations": 1,
+        "ncycles_per_iteration": 2,
+        "populations": 1,
+        "population_size": 8,
+        "tournament_selection_n": 3,
+        "maxsize": 7,
+        "parallelism": parallelism,
+        "procs": procs,
+        "deterministic": parallelism == "serial",
+        "random_state": 0 if parallelism == "serial" else None,
+        "progress": False,
+        "verbosity": 0,
+        "temp_equation_file": True,
+        "should_optimize_constants": False,
+    }
+    parameters.update(overrides)
+    return PySRRegressor(**parameters)
 
-        default_spec_model = PySRRegressor(
-            type_spec=spec, expression_spec=ExpressionSpec()
-        )
-        self._validate_fit_params(default_spec_model, X_lists, [1.0, 2.0])
-        template_model = PySRRegressor(
-            type_spec=spec,
-            expression_spec=TemplateExpressionSpec(
-                "f(x)", expressions=["f"], variable_names=["x"]
-            ),
-        )
-        with self.assertRaisesRegex(NotImplementedError, "expression shape"):
-            self._validate_fit_params(template_model, X_lists, [1.0, 2.0])
 
-    def test_type_spec_complexity_of_variables(self):
-        spec = TypeSpec("String", loss_type="Float64")
-        model = PySRRegressor(type_spec=spec, complexity_of_variables=[3])
-        self._validate_fit_params(model, [["a"], ["b"]], ["a", "b"])
-        self.assertEqual(model.complexity_of_variables_, [3])
-        with self.assertRaisesRegex(ValueError, "at both `fit` and `__init__`"):
-            self._validate_fit_params(
-                model, [["a"], ["b"]], ["a", "b"], complexity_of_variables=[5]
-            )
-
-    def test_type_spec_loss_type_validation(self):
-        with self.assertRaisesRegex(ValueError, "type_spec.loss_type"):
-            PySRRegressor(
-                type_spec=TypeSpec("String", loss_type=""),
-                elementwise_loss="loss(x, y) = x == y ? 0.0 : 1.0",
-            )._validate_and_modify_params()
-        with self.assertRaisesRegex(ValueError, "concrete subtype of `Real`"):
-            TypeSpec("String", loss_type="1").julia_loss_type()
-        for loss_type in ("String", "Real"):
-            with self.subTest(loss_type=loss_type):
-                with self.assertRaisesRegex(
-                    ValueError, f"`loss_type` \\(`{loss_type}`\\)"
-                ):
-                    TypeSpec("String", loss_type=loss_type).julia_loss_type()
-
-    def test_type_spec_accepts_multi_method_callbacks(self):
-        suffix = uuid.uuid4().hex
-        jl.seval(f"""
-            _pysr_multi_sample_{suffix}(rng) = "a"
-            _pysr_multi_sample_{suffix}(rng, options) = "b"
-            """)
-        spec = TypeSpec("String", sample_value=f"_pysr_multi_sample_{suffix}")
-        value_type = spec.instantiate()
-        jl.seval("using Random")
-        self.assertEqual(
-            jl.SymbolicRegression.sample_value(
-                jl.Random.Xoshiro(0), value_type, jl.nothing
-            ),
-            "b",
-        )
-
-    def test_type_spec_can_optimize_defaults(self):
-        name = f"NoOptValue_{uuid.uuid4().hex}"
-        value_type = TypeSpec(name, fields={"data": "Float64"}).instantiate()
-        self.assertFalse(
-            jl.SymbolicRegression.ConstantOptimizationModule.can_optimize(
-                value_type, jl.nothing
-            )
-        )
-        float_type = TypeSpec("Float64").instantiate()
-        self.assertTrue(
-            jl.SymbolicRegression.ConstantOptimizationModule.can_optimize(
-                float_type, jl.nothing
-            )
-        )
-
-    def test_type_spec_schema_2_checkpoint_state(self):
-        state = PySRRegressor().__getstate__()
-        del state["type_spec"]
-        model = PySRRegressor.__new__(PySRRegressor)
-        model.__setstate__(state)
-        self.assertIsNone(model.type_spec)
-
-    def test_type_spec_score_not_implemented(self):
-        model = PySRRegressor(type_spec=TypeSpec("String", loss_type="Float64"))
-        with self.assertRaises(NotImplementedError):
-            model.score([["a"]], ["a"])
-
-    def test_type_spec_predict_validation(self):
-        model = PySRRegressor(type_spec=TypeSpec("String", loss_type="Float64"))
-        model.selection_mask_ = None
-        model.feature_names_in_ = np.array(["x0"])
-        model.n_features_in_ = 1
-        model.nout_ = 1
-        model.equations_ = pd.DataFrame(
-            {"lambda_format": [lambda X: X[:, 0]], "loss": [0.0], "score": [0.0]}
-        )
-
-        with self.assertRaisesRegex(ValueError, "2D array"):
-            model.predict(np.array(["a"], dtype=object), index=0)
-        with self.assertRaisesRegex(ValueError, "different number of features"):
-            model.predict(np.array([["a", "b"]], dtype=object), index=0)
-        with self.assertRaisesRegex(ValueError, "missing features"):
-            model.predict(pd.DataFrame({"x1": ["a"]}), index=0)
-
-    def test_type_spec_instantiates_compact_global_interface(self):
-        name = f"PySRTestValue_{uuid.uuid4().hex}"
-        spec = TypeSpec(
-            name,
-            fields={"data": "Float64"},
-            init_value=f"() -> {name}(0.0)",
-            sample_value=f"rng -> {name}(1.0)",
-            mutate_value=f"(rng, value, temperature) -> {name}(value.data + temperature)",
-            count_scalar_constants=1,
-            pack_scalar_constants=(
-                "(nvals, idx, value) -> (nvals[idx] = value.data; idx + 1)"
-            ),
-            unpack_scalar_constants=(
-                f"(nvals, idx, value) -> (idx + 1, {name}(nvals[idx]))"
-            ),
-            get_number_type="T -> Float64",
-            is_valid="value -> isfinite(value.data)",
-            can_optimize=True,
-        )
-
-        value_type = spec.instantiate()
-        options = jl.nothing
-        jl.seval("using Random")
-        rng = jl.Random.Xoshiro(0)
-
-        self.assertEqual(jl.SymbolicRegression.init_value(value_type).data, 0.0)
-        self.assertEqual(
-            jl.SymbolicRegression.sample_value(rng, value_type, options).data, 1.0
-        )
-        self.assertEqual(
-            jl.SymbolicRegression.mutate_value(
-                rng, jl.SymbolicRegression.init_value(value_type), 0.5, options
-            ).data,
-            0.5,
-        )
-        self.assertEqual(
-            jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE.count_scalar_constants(
-                jl.SymbolicRegression.init_value(value_type)
-            ),
-            1,
-        )
-        dynamic_expressions = jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE
-        packed = jl.seval("zeros(1)")
-        value = jl.seval(f"{name}(2.0)")
-        self.assertEqual(
-            dynamic_expressions.pack_scalar_constants_b(packed, 1, value), 2
-        )
-        self.assertEqual(packed[0], 2.0)
-        next_idx, unpacked = dynamic_expressions.unpack_scalar_constants(
-            packed, 1, value
-        )
-        self.assertEqual(next_idx, 2)
-        self.assertEqual(unpacked.data, 2.0)
-        self.assertEqual(dynamic_expressions.get_number_type(value_type), jl.Float64)
-        self.assertTrue(dynamic_expressions.is_valid(value))
-        self.assertFalse(dynamic_expressions.is_valid(jl.seval(f"{name}(NaN)")))
-        self.assertTrue(
-            jl.SymbolicRegression.ConstantOptimizationModule.can_optimize(
-                value_type, options
-            )
-        )
-
-    def test_type_spec_round_trip_uses_configured_number_type(self):
-        name = f"BigFloatValue_{uuid.uuid4().hex}"
-        spec = TypeSpec(
-            name,
-            fields={"data": "BigFloat"},
-            init_value=f'() -> {name}(big"0.12345678901234567890123456789")',
-            count_scalar_constants=1,
-            pack_scalar_constants=(
-                "(nvals::AbstractVector{BigFloat}, idx, value) -> "
-                "(nvals[idx] = value.data; idx + 1)"
-            ),
-            unpack_scalar_constants=(
-                f"(nvals::AbstractVector{{BigFloat}}, idx, value) -> "
-                f"(idx + 1, {name}(nvals[idx]))"
-            ),
-            get_number_type="T -> BigFloat",
-            can_optimize=True,
-        )
-
-        value_type = spec.instantiate()
-        self.assertEqual(
-            jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE.get_number_type(
-                value_type
-            ),
-            jl.BigFloat,
-        )
-
-    def test_type_spec_rejects_wrong_callback_arity(self):
-        name = f"InvalidTypeSpec_{uuid.uuid4().hex}"
-        with self.assertRaisesRegex(ValueError, "sample_value must accept"):
-            TypeSpec(
-                name, fields={"data": "String"}, sample_value='() -> ""'
-            ).instantiate()
-        for field in (
-            "pack_scalar_constants",
-            "unpack_scalar_constants",
-            "get_number_type",
-            "is_valid",
-        ):
+class _TypeSpecContractTests:
+    def test_requires_explicit_lifecycle(self):
+        required = {
+            "fields": {"data": "String"},
+            "init_value": '() -> Value("")',
+            "sample_value": '(rng, options) -> Value("")',
+            "mutate_value": "(rng, value, temperature, options) -> value",
+            "count_scalar_constants": 1,
+            "is_valid": "value -> true",
+            "can_optimize": False,
+        }
+        for field in required:
             with self.subTest(field=field):
-                with self.assertRaisesRegex(ValueError, f"{field} must accept"):
-                    TypeSpec("String", **{field: "() -> nothing"}).instantiate()
+                parameters = required.copy()
+                del parameters[field]
+                with self.assertRaises(TypeError):
+                    TypeSpec(**parameters)
 
-    def test_type_spec_rejects_broken_optimization_round_trip(self):
-        cases = (
-            (
-                "pack_scalar_constants",
-                "(nvals, idx, value) -> (nvals[idx] = value.data; idx)",
-                "(nvals, idx, value) -> (idx + 1, value)",
-                "first unused index after packing",
-            ),
-            (
-                "unpack_scalar_constants index",
-                "(nvals, idx, value) -> (nvals[idx] = value.data; idx + 1)",
-                "(nvals, idx, value) -> (idx, value)",
-                "first unused index after unpacking",
-            ),
-            (
-                "unpack_scalar_constants value",
-                "(nvals, idx, value) -> (nvals[idx] = value.data; idx + 1)",
-                None,
-                "round-trip `init_value`",
-            ),
-        )
-        for label, pack, unpack, message in cases:
-            with self.subTest(label=label):
-                name = f"BrokenRoundTrip_{uuid.uuid4().hex}"
-                unpack = unpack or (
-                    f"(nvals, idx, value) -> (idx + 1, {name}(value.data + 1))"
-                )
+    def test_rejects_invalid_fields_and_optimization_combinations(self):
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            string_spec(fields={})
+        with self.assertRaisesRegex(ValueError, "not an identifier"):
+            string_spec(fields={"not valid": "String"})
+        with self.assertRaisesRegex(ValueError, "nonnegative"):
+            string_spec(count_scalar_constants=-1)
+        with self.assertRaisesRegex(ValueError, "requires"):
+            string_spec(can_optimize=True)
+        with self.assertRaisesRegex(ValueError, "require `can_optimize=True`"):
+            string_spec(pack_scalar_constants="(buffer, idx, value) -> idx")
+        for overrides, message in (
+            ({"fields": {"data": ""}}, "requires a Julia type"),
+            ({"init_value": ""}, "must contain Julia source"),
+            ({"count_scalar_constants": None}, "nonnegative integer"),
+            ({"can_optimize": 1}, "explicitly set"),
+            ({"preamble": ""}, "cannot be empty"),
+        ):
+            with self.subTest(overrides=overrides):
                 with self.assertRaisesRegex(ValueError, message):
-                    TypeSpec(
-                        name,
-                        fields={"data": "Float64"},
-                        init_value=f"() -> {name}(0.0)",
-                        count_scalar_constants=1,
-                        pack_scalar_constants=pack,
-                        unpack_scalar_constants=unpack,
-                        get_number_type="T -> Float64",
-                        can_optimize=True,
-                    ).instantiate()
+                    string_spec(**overrides)
 
-    def test_type_spec_rejects_incompatible_or_invalid_definitions(self):
-        with self.assertRaisesRegex(ValueError, "simple type name"):
-            TypeSpec("Base.Invalid", fields={"data": "Float64"}).instantiate()
-        with self.assertRaisesRegex(ValueError, "does not evaluate to a Julia type"):
-            TypeSpec("nothing").instantiate()
+    def test_rejects_invalid_operator_and_loss_declarations(self):
+        def build(operators, **losses):
+            return build_type_spec_module_source(
+                string_spec(),
+                operators,
+                elementwise_loss=losses.get("elementwise_loss"),
+                loss_function=losses.get("loss_function"),
+                loss_function_expression=losses.get("loss_function_expression"),
+            )
 
-    def test_type_spec_requires_loss_and_loss_type(self):
-        with self.assertRaisesRegex(ValueError, "type_spec.loss_type"):
-            PySRRegressor(
-                type_spec=TypeSpec("String"),
-                elementwise_loss="loss(x, y) = x == y ? 0.0 : 1.0",
-            )._validate_and_modify_params()
-        with self.assertRaisesRegex(ValueError, "requires a loss"):
-            PySRRegressor(
-                type_spec=TypeSpec("String", loss_type="Float64")
-            )._validate_and_modify_params()
+        for operators, message in (
+            (None, "explicit .*operators"),
+            ({0: ["identity_value(x::Value) = x"]}, "positive integers"),
+            ({1: []}, "cannot be empty"),
+            ({1: [""]}, "must contain Julia source"),
+        ):
+            with self.subTest(operators=operators):
+                with self.assertRaisesRegex(ValueError, message):
+                    build(operators, elementwise_loss="value_loss(x, y) = 0.0")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            build({1: ["identity_value(x::Value) = x"]})
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            build(
+                {1: ["identity_value(x::Value) = x"]},
+                elementwise_loss="value_loss(x, y) = 0.0",
+                loss_function="full_loss(tree, dataset, options) = 0.0",
+            )
 
-    def test_type_spec_converts_values_and_callback_constants(self):
-        float_spec = TypeSpec("Float64")
-        values = float_spec.to_julia_array([1.0, 2.0])
-        np.testing.assert_array_equal(np.asarray(list(values)), [1.0, 2.0])
-        transposed = float_spec.to_julia_array([[1.0, 2.0]], transpose=True)
-        self.assertEqual(tuple(transposed.shape), (2, 1))
-        with self.assertRaisesRegex(ValueError, "1D or 2D"):
-            TypeSpec("Float64").to_julia_array(np.zeros((1, 1, 1)))
-
-        name = f"CountingTypeSpec_{uuid.uuid4().hex}"
-        spec = TypeSpec(
-            name,
-            fields={"data": "Float64"},
-            count_scalar_constants="value -> 2",
+    def test_python_object_array_helpers(self):
+        one_dimensional = object_array_1d(value for value in ([1, 2], [3, 4]))
+        self.assertEqual(one_dimensional.dtype, object)
+        self.assertEqual(one_dimensional.tolist(), [[1, 2], [3, 4]])
+        np.testing.assert_array_equal(
+            object_array_1d(np.array([1, 2])), np.array([1, 2], dtype=object)
         )
-        spec.instantiate()
-        self.assertEqual(spec.instantiate(), jl.seval(name))
-        self.assertEqual(spec.to_julia_array([1.0])[0].data, 1.0)
-        value = jl.seval(f"{name}(1.0)")
-        self.assertEqual(
-            jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE.count_scalar_constants(
-                value
+
+        two_dimensional = object_array_2d(
+            row for row in (([1, 2], [3, 4]), ([5, 6], [7, 8]))
+        )
+        self.assertEqual(two_dimensional.shape, (2, 2))
+        self.assertEqual(two_dimensional[0, 0], [1, 2])
+        with self.assertRaisesRegex(ValueError, "2D array"):
+            object_array_2d(["a", "b"])
+        with self.assertRaisesRegex(ValueError, "same number"):
+            object_array_2d([[1], [2, 3]])
+
+    def test_optimization_contract_uses_packed_round_trip(self):
+        spec = vector_spec()
+        load_type_spec_runtime(spec, module_source(spec))
+
+        broken = vector_spec(
+            unpack_scalar_constants=(
+                "(buffer, idx, value) -> "
+                "(idx + 2, Value(copy(buffer[idx:idx+1]) .+ 1.0))"
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "packed scalar representation"):
+            load_type_spec_runtime(broken, module_source(broken))
+
+    def test_optimization_contract_rejects_each_invalid_hook(self):
+        broken_specs = (
+            (
+                vector_spec(number_type="Int"),
+                "concrete `AbstractFloat`",
             ),
-            2,
+            (
+                vector_spec(pack_scalar_constants="(buffer, idx, value) -> idx + 1"),
+                "pack_scalar_constants.*wrong next index",
+            ),
+            (
+                vector_spec(unpack_scalar_constants="(buffer, idx, value) -> value"),
+                "must return `\\(next_idx, Value\\)`",
+            ),
+            (
+                vector_spec(
+                    unpack_scalar_constants=("(buffer, idx, value) -> (idx + 1, value)")
+                ),
+                "unpack_scalar_constants.*wrong next index",
+            ),
+            (
+                vector_spec(
+                    unpack_scalar_constants=(
+                        "(buffer, idx, value) -> (idx + 2, value.data)"
+                    )
+                ),
+                "unpack_scalar_constants.*return `Value`",
+            ),
         )
-        name = f"TwoFieldTypeSpec_{uuid.uuid4().hex}"
-        pairs = np.empty(2, dtype=object)
-        pairs[:] = [(1.0, "one"), [2.0, "two"]]
-        converted = TypeSpec(
-            name,
-            fields={"x": "Float64", "label": "String"},
-        ).to_julia_array(pairs)
-        self.assertEqual(
-            [(value.x, value.label) for value in converted],
-            [(1.0, "one"), (2.0, "two")],
-        )
+        for spec, message in broken_specs:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    load_type_spec_runtime(spec, module_source(spec))
 
-    @staticmethod
-    def _tiny_model(type_spec, operator, loss, **kwargs):
-        params = dict(
-            type_spec=type_spec,
-            operators={1: [operator]},
-            elementwise_loss=loss,
+    def test_hook_and_loss_validation(self):
+        with self.assertRaisesRegex(ValueError, "sample_value"):
+            spec = string_spec(sample_value='() -> Value("a")')
+            load_type_spec_runtime(spec, module_source(spec))
+        with self.assertRaisesRegex(ValueError, "is_valid.*Bool"):
+            spec = string_spec(is_valid="value -> 1")
+            load_type_spec_runtime(spec, module_source(spec))
+        with self.assertRaisesRegex(ValueError, "AbstractFloat"):
+            source = module_source(
+                string_spec(),
+                elementwise_loss=(
+                    "value_loss(x::Value, y::Value) = rand(Bool) ? 1.0 : 1"
+                ),
+            )
+            load_type_spec_runtime(string_spec(), source)
+        with self.assertRaisesRegex(ValueError, "explicit `loss_type`"):
+            module_source(
+                string_spec(),
+                elementwise_loss=None,
+                loss_function="full_loss(tree, dataset, options) = 0.0",
+            )
+        with self.assertRaisesRegex(ValueError, "return type is inferred"):
+            module_source(string_spec(loss_type="Float64"))
+        with self.assertRaisesRegex(ValueError, "named Julia functions"):
+            source = module_source(string_spec(), {1: ["x -> x"]})
+            load_type_spec_runtime(string_spec(), source)
+        with self.assertRaisesRegex(ValueError, "Julia function"):
+            source = module_source(string_spec(), {1: ["1"]})
+            load_type_spec_runtime(string_spec(), source)
+        with self.assertRaisesRegex(ValueError, "init_value.*return `Value`"):
+            spec = string_spec(init_value='() -> ""')
+            load_type_spec_runtime(spec, module_source(spec))
+        with self.assertRaisesRegex(ValueError, "returned an invalid value"):
+            spec = string_spec(is_valid="value -> false")
+            load_type_spec_runtime(spec, module_source(spec))
+        with self.assertRaisesRegex(ValueError, "nonnegative `Int`"):
+            spec = string_spec(count_scalar_constants="value -> -1")
+            load_type_spec_runtime(spec, module_source(spec))
+        with self.assertRaisesRegex(ValueError, "operator.*return `Value`"):
+            source = module_source(
+                string_spec(), {1: ['bad_operator(x::Value) = "bad"']}
+            )
+            load_type_spec_runtime(string_spec(), source)
+
+    def test_preamble_callable_count_and_full_objectives(self):
+        spec = string_spec(
+            preamble="const TYPE_SPEC_TEST_VALUE = 1",
+            count_scalar_constants="value -> TYPE_SPEC_TEST_VALUE",
+        )
+        runtime = load_type_spec_runtime(spec, module_source(spec))
+        self.assertEqual(runtime.module.TYPE_SPEC_TEST_VALUE, 1)
+
+        full_spec = string_spec(loss_type="Float64")
+        for mode, source in (
+            (
+                "loss_function",
+                "full_loss(tree, dataset, options)::Float64 = 0.0",
+            ),
+            (
+                "loss_function_expression",
+                "full_expression_loss(expression, dataset, options)::Float64 = 0.0",
+            ),
+        ):
+            with self.subTest(mode=mode):
+                losses = {
+                    "elementwise_loss": None,
+                    "loss_function": None,
+                    "loss_function_expression": None,
+                }
+                losses[mode] = source
+                generated = module_source(full_spec, **losses)
+                runtime = load_type_spec_runtime(full_spec, generated, validate=False)
+                self.assertIsNotNone(getattr(runtime, mode))
+
+    def test_conversion_and_unwrapping(self):
+        spec = TypeSpec(
+            fields={"number": "Float64", "label": "String"},
+            init_value='() -> Value(0.0, "")',
+            sample_value='(rng, options) -> Value(0.0, "")',
+            mutate_value="(rng, value, temperature, options) -> value",
+            count_scalar_constants=1,
+            is_valid="value -> true",
+            can_optimize=False,
+        )
+        source = module_source(
+            spec,
+            {1: ["identity_value(x::Value) = x"]},
+            elementwise_loss=(
+                "value_loss(x::Value, y::Value)::Float64 = " "x == y ? 0.0 : 1.0"
+            ),
+        )
+        runtime = load_type_spec_runtime(spec, source)
+        values = np.empty(2, dtype=object)
+        values[:] = [(1.0, "one"), (2.0, "two")]
+        converted = type_spec_to_julia_array(runtime, values)
+        self.assertEqual(
+            type_spec_to_python_array(runtime, converted).tolist(), values.tolist()
+        )
+        for value in ((1.0,), (1.0, "one", "extra")):
+            wrong_size = np.empty(1, dtype=object)
+            wrong_size[0] = value
+            with self.assertRaisesRegex(ValueError, "exactly 2 fields"):
+                type_spec_to_julia_array(runtime, wrong_size)
+        with self.assertRaisesRegex(ValueError, "exactly 2 fields"):
+            type_spec_to_julia_array(runtime, ["one"])
+        with self.assertRaisesRegex(ValueError, "exactly 2 fields"):
+            type_spec_to_julia_array(runtime, [1.0])
+        with self.assertRaisesRegex(ValueError, "1D or 2D"):
+            type_spec_to_julia_array(runtime, np.empty((1, 1, 1), dtype=object))
+        non_object = type_spec_to_julia_array(
+            load_type_spec_runtime(string_spec(), module_source(string_spec())),
+            np.array(["a", "b"]),
+        )
+        self.assertEqual(len(non_object), 2)
+
+
+class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
+    def test_private_modules_isolate_identical_local_names(self):
+        spec = string_spec(
+            sample_value='(rng, options) -> Value("Ab")',
+            mutate_value="(rng, value, temperature, options) -> value",
+        )
+        lower_source = module_source(
+            spec,
+            {1: ["same_operator(x::Value) = Value(lowercase(x.data))"]},
+        )
+        upper_source = module_source(
+            spec,
+            {1: ["same_operator(x::Value) = Value(uppercase(x.data))"]},
+        )
+        lower = load_type_spec_runtime(spec, lower_source)
+        upper = load_type_spec_runtime(spec, upper_source)
+        self.assertNotEqual(lower_source.module_name, upper_source.module_name)
+        value = lower.module._convert_value("Ab")
+        self.assertEqual(lower.operators[1][0](value).data, "ab")
+        value = upper.module._convert_value("Ab")
+        self.assertEqual(upper.operators[1][0](value).data, "AB")
+        value = lower.module._convert_value("Ab")
+        self.assertEqual(lower.operators[1][0](value).data, "ab")
+
+    def test_serial_fit_predicts_logical_payloads(self):
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        model = tiny_model(string_spec())
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
+        self.assertTrue(model._type_spec_module_name_.startswith("_PySRTypeSpec_"))
+        self.assertTrue(
+            bool(
+                jl.seval("(a, b) -> a === b")(
+                    model.julia_type_spec_module_, model.julia_type_spec_module_
+                )
+            )
+        )
+        model.set_params(warm_start=True)
+        model.fit(X, y)
+        model.set_params(warm_start=False)
+        model.fit(X, y)
+        exports = ExpressionSpec().create_exports(model, model.equations_, None)
+        self.assertIn("lambda_format", exports)
+
+    def test_multi_field_fit_predicts_tuples(self):
+        spec = TypeSpec(
+            fields={"number": "Float64", "label": "String"},
+            init_value='() -> Value(0.0, "")',
+            sample_value='(rng, options) -> Value(0.0, "")',
+            mutate_value="(rng, value, temperature, options) -> value",
+            count_scalar_constants=1,
+            is_valid="value -> true",
+            can_optimize=False,
+        )
+        pairs = [(1.0, "one"), (2.0, "two"), (3.0, "three"), (4.0, "four")]
+        X = pd.DataFrame({"x": pairs})
+        y = pd.Series(pairs, dtype=object)
+        model = tiny_model(spec)
+        model.fit(X, y)
+        self.assertEqual(model.predict(X).tolist(), pairs)
+
+    def test_multithreading(self):
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        model = tiny_model(string_spec(), parallelism="multithreading")
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_multiprocessing(self):
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        model = tiny_model(string_spec(), parallelism="multiprocessing", procs=2)
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_fresh_process_checkpoint(self):
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        with tempfile.TemporaryDirectory() as directory:
+            model = tiny_model(
+                string_spec(),
+                temp_equation_file=False,
+                output_directory=directory,
+                run_id="typespec-checkpoint",
+                delete_tempfiles=False,
+            )
+            model.fit(X, y)
+            run_directory = Path(directory) / "typespec-checkpoint"
+            code = f"""
+import json
+import numpy as np
+from pysr import PySRRegressor, jl
+name = {model._type_spec_module_name_!r}
+assert not bool(jl.isdefined(jl.Main, jl.Symbol(name)))
+model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
+X = np.array([[\"a\"], [\"b\"], [\"a\"], [\"b\"]], dtype=object)
+print(json.dumps(model.predict(X).tolist()))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                json.loads(result.stdout.strip().splitlines()[-1]), y.tolist()
+            )
+
+    def test_warm_start_rejects_runtime_changes(self):
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        model = tiny_model(string_spec())
+        model.fit(X, y)
+        model.set_params(
+            warm_start=True,
+            operators={1: ["changed_operator(x::Value) = x"]},
+        )
+        with self.assertRaisesRegex(ValueError, "Cannot warm-start"):
+            model.fit(X, y)
+        model.set_params(
+            type_spec=None,
+            operators={1: ["identity_value(x::Value) = x"]},
+        )
+        with self.assertRaisesRegex(ValueError, "enabling or disabling TypeSpec"):
+            model._validate_and_modify_params()
+
+    def test_rejects_unsupported_options(self):
+        for parameter, value in (
+            ("guesses", ["x0"]),
+            ("turbo", True),
+            ("bumper", True),
+            ("autodiff_backend", "Zygote"),
+            ("output_jax_format", True),
+        ):
+            with self.subTest(parameter=parameter):
+                with self.assertRaisesRegex(ValueError, parameter):
+                    tiny_model(
+                        string_spec(), **{parameter: value}
+                    )._validate_and_modify_params()
+        with self.assertRaisesRegex(ValueError, "binary_operators"):
+            tiny_model(
+                string_spec(), binary_operators=["+"]
+            )._validate_and_modify_params()
+        model = tiny_model(string_spec())
+        model.expression_spec = object()
+        with self.assertRaisesRegex(ValueError, "default `ExpressionSpec`"):
+            model._validate_and_modify_params()
+        with self.assertWarnsRegex(UserWarning, "large maxsize"):
+            tiny_model(string_spec(), maxsize=41)._validate_and_modify_params()
+
+    def test_rejects_empty_feature_axis(self):
+        model = tiny_model(string_spec())
+        with self.assertRaisesRegex(ValueError, "at least one feature"):
+            model.fit(np.empty((2, 0), dtype=object), np.array(["a", "b"]))
+
+    def test_expression_export_requires_checkpoint_state(self):
+        model = tiny_model(string_spec())
+        with self.assertRaisesRegex(ValueError, "serialized Julia state"):
+            ExpressionSpec().create_exports(
+                model,
+                pd.DataFrame({"equation": ["x0"]}),
+                search_output=None,
+            )
+
+    def test_csv_only_loading_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "hall_of_fame.csv").write_text(
+                "Complexity,Loss,Equation\n1,0.0,x0\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "checkpoint.pkl"):
+                PySRRegressor.from_file(
+                    run_directory=directory,
+                    type_spec=string_spec(),
+                    operators={1: ["identity_value(x::Value) = x"]},
+                    n_features_in=1,
+                )
+
+    def test_numeric_path(self):
+        X = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
+        y = X[:, 0]
+        model = PySRRegressor(
+            unary_operators=[],
+            binary_operators=["+"],
             niterations=1,
-            ncycles_per_iteration=5,
+            ncycles_per_iteration=2,
             populations=1,
-            population_size=10,
+            population_size=8,
             tournament_selection_n=3,
             maxsize=7,
             parallelism="serial",
@@ -405,436 +547,11 @@ class TestTypeSpecs(unittest.TestCase):
             temp_equation_file=True,
             should_optimize_constants=False,
         )
-        params.update(kwargs)
-        return PySRRegressor(
-            **params,
-        )
-
-    def test_string_type_spec_fit_and_predict(self):
-        spec = TypeSpec(
-            "String",
-            init_value='() -> ""',
-            sample_value='rng -> rand(rng, ("a", "b"))',
-            mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
-        y = np.array(["a", "b", "a", "b"], dtype=object)
-        model = self._tiny_model(
-            spec,
-            "identity_string(x::String) = x",
-            "string_loss(x::String, y::String) = x == y ? 0.0 : 1.0",
-        )
-
         model.fit(X, y)
+        prediction = model.predict(X)
+        self.assertEqual(prediction.shape, y.shape)
+        self.assertTrue(np.isfinite(prediction).all())
 
-        self.assertTrue(
-            bool(
-                jl.isa(
-                    model.julia_options_.operators,
-                    jl.SymbolicRegression.OperatorEnum,
-                )
-            )
-        )
-        np.testing.assert_array_equal(model.predict(X), y)
 
-    def test_type_spec_validates_operator_signature(self):
-        spec = TypeSpec(
-            "String",
-            init_value='() -> ""',
-            sample_value='rng -> ""',
-            mutate_value="(rng, value, temperature) -> value",
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        for operator in (
-            "string_length(x::String) = length(x)",
-            "float_identity(x::Float64) = x",
-        ):
-            with self.subTest(operator=operator):
-                model = self._tiny_model(
-                    spec,
-                    operator,
-                    "string_loss(x::String, y::String) = x == y ? 0.0 : 1.0",
-                )
-                with self.assertRaisesRegex(
-                    ValueError,
-                    r"must accept 1 argument of type `String` and return `String`",
-                ):
-                    model.fit(
-                        np.array([["a"], ["bb"]], dtype=object),
-                        np.array(["a", "bb"], dtype=object),
-                    )
-
-    def test_type_spec_supports_full_loss_function(self):
-        spec = TypeSpec(
-            "String",
-            init_value='() -> ""',
-            sample_value='rng -> rand(rng, ("a", "b"))',
-            mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        X = np.array([["a"], ["b"]], dtype=object)
-        y = np.array(["a", "b"], dtype=object)
-        for loss_kwarg, loss in (
-            ("loss_function", "full_string_loss(tree, dataset, options) = 0.0"),
-            (
-                "loss_function_expression",
-                "full_string_expression_loss(expression, dataset, options) = 0.0",
-            ),
-        ):
-            with self.subTest(loss_kwarg=loss_kwarg):
-                model = PySRRegressor(
-                    type_spec=spec,
-                    operators={1: ["identity_string_full_loss(x::String) = x"]},
-                    niterations=1,
-                    ncycles_per_iteration=1,
-                    populations=1,
-                    population_size=5,
-                    tournament_selection_n=3,
-                    maxsize=7,
-                    parallelism="serial",
-                    deterministic=True,
-                    random_state=0,
-                    progress=False,
-                    verbosity=0,
-                    temp_equation_file=True,
-                    should_optimize_constants=False,
-                    **{loss_kwarg: loss},
-                )
-
-                model.fit(X, y)
-
-    def test_struct_type_spec_fit_and_predict(self):
-        name = f"RASPValue_{uuid.uuid4().hex}"
-        payload_type = f"RASPPayload_{uuid.uuid4().hex}"
-        helper = f"rasp_identity_{uuid.uuid4().hex}"
-        spec = TypeSpec(
-            name,
-            preamble=(
-                f"const {payload_type} = Union{{Float64, Vector{{Float64}}}}\n"
-                f"{helper}(x) = x"
-            ),
-            fields={"data": payload_type},
-            init_value=f"() -> {name}({helper}(0.0))",
-            sample_value=f"rng -> {name}(randn(rng))",
-            mutate_value=(
-                f"(rng, value, temperature) -> {name}(value.data isa Vector "
-                "? value.data : value.data + temperature * randn(rng))"
-            ),
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        sequences = [[1.0, 2.0], [2.0, 3.0], [3.0, 4.0], [4.0, 5.0]]
-        X = pd.DataFrame({"x": sequences})
-        y = pd.Series(sequences, dtype=object)
-        operator = f"identity_rasp(x::{name}) = {helper}(x)"
-        loss = (
-            f"rasp_loss(x::{name}, y::{name}) = "
-            f"{helper}(x.data == y.data ? 0.0 : 1.0)"
-        )
-        model = self._tiny_model(spec, operator, loss)
-
-        model.fit(X, y)
-
-        prediction = model.predict(X, index=model.equations_["loss"].idxmin())
-        self.assertEqual([list(value.data) for value in prediction], y.tolist())
-
-        model = self._tiny_model(
-            spec,
-            operator,
-            loss,
-            parallelism="multiprocessing",
-            procs=2,
-            deterministic=False,
-            random_state=None,
-            worker_imports=["Random"],
-        )
-        model.fit(X, y)
-
-        prediction = model.predict(X, index=model.equations_["loss"].idxmin())
-        self.assertEqual([list(value.data) for value in prediction], y.tolist())
-
-    def test_type_spec_optimizes_two_layer_neural_network_constants(self):
-        suffix = uuid.uuid4().hex
-        name = f"NNValue_{suffix}"
-        matmul = f"nn_matmul_{suffix}"
-        add = f"nn_add_{suffix}"
-        relu = f"nn_relu_{suffix}"
-        loss = f"nn_mse_{suffix}"
-        payload_matmul = f"nn_payload_matmul_{suffix}"
-        payload_add = f"nn_payload_add_{suffix}"
-        random_payload = f"nn_random_payload_{suffix}"
-        payload_type = "Union{Float64, Vector{Float64}, Matrix{Float64}}"
-        jl.seval(f"""
-            {payload_matmul}(a::Matrix{{Float64}}, b::Vector{{Float64}}) =
-                size(a, 2) == length(b) ? a * b : NaN
-            {payload_matmul}(::{payload_type}, ::{payload_type}) = NaN
-            {payload_add}(a::Float64, b::Float64) = a + b
-            {payload_add}(a::T, b::T) where {{
-                T<:Union{{Vector{{Float64}}, Matrix{{Float64}}}}
-            }} = size(a) == size(b) ? a + b : NaN
-            {payload_add}(::{payload_type}, ::{payload_type}) = NaN
-            function {random_payload}(rng)
-                rank = rand(rng, 0:2)
-                rank == 0 ? randn(rng) : rank == 1 ? randn(rng, 2) : randn(rng, 2, 2)
-            end
-            """)
-        spec = TypeSpec(
-            name,
-            fields={"data": payload_type},
-            init_value=f"() -> {name}(0.0)",
-            sample_value=f"rng -> {name}({random_payload}(rng))",
-            mutate_value=(
-                f"(rng, value, temperature) -> rand(rng) < 0.1 "
-                f"? {name}({random_payload}(rng)) "
-                f": {name}(value.data .+ temperature .* randn(rng, size(value.data)...))"
-            ),
-            count_scalar_constants="value -> length(value.data)",
-            pack_scalar_constants="""
-                (nvals, idx, value) -> begin
-                    n = length(value.data)
-                    nvals[idx:idx+n-1] .= value.data isa Float64 ?
-                        value.data : vec(value.data)
-                    idx + n
-                end
-            """,
-            unpack_scalar_constants=f"""
-                (nvals, idx, value) -> begin
-                    n = length(value.data)
-                    data = value.data isa Float64 ? nvals[idx] :
-                        reshape(copy(nvals[idx:idx+n-1]), size(value.data))
-                    (idx + n, {name}(data))
-                end
-            """,
-            get_number_type="T -> Float64",
-            is_valid="value -> all(isfinite, value.data)",
-            can_optimize=True,
-            loss_type="Float64",
-        )
-
-        rng = np.random.default_rng(0)
-        x_values = rng.normal(size=(64, 2))
-        W1 = np.array([[1.2, -0.7], [0.5, 1.1]])
-        b1 = np.array([0.3, -0.2])
-        W2 = np.array([[0.8, -1.0], [1.3, 0.4]])
-        b2 = np.array([-0.4, 0.2])
-        y_values = (W2 @ np.maximum(x_values @ W1.T + b1, 0).T).T + b2
-        X = pd.DataFrame(
-            {
-                "x": pd.Series(list(x_values), dtype=object),
-                "W1": pd.Series([W1] * len(x_values), dtype=object),
-                "b1": pd.Series([b1] * len(x_values), dtype=object),
-            }
-        )
-        y = pd.Series(list(y_values), dtype=object)
-
-        guess_W2 = W2 + np.array([[-0.3, 0.25], [0.2, -0.25]])
-        guess_b2 = b2 + np.array([0.2, -0.15])
-        initial_prediction = (
-            guess_W2 @ np.maximum(x_values @ W1.T + b1, 0).T
-        ).T + guess_b2
-        initial_loss = np.mean((initial_prediction - y_values) ** 2)
-
-        guess_constants = np.empty(2, dtype=object)
-        guess_constants[:] = [guess_W2, guess_b2]
-        julia_constants = spec.to_julia_array(guess_constants)
-        call = jl.Symbol("call")
-        guess = jl.Expr(
-            call,
-            jl.Symbol(add),
-            jl.Expr(
-                call,
-                jl.Symbol(matmul),
-                julia_constants[0],
-                jl.Expr(
-                    call,
-                    jl.Symbol(relu),
-                    jl.Expr(
-                        call,
-                        jl.Symbol(add),
-                        jl.Expr(
-                            call,
-                            jl.Symbol(matmul),
-                            jl.Symbol("W1"),
-                            jl.Symbol("x"),
-                        ),
-                        jl.Symbol("b1"),
-                    ),
-                ),
-            ),
-            julia_constants[1],
-        )
-
-        model = PySRRegressor(
-            type_spec=spec,
-            operators={
-                1: [f"{relu}(a::{name}) = {name}(max.(a.data, 0.0))"],
-                2: [
-                    f"{matmul}(a::{name}, b::{name}) = "
-                    f"{name}({payload_matmul}(a.data, b.data))",
-                    f"{add}(a::{name}, b::{name}) = "
-                    f"{name}({payload_add}(a.data, b.data))",
-                ],
-            },
-            elementwise_loss=(
-                f"{loss}(a::{name}, b::{name}) = "
-                "a.data isa Vector && b.data isa Vector && "
-                "size(a.data) == size(b.data) ? "
-                "sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
-            ),
-            niterations=0,
-            parallelism="serial",
-            deterministic=True,
-            random_state=0,
-            progress=False,
-            verbosity=0,
-            temp_equation_file=True,
-            guesses=[guess],
-            should_optimize_constants=True,
-            optimizer_nrestarts=0,
-        )
-
-        model.fit(X, y)
-
-        best = model.equations_["loss"].idxmin()
-        prediction = np.stack(
-            [np.asarray(value.data) for value in model.predict(X, index=best)]
-        )
-        prediction_loss = np.mean((prediction - y_values) ** 2)
-        self.assertEqual(prediction.shape, y_values.shape)
-        self.assertGreater(initial_loss, 0.01)
-        self.assertLess(prediction_loss, initial_loss / 1000)
-        self.assertLess(prediction_loss, 1e-8)
-        self.assertAlmostEqual(prediction_loss, model.equations_.loc[best, "loss"])
-
-    def test_multi_field_struct_type_spec_fit_and_predict(self):
-        name = f"PairValue_{uuid.uuid4().hex}"
-        spec = TypeSpec(
-            name,
-            fields={"number": "Float64", "label": "String"},
-            init_value=f'() -> {name}(0.0, "")',
-            sample_value=f'rng -> {name}(randn(rng), "")',
-            mutate_value=(
-                f"(rng, value, temperature) -> {name}(value.number + "
-                "temperature * randn(rng), value.label)"
-            ),
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        pairs = [(1.0, "one"), (2.0, "two"), (3.0, "three"), (4.0, "four")]
-        X = pd.DataFrame({"x": pairs})
-        y = pd.Series(pairs, dtype=object)
-        model = self._tiny_model(
-            spec,
-            f"identity_pair(x::{name}) = x",
-            f"pair_loss(x::{name}, y::{name}) = x == y ? 0.0 : 1.0",
-        )
-
-        model.fit(X, y)
-
-        prediction = model.predict(X, index=model.equations_["loss"].idxmin())
-        self.assertEqual([(value.number, value.label) for value in prediction], pairs)
-
-    def test_type_spec_fit_and_predict_with_plain_lists(self):
-        name = f"ListPair_{uuid.uuid4().hex}"
-        spec = TypeSpec(
-            name,
-            fields={"number": "Float64", "label": "String"},
-            init_value=f'() -> {name}(0.0, "")',
-            sample_value=f'rng -> {name}(randn(rng), "")',
-            mutate_value=(
-                f"(rng, value, temperature) -> {name}(value.number + "
-                "temperature * randn(rng), value.label)"
-            ),
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        pairs = [(1.0, "one"), (2.0, "two"), (3.0, "three"), (4.0, "four")]
-        X = [[pair] for pair in pairs]
-        model = self._tiny_model(
-            spec,
-            f"identity_list_pair(x::{name}) = x",
-            f"list_pair_loss(x::{name}, y::{name}) = x == y ? 0.0 : 1.0",
-        )
-
-        model.fit(X, pairs)
-
-        prediction = model.predict(X, index=model.equations_["loss"].idxmin())
-        self.assertEqual(prediction.shape, (4,))
-        self.assertEqual(prediction.dtype, object)
-        self.assertEqual([(value.number, value.label) for value in prediction], pairs)
-
-    def test_type_spec_dataframe_columns_and_pickle_round_trip(self):
-        spec = TypeSpec(
-            "String",
-            init_value='() -> ""',
-            sample_value='rng -> rand(rng, ("a", "b"))',
-            mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        X = pd.DataFrame({10: ["a", "b", "a", "b"]})
-        y = np.array(["a", "b", "a", "b"], dtype=object)
-        model = self._tiny_model(
-            spec,
-            "identity_string_pickled(x::String) = x",
-            "string_loss_pickled(x::String, y::String) = x == y ? 0.0 : 1.0",
-        )
-
-        model.fit(X, y)
-
-        np.testing.assert_array_equal(model.predict(X), y)
-
-        loaded = pickle.loads(pickle.dumps(model))
-        self.assertNotIn("lambda_format", loaded.equations_.columns)
-        self.assertNotIn("julia_expression", loaded.equations_.columns)
-        np.testing.assert_array_equal(loaded.predict(X), y)
-
-        def fail_prediction(_):
-            raise RuntimeError("TypeSpec prediction failure")
-
-        loaded.equations_["lambda_format"] = [fail_prediction] * len(loaded.equations_)
-        with self.assertRaisesRegex(RuntimeError, "TypeSpec prediction failure"):
-            loaded.predict(X)
-
-        loaded.julia_state_stream_ = None
-        loaded.equations_ = loaded.equations_.drop(
-            columns=["julia_expression", "lambda_format"]
-        )
-        with self.assertRaisesRegex(ValueError, "checkpoint.pkl"):
-            loaded.predict(X)
-
-    def test_type_spec_supports_multithreading(self):
-        spec = TypeSpec(
-            "String",
-            init_value='() -> ""',
-            sample_value='rng -> rand(rng, ("a", "b"))',
-            mutate_value='(rng, value, temperature) -> rand(rng, ("a", "b"))',
-            count_scalar_constants=1,
-            can_optimize=False,
-            loss_type="Float64",
-        )
-        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
-        y = np.array(["a", "b", "a", "b"], dtype=object)
-        model = self._tiny_model(
-            spec,
-            "identity_string_threaded(x::String) = x",
-            "string_loss_threaded(x::String, y::String) = x == y ? 0.0 : 1.0",
-            parallelism="multithreading",
-            deterministic=False,
-            random_state=None,
-        )
-
-        model.fit(X, y)
-
-        np.testing.assert_array_equal(model.predict(X), y)
+if __name__ == "__main__":
+    unittest.main()
