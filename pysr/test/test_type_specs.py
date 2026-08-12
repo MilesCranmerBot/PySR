@@ -604,6 +604,37 @@ class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
             )
         )
 
+    def test_template_custom_combiner_infers_num_features(self):
+        model = tiny_model(
+            vector_spec(),
+            expression_spec=TemplateExpressionSpec(
+                combine="add_vectors(f(x1), g(x2))",
+                expressions=["f", "g"],
+                variable_names=["x1", "x2"],
+            ),
+            operators={
+                2: [
+                    """
+                    add_vectors(a::VectorValue, b::VectorValue) =
+                        VectorValue(a.data + b.data)
+                    add_vectors(a::ValidVector, b::ValidVector) =
+                        ValidVector(map(add_vectors, a.x, b.x), a.valid && b.valid)
+                    """
+                ]
+            },
+            elementwise_loss=(
+                "vector_loss(a::VectorValue, b::VectorValue)::Float64 = "
+                "sum(abs2, a.data - b.data)"
+            ),
+        )
+        runtime = model._instantiate_julia_definitions(model._operators_from_params())[
+            -1
+        ]
+        assert runtime is not None
+        assert runtime.expression_spec is not None
+        self.assertEqual(int(runtime.expression_spec.structure.num_features.f), 1)
+        self.assertEqual(int(runtime.expression_spec.structure.num_features.g), 1)
+
     def test_template_type_spec_rejects_unsupported_shapes(self):
         X = np.array([["a"], ["b"]], dtype=object)
         y = np.array(["a", "b"], dtype=object)

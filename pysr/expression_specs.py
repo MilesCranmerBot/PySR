@@ -291,7 +291,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     def _call_template_macro(self):
         return jl.seval(self._template_macro_str())
 
-    def _template_macro_str(self):
+    def _template_macro_str(self, *, prototype: str | None = None):
         template_inputs = [f"expressions=({', '.join(self.expressions) + ','})"]
         if self.parameters:
             template_inputs.append(
@@ -301,6 +301,8 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
             template_inputs.append(
                 f"num_features=({', '.join([f'{f}={self.num_features[f]}' for f in self.num_features]) + ','})"
             )
+        if prototype is not None:
+            template_inputs.append(f"prototype={prototype}")
         return dedent(f"""
         @template_spec({', '.join(template_inputs) + ','}) do {', '.join(self.variable_names)}
             {self.combine}

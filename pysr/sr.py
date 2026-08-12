@@ -1797,7 +1797,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     loss_function=self.loss_function,
                     loss_function_expression=self.loss_function_expression,
                     template=(
-                        self.expression_spec_._template_macro_str()
+                        self.expression_spec_._template_macro_str(
+                            prototype=f"SymbolicRegression.init_value({spec.name})"
+                        )
                         if isinstance(self.expression_spec_, TemplateExpressionSpec)
                         else None
                     ),
