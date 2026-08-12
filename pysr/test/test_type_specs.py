@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pysr import PySRRegressor, TypeSpec, jl
+from pysr import PySRRegressor, TemplateExpressionSpec, TypeSpec, jl
 from pysr.expression_specs import ExpressionSpec
 from pysr.type_specs import (
     build_type_spec_module_source,
@@ -100,6 +100,15 @@ def tiny_model(spec, *, parallelism="serial", procs=None, **overrides):
     }
     parameters.update(overrides)
     return PySRRegressor(**parameters)
+
+
+def identity_template():
+    return TemplateExpressionSpec(
+        combine="f(x)",
+        expressions=["f"],
+        variable_names=["x"],
+        num_features={"f": 1},
+    )
 
 
 class _TypeSpecContractTests:
@@ -314,6 +323,7 @@ class _TypeSpecContractTests:
 
         model = PySRRegressor(
             type_spec=spec,
+            expression_spec=identity_template(),
             operators={
                 2: ["concat_vectors(a, b) = VariableVector(vcat(a.data, b.data))"]
             },
@@ -555,6 +565,51 @@ class _TypeSpecContractTests:
 
 
 class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
+    def test_template_serial_fit_predicts_logical_payloads(self):
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b", "a", "b"], dtype=object)
+        model = tiny_model(string_spec(), expression_spec=identity_template())
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
+        self.assertTrue(
+            bool(
+                jl.seval("x -> x isa SymbolicRegression.TemplateExpression")(
+                    model.equations_.iloc[0].julia_expression
+                )
+            )
+        )
+
+    def test_template_type_spec_rejects_unsupported_shapes(self):
+        X = np.array([["a"], ["b"]], dtype=object)
+        y = np.array(["a", "b"], dtype=object)
+        cases = (
+            (
+                TemplateExpressionSpec(
+                    combine="p[1] * f(x)",
+                    expressions=["f"],
+                    variable_names=["x"],
+                    parameters={"p": 1},
+                    num_features={"f": 1},
+                ),
+                "parameters",
+            ),
+            (
+                TemplateExpressionSpec(
+                    combine="f(x)", expressions=["f"], variable_names=["x"]
+                ),
+                "num_features",
+            ),
+            (
+                TemplateExpressionSpec(["f"], "(fs, x) -> fs.f(x[1])", {"f": 1}),
+                "legacy",
+            ),
+        )
+        for expression_spec, message in cases:
+            with self.subTest(message=message):
+                model = tiny_model(string_spec(), expression_spec=expression_spec)
+                with self.assertRaisesRegex(ValueError, message):
+                    model.fit(X, y)
+
     def test_private_modules_isolate_identical_local_names(self):
         spec = string_spec(
             sample='rng -> StringValue("Ab")',
@@ -623,7 +678,12 @@ class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
     def test_multiprocessing(self):
         X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
         y = np.array(["a", "b", "a", "b"], dtype=object)
-        model = tiny_model(string_spec(), parallelism="multiprocessing", procs=2)
+        model = tiny_model(
+            string_spec(),
+            expression_spec=identity_template(),
+            parallelism="multiprocessing",
+            procs=2,
+        )
         model.fit(X, y)
         np.testing.assert_array_equal(model.predict(X), y)
 
@@ -633,6 +693,7 @@ class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             model = tiny_model(
                 string_spec(),
+                expression_spec=identity_template(),
                 temp_equation_file=False,
                 output_directory=directory,
                 run_id="typespec-checkpoint",
@@ -667,7 +728,12 @@ print(json.dumps(model.predict(X).tolist()))
         model.fit(X, y)
         model.set_params(
             warm_start=True,
-            operators={1: ["changed_operator(x::StringValue) = x"]},
+            expression_spec=TemplateExpressionSpec(
+                combine="f(x)",
+                expressions=["f"],
+                variable_names=["x"],
+                num_features={"f": 2},
+            ),
         )
         with self.assertRaisesRegex(ValueError, "Cannot warm-start"):
             model.fit(X, y)
@@ -697,7 +763,9 @@ print(json.dumps(model.predict(X).tolist()))
             )._validate_and_modify_params()
         model = tiny_model(string_spec())
         model.expression_spec = object()
-        with self.assertRaisesRegex(ValueError, "default `ExpressionSpec`"):
+        with self.assertRaisesRegex(
+            ValueError, "ExpressionSpec.*TemplateExpressionSpec"
+        ):
             model._validate_and_modify_params()
         with self.assertWarnsRegex(UserWarning, "large maxsize"):
             tiny_model(string_spec(), maxsize=41)._validate_and_modify_params()
@@ -709,12 +777,14 @@ print(json.dumps(model.predict(X).tolist()))
 
     def test_expression_export_requires_checkpoint_state(self):
         model = tiny_model(string_spec())
-        with self.assertRaisesRegex(ValueError, "serialized Julia state"):
-            ExpressionSpec().create_exports(
-                model,
-                pd.DataFrame({"equation": ["x0"]}),
-                search_output=None,
-            )
+        for expression_spec in (ExpressionSpec(), identity_template()):
+            with self.subTest(expression_spec=type(expression_spec).__name__):
+                with self.assertRaisesRegex(ValueError, "serialized Julia state"):
+                    expression_spec.create_exports(
+                        model,
+                        pd.DataFrame({"equation": ["x0"]}),
+                        search_output=None,
+                    )
 
     def test_csv_only_loading_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

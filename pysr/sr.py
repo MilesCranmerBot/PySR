@@ -38,6 +38,7 @@ from .export_sympy import assert_valid_sympy_symbol
 from .expression_specs import (
     AbstractExpressionSpec,
     ExpressionSpec,
+    TemplateExpressionSpec,
 )
 from .feature_selection import run_feature_selection
 from .julia_extensions import load_required_packages
@@ -1020,6 +1021,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     _type_spec_fingerprint_: str
     _type_spec_operator_counts_: tuple[tuple[int, int], ...]
     _type_spec_loss_mode_: str
+    _type_spec_has_template_: bool
 
     def __init__(
         self,
@@ -1767,12 +1769,18 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     elementwise_loss=self.elementwise_loss,
                     loss_function=self.loss_function,
                     loss_function_expression=self.loss_function_expression,
+                    template=(
+                        self.expression_spec_._template_macro_str()
+                        if isinstance(self.expression_spec_, TemplateExpressionSpec)
+                        else None
+                    ),
                 )
                 if self.warm_start and hasattr(self, "_type_spec_fingerprint_"):
                     if module_source.fingerprint != self._type_spec_fingerprint_:
                         raise ValueError(
                             "Cannot warm-start after changing the TypeSpec, operators, "
-                            "or custom loss. Start a new search with `warm_start=False`."
+                            "custom loss, or expression template. Start a new search "
+                            "with `warm_start=False`."
                         )
                     module_source = self._stored_type_spec_module_source()
                     spec = self.type_spec_
@@ -1791,6 +1799,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     self._type_spec_fingerprint_ = module_source.fingerprint
                     self._type_spec_operator_counts_ = module_source.operator_counts
                     self._type_spec_loss_mode_ = module_source.loss_mode
+                    self._type_spec_has_template_ = module_source.has_template
                     validate = True
 
             runtime = load_type_spec_runtime(spec, module_source, validate=validate)
@@ -1831,6 +1840,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             source=self._type_spec_module_source_,
             operator_counts=self._type_spec_operator_counts_,
             loss_mode=self._type_spec_loss_mode_,
+            has_template=getattr(self, "_type_spec_has_template_", False),
         )
 
     def _load_fitted_type_spec_runtime(self) -> _TypeSpecRuntime:
@@ -1899,11 +1909,29 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     + ", ".join(f"`{name}`" for name in configured)
                     + "."
                 )
-            if (
-                self.expression_spec is not None
-                and type(self.expression_spec) is not ExpressionSpec
+            if not isinstance(
+                self.expression_spec_, (ExpressionSpec, TemplateExpressionSpec)
             ):
-                raise ValueError("TypeSpec requires the default `ExpressionSpec`.")
+                raise ValueError(
+                    "TypeSpec supports `ExpressionSpec` and `TemplateExpressionSpec`."
+                )
+            if isinstance(self.expression_spec_, TemplateExpressionSpec):
+                if self.expression_spec_._old_format:
+                    raise ValueError(
+                        "TypeSpec does not support the legacy TemplateExpressionSpec "
+                        "constructor. Use `combine=`, `expressions=`, and "
+                        "`variable_names=`."
+                    )
+                if self.expression_spec_.parameters:
+                    raise ValueError(
+                        "TypeSpec does not support TemplateExpressionSpec `parameters`. "
+                        "Represent optimizable values as TypeSpec constants instead."
+                    )
+                if not self.expression_spec_.num_features:
+                    raise ValueError(
+                        "TypeSpec requires explicit TemplateExpressionSpec "
+                        "`num_features` for every inner expression."
+                    )
 
         legacy_mutation_weights_used = any(
             getattr(self, parameter) is not None
@@ -2061,14 +2089,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 raise NotImplementedError(
                     "TypeSpec does not support resampling, denoising, or feature selection."
                 )
-            if (
-                self.expression_spec is not None
-                and type(self.expression_spec) is not ExpressionSpec
-            ):
-                raise NotImplementedError(
-                    "TypeSpec currently supports only the default expression shape."
-                )
-
             if isinstance(X, pd.DataFrame):
                 if variable_names is not None:
                     warnings.warn(
@@ -2602,7 +2622,12 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             complexity_of_constants=self.complexity_of_constants,
             complexity_of_variables=complexity_of_variables,
             complexity_mapping=complexity_mapping,
-            expression_spec=self.expression_spec_.julia_expression_spec(),
+            expression_spec=(
+                type_spec_runtime.expression_spec
+                if type_spec_runtime is not None
+                and type_spec_runtime.expression_spec is not None
+                else self.expression_spec_.julia_expression_spec()
+            ),
             nested_constraints=nested_constraints,
             elementwise_loss=custom_loss,
             loss_function=custom_full_objective,
@@ -2842,6 +2867,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 "_type_spec_fingerprint_",
                 "_type_spec_operator_counts_",
                 "_type_spec_loss_mode_",
+                "_type_spec_has_template_",
             ):
                 if hasattr(self, attribute):
                     delattr(self, attribute)

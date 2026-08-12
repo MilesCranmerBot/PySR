@@ -817,6 +817,42 @@ The target can be represented as
 learned vector-valued constant. PySR searches over both the program structure
 and the two components of that constant.
 
+The same value type can be used inside a template. Provide `num_features` so
+PySR does not need to infer the inner expressions using scalar probe values:
+
+```python
+from pysr import TemplateExpressionSpec
+
+expression_spec = TemplateExpressionSpec(
+    combine="add_vectors(f(x1), g(x2))",
+    expressions=["f", "g"],
+    variable_names=["x1", "x2"],
+    num_features={"f": 1, "g": 1},
+)
+
+model = PySRRegressor(
+    type_spec=type_spec,
+    expression_spec=expression_spec,
+    operators={
+        1: [
+            "rotate90(a::Vec2) = Vec2([-a.data[2], a.data[1]])",
+            "double(a::Vec2) = Vec2(2a.data)",
+        ],
+        2: [
+            """
+            add_vectors(a::Vec2, b::Vec2) = Vec2(a.data + b.data)
+            add_vectors(a::ValidVector, b::ValidVector) =
+                ValidVector(map(add_vectors, a.x, b.x), a.valid && b.valid)
+            """
+        ],
+    },
+    elementwise_loss="vector_loss(a::Vec2, b::Vec2)::Float64 = sum(abs2, a.data - b.data)",
+)
+```
+
+Template-level `parameters` are unavailable with `TypeSpec`. Use TypeSpec
+constants and their `parameters` and `with_parameters` hooks instead.
+
 <details>
 <summary>String-valued expressions and discrete constants</summary>
 

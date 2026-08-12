@@ -218,6 +218,7 @@ class _TypeSpecModuleSource:
     source: str
     operator_counts: tuple[tuple[int, int], ...]
     loss_mode: str
+    has_template: bool = False
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,7 @@ class _TypeSpecRuntime:
     loss_function: AnyValue | None
     loss_function_expression: AnyValue | None
     loss_type: AnyValue
+    expression_spec: AnyValue | None
 
 
 def _quoted(source: str) -> str:
@@ -288,6 +290,7 @@ def build_type_spec_module_source(
     elementwise_loss: str | None,
     loss_function: str | None,
     loss_function_expression: str | None,
+    template: str | None = None,
 ) -> _TypeSpecModuleSource:
     """Create deterministic Julia source without evaluating Julia code."""
     normalized_operators = _normalize_operators(operators)
@@ -319,6 +322,7 @@ def build_type_spec_module_source(
         "operators": normalized_operators,
         "loss_mode": loss_mode,
         "loss_source": loss_source,
+        "template": template,
     }
     payload_bytes = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":")
@@ -542,6 +546,11 @@ def build_type_spec_module_source(
         lines.append(
             f"const _loss_type = {_include(spec.loss_type, 'TypeSpec.loss_type')}"
         )
+    if template is not None:
+        lines.append(
+            "const _template_expression_spec = "
+            + _include(template, "TypeSpec.template")
+        )
 
     lines.extend(
         (
@@ -568,6 +577,7 @@ def build_type_spec_module_source(
         source="\n".join(lines) + "\n",
         operator_counts=tuple(operator_counts),
         loss_mode=loss_mode,
+        has_template=template is not None,
     )
 
 
@@ -620,6 +630,9 @@ def load_type_spec_runtime(
             "The TypeSpec loss must return a concrete subtype of `AbstractFloat`; "
             f"got `{loss_type}`. Add a concrete Julia return type annotation."
         )
+    expression_spec = (
+        module._template_expression_spec if module_source.has_template else None
+    )
 
     runtime = _TypeSpecRuntime(
         spec=copy.deepcopy(spec),
@@ -632,6 +645,7 @@ def load_type_spec_runtime(
         loss_function=loss_function,
         loss_function_expression=loss_function_expression,
         loss_type=loss_type,
+        expression_spec=expression_spec,
     )
     if validate:
         _validate_type_spec_runtime(runtime)
