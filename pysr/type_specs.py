@@ -10,7 +10,7 @@ import numpy as np
 
 from .julia_import import AnyValue, jl
 
-_CODEGEN_VERSION = 1
+_CODEGEN_VERSION = 2
 
 
 def object_array_1d(values: Any) -> np.ndarray:
@@ -45,60 +45,106 @@ def object_array_2d(values: Any) -> np.ndarray:
     return array
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class TypeSpec:
     """Declarative definition of a custom symbolic-regression value type.
 
     Parameters
     ----------
+    name : str
+        Name of the generated Julia type. Use this name in operator and hook
+        definitions.
     fields : dict[str, str]
-        Ordered mapping from field names to Julia field types. PySR generates a
-        private Julia ``Value`` wrapper containing these fields.
-    init_value : str
-        Julia callable with signature ``() -> Value``.
-    sample_value : str
-        Julia callable with signature ``(rng, options) -> Value``.
-    mutate_value : str
-        Julia callable with signature
-        ``(rng, value, temperature, options) -> Value``.
-    count_scalar_constants : int or str
-        Nonnegative fixed count or a Julia callable with signature
-        ``(value) -> Int``.
-    is_valid : str
-        Julia callable with signature ``(value) -> Bool``.
-    can_optimize : bool
-        Explicitly enables or disables continuous constant optimization.
-    preamble : str, optional
-        Julia source evaluated before the generated ``Value`` definition.
-    pack_scalar_constants : str, optional
+        Ordered mapping from field names to Julia field types.
+    sample : str
+        Julia callable with signature ``rng -> value``.
+    parameters : str, optional
+        Julia callable with signature ``value -> parameters``. Provide together
+        with ``with_parameters`` to enable continuous constant optimization.
+    with_parameters : str, optional
+        Julia callable with signature ``(value, parameters) -> value``.
+    init : str, optional
+        Julia callable with signature ``() -> value``. The default samples a
+        value using a deterministic local random-number generator.
+    mutate : str, optional
+        Julia callable with signature ``(rng, value, temperature) -> value``.
+        When parameters are configured, the default mutates one parameter using
+        SymbolicRegression.jl's scalar constant mutation.
+    is_valid : str, optional
+        Julia callable with signature ``value -> Bool``. The default checks that
+        every optimization parameter is finite, or accepts every value for a
+        non-optimizable type.
+    count_parameters : int or str, optional
+        Nonnegative fixed count or Julia callable with signature
+        ``value -> Int``. This is a performance override and must be provided
+        together with ``pack_parameters`` and ``unpack_parameters``.
+    pack_parameters : str, optional
         Julia callable with signature ``(buffer, idx, value) -> next_idx``.
-        Required when ``can_optimize=True``.
-    unpack_scalar_constants : str, optional
+    unpack_parameters : str, optional
         Julia callable with signature
-        ``(buffer, idx, value) -> (next_idx, value)``. Required when
-        ``can_optimize=True``.
-    number_type : str, optional
-        Concrete Julia ``AbstractFloat`` type used by constant optimization.
-        Required when ``can_optimize=True``.
+        ``(buffer, idx, value) -> (next_idx, value)``.
+    string : str, optional
+        Julia callable with signature ``value -> AbstractString`` used to print
+        constants in equations.
+    preamble : str, optional
+        Julia source evaluated before the generated type definition.
     loss_type : str, optional
         Concrete Julia ``AbstractFloat`` type returned by a custom full
         objective. Elementwise loss return types are inferred.
     """
 
+    name: str
     fields: dict[str, str]
-    init_value: str
-    sample_value: str
-    mutate_value: str
-    count_scalar_constants: int | str
-    is_valid: str
-    can_optimize: bool
+    sample: str
+    parameters: str | None = None
+    with_parameters: str | None = None
+    init: str | None = None
+    mutate: str | None = None
+    is_valid: str | None = None
+    count_parameters: int | str | None = None
+    pack_parameters: str | None = None
+    unpack_parameters: str | None = None
+    string: str | None = None
     preamble: str | None = None
-    pack_scalar_constants: str | None = None
-    unpack_scalar_constants: str | None = None
-    number_type: str | None = None
     loss_type: str | None = None
 
+    def __init__(
+        self,
+        name: str,
+        *,
+        fields: dict[str, str],
+        sample: str,
+        parameters: str | None = None,
+        with_parameters: str | None = None,
+        init: str | None = None,
+        mutate: str | None = None,
+        is_valid: str | None = None,
+        count_parameters: int | str | None = None,
+        pack_parameters: str | None = None,
+        unpack_parameters: str | None = None,
+        string: str | None = None,
+        preamble: str | None = None,
+        loss_type: str | None = None,
+    ) -> None:
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "fields", fields)
+        object.__setattr__(self, "sample", sample)
+        object.__setattr__(self, "parameters", parameters)
+        object.__setattr__(self, "with_parameters", with_parameters)
+        object.__setattr__(self, "init", init)
+        object.__setattr__(self, "mutate", mutate)
+        object.__setattr__(self, "is_valid", is_valid)
+        object.__setattr__(self, "count_parameters", count_parameters)
+        object.__setattr__(self, "pack_parameters", pack_parameters)
+        object.__setattr__(self, "unpack_parameters", unpack_parameters)
+        object.__setattr__(self, "string", string)
+        object.__setattr__(self, "preamble", preamble)
+        object.__setattr__(self, "loss_type", loss_type)
+        self.__post_init__()
+
     def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.isidentifier():
+            raise ValueError(f"TypeSpec name {self.name!r} is not an identifier.")
         if not isinstance(self.fields, dict) or not self.fields:
             raise ValueError("`fields` must be a non-empty ordered mapping.")
         for name, field_type in self.fields.items():
@@ -106,48 +152,63 @@ class TypeSpec:
                 raise ValueError(f"TypeSpec field name {name!r} is not an identifier.")
             if not isinstance(field_type, str) or not field_type.strip():
                 raise ValueError(f"TypeSpec field `{name}` requires a Julia type.")
-        for name in ("init_value", "sample_value", "mutate_value", "is_valid"):
-            source = getattr(self, name)
-            if not isinstance(source, str) or not source.strip():
-                raise ValueError(f"`{name}` must contain Julia source.")
-        if isinstance(self.count_scalar_constants, int):
-            if self.count_scalar_constants < 0:
-                raise ValueError("`count_scalar_constants` must be nonnegative.")
-        elif not (
-            isinstance(self.count_scalar_constants, str)
-            and self.count_scalar_constants.strip()
+        if not isinstance(self.sample, str) or not self.sample.strip():
+            raise ValueError("`sample` must contain Julia source.")
+
+        parameterization = (self.parameters, self.with_parameters)
+        if any(value is not None for value in parameterization) and not all(
+            value is not None for value in parameterization
         ):
             raise ValueError(
-                "`count_scalar_constants` must be a nonnegative integer or Julia source."
+                "`parameters` and `with_parameters` must be provided together."
             )
-        if not isinstance(self.can_optimize, bool):
-            raise ValueError("`can_optimize` must be explicitly set to true or false.")
+        if not self.can_optimize and self.mutate is None:
+            raise ValueError(
+                "A non-optimizable TypeSpec requires an explicit `mutate` callable."
+            )
 
-        optimization_fields = (
-            "pack_scalar_constants",
-            "unpack_scalar_constants",
-            "number_type",
-        )
-        configured = [getattr(self, name) is not None for name in optimization_fields]
-        if self.can_optimize and not all(configured):
-            missing = [
-                name
-                for name, is_configured in zip(optimization_fields, configured)
-                if not is_configured
-            ]
+        low_level = ("count_parameters", "pack_parameters", "unpack_parameters")
+        configured = [getattr(self, name) is not None for name in low_level]
+        if any(configured) and not all(configured):
             raise ValueError(
-                "`can_optimize=True` requires "
-                + ", ".join(f"`{x}`" for x in missing)
-                + "."
+                "`count_parameters`, `pack_parameters`, and `unpack_parameters` "
+                "must be provided together."
             )
-        if not self.can_optimize and any(configured):
+        if all(configured) and not self.can_optimize:
             raise ValueError(
-                "Optimization hooks require `can_optimize=True`; remove them or enable optimization."
+                "Low-level optimization overrides require `parameters` and "
+                "`with_parameters`."
             )
-        for name in (*optimization_fields, "preamble", "loss_type"):
+        if isinstance(self.count_parameters, int) and self.count_parameters < 0:
+            raise ValueError("`count_parameters` must be nonnegative.")
+
+        for name in (
+            "parameters",
+            "with_parameters",
+            "init",
+            "mutate",
+            "is_valid",
+            "pack_parameters",
+            "unpack_parameters",
+            "string",
+            "preamble",
+            "loss_type",
+        ):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"`{name}` cannot be empty.")
+        if self.count_parameters is not None and not isinstance(
+            self.count_parameters, (int, str)
+        ):
+            raise ValueError(
+                "`count_parameters` must be a nonnegative integer or Julia source."
+            )
+        if isinstance(self.count_parameters, str) and not self.count_parameters.strip():
+            raise ValueError("`count_parameters` cannot be empty.")
+
+    @property
+    def can_optimize(self) -> bool:
+        return self.parameters is not None
 
 
 @dataclass(frozen=True)
@@ -174,7 +235,7 @@ class _TypeSpecRuntime:
 
 
 def _quoted(source: str) -> str:
-    return json.dumps(source, ensure_ascii=False)
+    return json.dumps(source, ensure_ascii=False).replace("$", r"\$")
 
 
 def _include(source: str, label: str) -> str:
@@ -241,17 +302,19 @@ def build_type_spec_module_source(
         raise ValueError("TypeSpec full objectives require an explicit `loss_type`.")
     payload = {
         "codegen_version": _CODEGEN_VERSION,
+        "name": spec.name,
         "fields": list(spec.fields.items()),
-        "init_value": spec.init_value,
-        "sample_value": spec.sample_value,
-        "mutate_value": spec.mutate_value,
-        "count_scalar_constants": spec.count_scalar_constants,
+        "sample": spec.sample,
+        "parameters": spec.parameters,
+        "with_parameters": spec.with_parameters,
+        "init": spec.init,
+        "mutate": spec.mutate,
         "is_valid": spec.is_valid,
-        "can_optimize": spec.can_optimize,
+        "count_parameters": spec.count_parameters,
+        "pack_parameters": spec.pack_parameters,
+        "unpack_parameters": spec.unpack_parameters,
+        "string": spec.string,
         "preamble": spec.preamble,
-        "pack_scalar_constants": spec.pack_scalar_constants,
-        "unpack_scalar_constants": spec.unpack_scalar_constants,
-        "number_type": spec.number_type,
         "loss_type": spec.loss_type,
         "operators": normalized_operators,
         "loss_mode": loss_mode,
@@ -275,7 +338,8 @@ def build_type_spec_module_source(
     fields = "\n".join(
         f"    {name}::{field_type}" for name, field_type in spec.fields.items()
     )
-    lines.extend(("struct Value", fields, "end"))
+    type_name = spec.name
+    lines.extend((f"struct {type_name}", fields, "end"))
     field_values_a = ", ".join(f"a.{name}" for name in spec.fields)
     field_values_b = ", ".join(f"b.{name}" for name in spec.fields)
     field_values_x = ", ".join(f"x.{name}" for name in spec.fields)
@@ -285,52 +349,168 @@ def build_type_spec_module_source(
         field_values_x += ","
     lines.extend(
         (
-            f"Base.:(==)(a::Value, b::Value) = ({field_values_a}) == ({field_values_b})",
-            f"Base.isequal(a::Value, b::Value) = isequal(({field_values_a}), ({field_values_b}))",
-            f"Base.hash(x::Value, h::UInt) = hash(({field_values_x}), h)",
-            f"const _init_value = {_include(spec.init_value, 'TypeSpec.init_value')}",
-            f"const _sample_value = {_include(spec.sample_value, 'TypeSpec.sample_value')}",
-            f"const _mutate_value = {_include(spec.mutate_value, 'TypeSpec.mutate_value')}",
-            f"const _is_valid = {_include(spec.is_valid, 'TypeSpec.is_valid')}",
-            "SymbolicRegression.init_value(::Type{Value}) = _init_value()",
-            "SymbolicRegression.sample_value(rng::AbstractRNG, ::Type{Value}, options) = _sample_value(rng, options)",
-            "SymbolicRegression.mutate_value(rng::AbstractRNG, value::Value, temperature, options) = _mutate_value(rng, value, temperature, options)",
-            "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.is_valid(value::Value) = _is_valid(value)",
+            f"Base.:(==)(a::{type_name}, b::{type_name}) = ({field_values_a}) == ({field_values_b})",
+            f"Base.isequal(a::{type_name}, b::{type_name}) = isequal(({field_values_a}), ({field_values_b}))",
+            f"Base.hash(x::{type_name}, h::UInt) = hash(({field_values_x}), h)",
+            f"const _sample = {_include(spec.sample, 'TypeSpec.sample')}",
         )
     )
 
-    count_interface = (
-        "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.count_scalar_constants"
-    )
-    if isinstance(spec.count_scalar_constants, int):
-        lines.append(f"{count_interface}(::Value) = {spec.count_scalar_constants}")
+    if spec.init is None:
+        lines.append(
+            f"SymbolicRegression.init_value(::Type{{{type_name}}}) = _sample(Random.Xoshiro(0))"
+        )
     else:
         lines.extend(
             (
-                f"const _count_scalar_constants = {_include(spec.count_scalar_constants, 'TypeSpec.count_scalar_constants')}",
-                f"{count_interface}(value::Value) = _count_scalar_constants(value)",
+                f"const _init = {_include(spec.init, 'TypeSpec.init')}",
+                f"SymbolicRegression.init_value(::Type{{{type_name}}}) = _init()",
             )
         )
+    lines.append(
+        f"SymbolicRegression.sample_value(rng::AbstractRNG, ::Type{{{type_name}}}, options) = _sample(rng)"
+    )
 
     can_optimize = str(spec.can_optimize).lower()
     lines.append(
         "SymbolicRegression.ConstantOptimizationModule."
-        f"can_optimize(::Type{{Value}}, _) = {can_optimize}"
+        f"can_optimize(::Type{{{type_name}}}, _) = {can_optimize}"
     )
     if spec.can_optimize:
-        assert spec.pack_scalar_constants is not None
-        assert spec.unpack_scalar_constants is not None
-        assert spec.number_type is not None
+        assert spec.parameters is not None
+        assert spec.with_parameters is not None
         lines.extend(
             (
-                f"const _pack_scalar_constants = {_include(spec.pack_scalar_constants, 'TypeSpec.pack_scalar_constants')}",
-                f"const _unpack_scalar_constants = {_include(spec.unpack_scalar_constants, 'TypeSpec.unpack_scalar_constants')}",
-                f"const _number_type = {_include(spec.number_type, 'TypeSpec.number_type')}",
-                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.pack_scalar_constants!(buffer::AbstractVector{<:Number}, idx::Int, value::Value) = _pack_scalar_constants(buffer, idx, value)",
-                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.unpack_scalar_constants(buffer::AbstractVector{<:Number}, idx::Int, value::Value) = _unpack_scalar_constants(buffer, idx, value)",
-                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.get_number_type(::Type{Value}) = _number_type",
+                f"const _parameters = {_include(spec.parameters, 'TypeSpec.parameters')}",
+                f"const _with_parameters = {_include(spec.with_parameters, 'TypeSpec.with_parameters')}",
+                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                f"get_number_type(::Type{{{type_name}}}) = eltype(_parameters(SymbolicRegression.init_value({type_name})))",
             )
         )
+
+        count_interface = (
+            "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+            "count_scalar_constants"
+        )
+        if isinstance(spec.count_parameters, int):
+            lines.append(f"{count_interface}(::{type_name}) = {spec.count_parameters}")
+        elif isinstance(spec.count_parameters, str):
+            lines.extend(
+                (
+                    f"const _count_parameters = {_include(spec.count_parameters, 'TypeSpec.count_parameters')}",
+                    f"{count_interface}(value::{type_name}) = _count_parameters(value)",
+                )
+            )
+        else:
+            lines.append(
+                f"{count_interface}(value::{type_name}) = length(_parameters(value))"
+            )
+
+        if spec.pack_parameters is not None:
+            assert spec.unpack_parameters is not None
+            lines.extend(
+                (
+                    f"const _pack_parameters = {_include(spec.pack_parameters, 'TypeSpec.pack_parameters')}",
+                    f"const _unpack_parameters = {_include(spec.unpack_parameters, 'TypeSpec.unpack_parameters')}",
+                    "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                    f"pack_scalar_constants!(buffer::AbstractVector{{<:Number}}, idx::Int, value::{type_name}) = _pack_parameters(buffer, idx, value)",
+                    "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                    f"unpack_scalar_constants(buffer::AbstractVector{{<:Number}}, idx::Int, value::{type_name}) = _unpack_parameters(buffer, idx, value)",
+                )
+            )
+        else:
+            lines.extend(
+                (
+                    "function SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                    f"pack_scalar_constants!(buffer::AbstractVector{{<:Number}}, idx::Int, value::{type_name})",
+                    "    parameters = _parameters(value)",
+                    "    copyto!(buffer, idx, parameters, firstindex(parameters), length(parameters))",
+                    "    return idx + length(parameters)",
+                    "end",
+                    "function SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                    f"unpack_scalar_constants(buffer::AbstractVector{{<:Number}}, idx::Int, value::{type_name})",
+                    "    n = length(_parameters(value))",
+                    "    return idx + n, _with_parameters(value, buffer[idx:(idx + n - 1)])",
+                    "end",
+                )
+            )
+    else:
+        lines.append(
+            "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+            f"count_scalar_constants(::{type_name}) = 0"
+        )
+
+    if spec.mutate is not None:
+        lines.extend(
+            (
+                f"const _mutate = {_include(spec.mutate, 'TypeSpec.mutate')}",
+                f"SymbolicRegression.mutate_value(rng::AbstractRNG, value::{type_name}, temperature, options) = _mutate(rng, value, temperature)",
+            )
+        )
+    else:
+        lines.extend(
+            (
+                f"function SymbolicRegression.mutate_value(rng::AbstractRNG, value::{type_name}, temperature, options)",
+                "    parameters = copy(_parameters(value))",
+                "    isempty(parameters) && return _sample(rng)",
+                "    i = rand(rng, eachindex(parameters))",
+                "    mutation = options === nothing ? SymbolicRegression.ConstantMutation() :",
+                "        SymbolicRegression.ConstantMutation(;",
+                "            perturbation_factor=options.perturbation_factor,",
+                "            probability_negate=options.probability_negate_constant,",
+                "        )",
+                "    parameters[i] = SymbolicRegression.MutationFunctionsModule."
+                "mutate_value(rng, parameters[i], temperature, mutation)",
+                "    return _with_parameters(value, parameters)",
+                "end",
+            )
+        )
+
+    if spec.is_valid is not None:
+        lines.extend(
+            (
+                f"const _is_valid = {_include(spec.is_valid, 'TypeSpec.is_valid')}",
+                "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+                f"is_valid(value::{type_name}) = _is_valid(value)",
+            )
+        )
+    elif spec.can_optimize:
+        lines.append(
+            "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+            f"is_valid(value::{type_name}) = all(isfinite, _parameters(value))"
+        )
+    else:
+        lines.append(
+            "SymbolicRegression.InterfaceDynamicExpressionsModule.DE."
+            f"is_valid(::{type_name}) = true"
+        )
+
+    if spec.string is not None:
+        lines.append(f"const _string = {_include(spec.string, 'TypeSpec.string')}")
+    elif len(spec.fields) == 1:
+        only_field = next(iter(spec.fields))
+        lines.append(
+            f"_string(value::{type_name}) = sprint(show, value.{only_field}; context=:compact => true)"
+        )
+    else:
+        formatted_fields = ", ".join(
+            f"sprint(show, value.{name}; context=:compact => true)"
+            for name in spec.fields
+        )
+        lines.append(
+            f'_string(value::{type_name}) = Base.string("{type_name}(", join(({formatted_fields}), ", "), ")")'
+        )
+    lines.extend(
+        (
+            f"Base.show(io::IO, value::{type_name}) = print(io, _string(value))",
+            "SymbolicRegression.InterfaceDynamicExpressionsModule.DE.StringsModule."
+            f"needs_brackets(::{type_name}) = false",
+            "SymbolicRegression.InterfaceDynamicExpressionsModule."
+            f"string_constant(value::{type_name}, ::Val{{precision}}, unit) where {{precision}} = _string(value) * unit",
+            "SymbolicRegression.InterfaceDynamicExpressionsModule."
+            f"string_constant(value::{type_name}, bracketed, ::Val{{precision}}, unit) where {{precision}} = _string(value) * unit",
+        )
+    )
 
     operator_counts = []
     for arity, sources in normalized_operators:
@@ -346,7 +526,7 @@ def build_type_spec_module_source(
     )
     if loss_mode == "elementwise_loss":
         lines.append(
-            "_elementwise_loss(a::Value, b::Value) = _elementwise_loss_impl(a, b)"
+            f"_elementwise_loss(a::{type_name}, b::{type_name}) = _elementwise_loss_impl(a, b)"
         )
     elif loss_mode == "loss_function":
         lines.append(
@@ -366,18 +546,20 @@ def build_type_spec_module_source(
     lines.extend(
         (
             "function _convert_value(x)",
-            "    x isa Value && return x",
+            f"    x isa {type_name} && return x",
             "    x = PythonCall.Py(x)",
         )
     )
     if len(spec.fields) == 1:
-        lines.append("    return Value(PythonCall.pyconvert(fieldtype(Value, 1), x))")
+        lines.append(
+            f"    return {type_name}(PythonCall.pyconvert(fieldtype({type_name}, 1), x))"
+        )
     else:
         arguments = ", ".join(
-            f"PythonCall.pyconvert(fieldtype(Value, {i}), x[{i - 1}])"
+            f"PythonCall.pyconvert(fieldtype({type_name}, {i}), x[{i - 1}])"
             for i in range(1, len(spec.fields) + 1)
         )
-        lines.append(f"    return Value({arguments})")
+        lines.append(f"    return {type_name}({arguments})")
     lines.extend(("end", "end"))
 
     return _TypeSpecModuleSource(
@@ -393,17 +575,15 @@ def load_type_spec_runtime(
     spec: TypeSpec, module_source: _TypeSpecModuleSource, *, validate: bool = True
 ) -> _TypeSpecRuntime:
     """Load a generated module and return its ephemeral Julia objects."""
-    module = jl.seval(f"""
-        if !isdefined(Main, :{module_source.module_name})
-            Base.include_string(
-                Main,
-                {_quoted(module_source.source)},
-                {_quoted('PySR.' + module_source.module_name)},
-            )
-        end
-        getfield(Main, :{module_source.module_name})
-        """)
-    value_type = module.Value
+    module_symbol = jl.Symbol(module_source.module_name)
+    if not bool(jl.isdefined(jl.Main, module_symbol)):
+        jl.Base.include_string(
+            jl.Main,
+            module_source.source,
+            "PySR." + module_source.module_name,
+        )
+    module = jl.getproperty(jl.Main, module_symbol)
+    value_type = jl.getproperty(module, jl.Symbol(spec.name))
 
     operators = {}
     operator_names = {}
@@ -465,9 +645,9 @@ def _call_hook(name: str, function: Any, *args: Any) -> Any:
         raise ValueError(f"TypeSpec `{name}` failed its required contract.") from error
 
 
-def _validate_value(runtime: _TypeSpecRuntime, value: AnyValue, hook: str) -> None:
+def _validate_value(runtime: _TypeSpecRuntime, value: Any, hook: str) -> None:
     if not bool(jl.isa(value, runtime.value_type)):
-        raise ValueError(f"TypeSpec `{hook}` must return `Value`.")
+        raise ValueError(f"TypeSpec `{hook}` must return `{runtime.spec.name}`.")
     is_valid = _call_hook(
         "is_valid",
         jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE.is_valid,
@@ -480,40 +660,60 @@ def _validate_value(runtime: _TypeSpecRuntime, value: AnyValue, hook: str) -> No
 
 
 def _validate_optimization_value(
-    runtime: _TypeSpecRuntime, value: AnyValue, count: int
+    runtime: _TypeSpecRuntime, value: Any, count: int
 ) -> None:
     interface = jl.SymbolicRegression.InterfaceDynamicExpressionsModule.DE
+    parameters = _call_hook("parameters", runtime.module._parameters, value)
+    if not bool(jl.seval("x -> x isa AbstractVector")(parameters)):
+        raise ValueError("TypeSpec `parameters` must return an `AbstractVector`.")
+    if len(parameters) != count:
+        raise ValueError("TypeSpec `count_parameters` disagrees with `parameters`.")
     number_type = interface.get_number_type(runtime.value_type)
     if not bool(jl.seval("T -> isconcretetype(T) && T <: AbstractFloat")(number_type)):
         raise ValueError(
-            "TypeSpec `number_type` must be a concrete `AbstractFloat` type."
+            "TypeSpec `parameters` must return a vector with a concrete "
+            "`AbstractFloat` element type."
         )
     packed = jl.seval("(T, n) -> Vector{T}(undef, n)")(number_type, count)
     packed_idx = _call_hook(
-        "pack_scalar_constants", interface.pack_scalar_constants_b, packed, 1, value
+        "pack_parameters", interface.pack_scalar_constants_b, packed, 1, value
     )
     if packed_idx != count + 1:
+        raise ValueError("TypeSpec `pack_parameters` returned the wrong next index.")
+    if not bool(jl.isequal(packed, parameters)):
+        raise ValueError("TypeSpec `pack_parameters` disagrees with `parameters`.")
+
+    rebuilt = _call_hook(
+        "with_parameters", runtime.module._with_parameters, value, parameters
+    )
+    if not bool(jl.isa(rebuilt, runtime.value_type)):
         raise ValueError(
-            "TypeSpec `pack_scalar_constants` returned the wrong next index."
+            f"TypeSpec `with_parameters` must return `{runtime.spec.name}`."
+        )
+    if not bool(jl.isequal(rebuilt, value)):
+        raise ValueError(
+            "TypeSpec `with_parameters(value, parameters(value))` must preserve "
+            "the value."
         )
     unpacked_result = _call_hook(
-        "unpack_scalar_constants", interface.unpack_scalar_constants, packed, 1, value
+        "unpack_parameters", interface.unpack_scalar_constants, packed, 1, value
     )
     try:
         unpacked_idx, unpacked = unpacked_result
     except Exception as error:
         raise ValueError(
-            "TypeSpec `unpack_scalar_constants` must return `(next_idx, Value)`."
+            "TypeSpec `unpack_parameters` must return "
+            f"`(next_idx, {runtime.spec.name})`."
         ) from error
     if unpacked_idx != count + 1:
-        raise ValueError(
-            "TypeSpec `unpack_scalar_constants` returned the wrong next index."
-        )
+        raise ValueError("TypeSpec `unpack_parameters` returned the wrong next index.")
     if not bool(jl.isa(unpacked, runtime.value_type)):
-        raise ValueError("TypeSpec `unpack_scalar_constants` must return `Value`.")
+        raise ValueError(
+            f"TypeSpec `unpack_parameters` must return `{runtime.spec.name}`."
+        )
     repacked = jl.seval("similar")(packed)
     repacked_idx = _call_hook(
-        "pack_scalar_constants",
+        "pack_parameters",
         interface.pack_scalar_constants_b,
         repacked,
         1,
@@ -528,29 +728,35 @@ def _validate_optimization_value(
 def _validate_type_spec_runtime(runtime: _TypeSpecRuntime) -> None:
     sr = jl.SymbolicRegression
     rng = runtime.module.Xoshiro(0)
-    initial = _call_hook("init_value", sr.init_value, runtime.value_type)
-    _validate_value(runtime, initial, "init_value")
-    sampled = _call_hook(
-        "sample_value", sr.sample_value, rng, runtime.value_type, jl.nothing
-    )
-    _validate_value(runtime, sampled, "sample_value")
-    mutated = _call_hook("mutate_value", sr.mutate_value, rng, sampled, 1.0, jl.nothing)
-    _validate_value(runtime, mutated, "mutate_value")
+    sampled = _call_hook("sample", sr.sample_value, rng, runtime.value_type, jl.nothing)
+    _validate_value(runtime, sampled, "sample")
+    initial = _call_hook("init", sr.init_value, runtime.value_type)
+    _validate_value(runtime, initial, "init")
 
     interface = sr.InterfaceDynamicExpressionsModule.DE
     counts = []
-    for value in (initial, sampled, mutated):
-        count = _call_hook(
-            "count_scalar_constants", interface.count_scalar_constants, value
-        )
+    for value in (initial, sampled):
+        count = _call_hook("count_parameters", interface.count_scalar_constants, value)
         if not isinstance(count, int) or count < 0:
             raise ValueError(
-                "TypeSpec `count_scalar_constants` must return a nonnegative `Int`."
+                "TypeSpec `count_parameters` must return a nonnegative `Int`."
             )
         counts.append(count)
     if runtime.spec.can_optimize:
         _validate_optimization_value(runtime, initial, counts[0])
         _validate_optimization_value(runtime, sampled, counts[1])
+
+    mutated = _call_hook("mutate", sr.mutate_value, rng, sampled, 1.0, jl.nothing)
+    _validate_value(runtime, mutated, "mutate")
+    mutated_count = _call_hook(
+        "count_parameters", interface.count_scalar_constants, mutated
+    )
+    if not isinstance(mutated_count, int) or mutated_count < 0:
+        raise ValueError("TypeSpec `count_parameters` must return a nonnegative `Int`.")
+
+    formatted = _call_hook("string", runtime.module._string, sampled)
+    if not bool(jl.seval("x -> x isa AbstractString")(formatted)):
+        raise ValueError("TypeSpec `string` must return an `AbstractString`.")
 
     for arity, functions in runtime.operators.items():
         for function in functions:
@@ -559,7 +765,8 @@ def _validate_type_spec_runtime(runtime: _TypeSpecRuntime) -> None:
             )
             if not bool(jl.isa(result, runtime.value_type)):
                 raise ValueError(
-                    f"TypeSpec operator `{jl.nameof(function)}` must return `Value`."
+                    f"TypeSpec operator `{jl.nameof(function)}` must return "
+                    f"`{runtime.spec.name}`."
                 )
     if runtime.elementwise_loss is not None:
         _call_hook("elementwise_loss", runtime.elementwise_loss, sampled, sampled)

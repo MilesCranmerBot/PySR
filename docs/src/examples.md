@@ -732,10 +732,10 @@ The template example above coordinates several scalar-valued expression trees.
 With `TypeSpec`, vectors or tensors flow through each expression, constant, and
 operator.
 
-Each specification creates a private Julia `Value` type. Its preamble,
-operators, and loss are replayed on multiprocessing workers and when loading a
-checkpoint. Put every required Julia definition in those source fields or use a
-package-qualified name.
+Each specification creates a private Julia type with the name you choose. Its
+preamble, operators, and loss are replayed on multiprocessing workers and when
+loading a checkpoint. Put every required Julia definition in those source
+fields or use a package-qualified name.
 
 TypeSpec supports the default expression shape, prediction, checkpoint reload,
 and serial, multithreaded, or multiprocessing search. It does not support
@@ -770,53 +770,38 @@ offset = np.array([0.5, -1.0])
 y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
 ```
 
-PySR wraps each vector in a private Julia `Value` type. Operator and loss source
-can use `Value` directly, while the hooks explain how vectors participate in
-evolution and constant optimization:
+PySR wraps each vector in a private Julia `Vec2` type. `parameters` extracts the
+continuous values optimized by BFGS, and `with_parameters` rebuilds the constant
+after optimization. PySR derives initialization, mutation, validation, counting,
+packing, and unpacking from this pair:
 
 ```python
 type_spec = TypeSpec(
+    "Vec2",
     fields={"data": "Vector{Float64}"},
-    # What is an empty or zero-like value of this type?
-    init_value="() -> Value(zeros(2))",
-    # How should a new constant be sampled?
-    sample_value="(rng, options) -> Value(randn(rng, 2))",
-    # How should evolution mutate an existing constant?
-    mutate_value=(
-        "(rng, value, temperature, options) -> "
-        "Value(value.data + temperature * randn(rng, 2))"
-    ),
-    # How many scalar constants does one vector contain?
-    count_scalar_constants=2,
-    is_valid="value -> all(isfinite, value.data)",
-    can_optimize=True,
-    # Flatten a vector into the optimizer's buffer, starting at one-based `idx`:
-    pack_scalar_constants="""
-    (buffer, idx, value) -> begin
-        buffer[idx:idx+1] .= value.data
-        idx + 2
-    end
-    """,
-    # Rebuild the vector and return `(first_unused_index, rebuilt_value)`:
-    unpack_scalar_constants="""
-    (buffer, idx, value) -> (idx + 2, Value(copy(buffer[idx:idx+1])))
-    """,
-    number_type="Float64",
+    sample="rng -> Vec2(randn(rng, 2))",
+    parameters="value -> value.data",
+    with_parameters="(value, parameters) -> Vec2(parameters)",
 )
 
 model = PySRRegressor(
     type_spec=type_spec,
     operators={
         1: [
-            "rotate90(a::Value) = Value([-a.data[2], a.data[1]])",
-            "double(a::Value) = Value(2a.data)",
+            """
+            function rotate90(a::Vec2)
+                return Vec2([-a.data[2], a.data[1]])
+            end
+            """,
+            "double(a::Vec2) = Vec2(2a.data)",
         ],
-        2: ["add_vectors(a::Value, b::Value) = Value(a.data + b.data)"],
+        2: ["add_vectors(a::Vec2, b::Vec2) = Vec2(a.data + b.data)"],
     },
-    elementwise_loss=(
-        "vector_loss(a::Value, b::Value)::Float64 = "
-        "sum(abs2, a.data - b.data)"
-    ),
+    elementwise_loss="""
+    function vector_loss(a::Vec2, b::Vec2)::Float64
+        return sum(abs2, a.data - b.data)
+    end
+    """,
     niterations=40,
     populations=4,
     maxsize=10,
@@ -857,31 +842,36 @@ y = np.array(
 )
 
 type_spec = TypeSpec(
+    "StringValue",
     fields={"data": "String"},
-    init_value='() -> Value("")',
-    sample_value='(rng, options) -> Value(rand(rng, ("", "-", "_")))',
-    mutate_value=(
-        '(rng, value, temperature, options) -> '
-        'Value(rand(rng, ("", "-", "_")))'
-    ),
-    count_scalar_constants=1,
-    is_valid="value -> true",
-    can_optimize=False,
+    sample='rng -> StringValue(rand(rng, ("", "-", "_")))',
+    mutate="""
+    function mutate_string(rng, value, temperature)
+        return StringValue(rand(rng, ("", "-", "_")))
+    end
+    """,
 )
 
 model = PySRRegressor(
     type_spec=type_spec,
     operators={
         1: [
-            "string_lowercase(x::Value) = Value(lowercase(x.data))",
-            "string_uppercase(x::Value) = Value(uppercase(x.data))",
+            "string_lowercase(x::StringValue) = StringValue(lowercase(x.data))",
+            "string_uppercase(x::StringValue) = StringValue(uppercase(x.data))",
         ],
-        2: ["string_concat(a::Value, b::Value) = Value(a.data * b.data)"],
+        2: [
+            """
+            function string_concat(a::StringValue, b::StringValue)
+                return StringValue(a.data * b.data)
+            end
+            """
+        ],
     },
-    elementwise_loss=(
-        "string_loss(a::Value, b::Value)::Float64 = "
-        "Float64(Base.editdistance(a.data, b.data))"
-    ),
+    elementwise_loss="""
+    function string_loss(a::StringValue, b::StringValue)::Float64
+        return Float64(Base.editdistance(a.data, b.data))
+    end
+    """,
     niterations=40,
 )
 
@@ -889,9 +879,8 @@ model.fit(X, y)
 print(model.equations_)
 ```
 
-Here `can_optimize=False` is appropriate because a string has no continuous
-scalar representation for BFGS. Evolution still samples and mutates string
-constants such as the separator.
+Because this type has no `parameters` pair, PySR does not run BFGS on its
+constants. The explicit `mutate` hook resamples separators during evolution.
 
 </details>
 
@@ -899,8 +888,8 @@ constants such as the separator.
 <summary>Advanced: recovering a neural network with tensor constants</summary>
 
 `TypeSpec` can place scalar, vector, and matrix constants in one Julia value
-type. The scalar-constant hooks let the optimizer flatten each constant for
-BFGS and then rebuild its original shape.
+type. The parameter hooks flatten each constant for BFGS and rebuild its
+original shape.
 
 Here we recover a two-layer neural network
 
@@ -936,41 +925,30 @@ end
 """
 
 type_spec = TypeSpec(
+    "NNValue",
     fields={"data": "NNPayload"},
-    init_value="() -> Value(0.0)",
-    sample_value="(rng, options) -> Value(random_nn_payload(rng))",
+    sample="rng -> NNValue(random_nn_payload(rng))",
     # Mutations usually perturb every scalar in the payload, but occasionally
     # resample a fresh rank:
-    mutate_value="""
-    (rng, value, temperature, options) -> if rand(rng) < 0.1
-        Value(random_nn_payload(rng))
+    mutate="""
+    (rng, value, temperature) -> if rand(rng) < 0.1
+        NNValue(random_nn_payload(rng))
     else
-        Value(value.data .+ temperature .* randn(rng, size(value.data)...))
+        NNValue(value.data .+ temperature .* randn(rng, size(value.data)...))
     end
     """,
-    # Return the number of Float64 entries used to represent one constant:
-    count_scalar_constants="value -> length(value.data)",
-    # Write those entries into `buffer` from the one-based `idx`, then return
-    # the first unused index:
-    pack_scalar_constants="""
-    (buffer, idx, value) -> begin
-        n = length(value.data)
-        buffer[idx:idx+n-1] .= value.data isa Float64 ? value.data : vec(value.data)
-        idx + n
+    parameters="""
+    function parameters(value)
+        return value.data isa Float64 ? [value.data] : vec(value.data)
     end
     """,
-    # Read the entries back and return `(first_unused_index, rebuilt_value)`:
-    unpack_scalar_constants="""
-    (buffer, idx, value) -> begin
-        n = length(value.data)
-        data = value.data isa Float64 ? buffer[idx] :
-            reshape(copy(buffer[idx:idx+n-1]), size(value.data))
-        (idx + n, Value(data))
+    with_parameters="""
+    function with_parameters(value, parameters)
+        data = value.data isa Float64 ? parameters[1] :
+            reshape(collect(parameters), size(value.data))
+        return NNValue(data)
     end
     """,
-    number_type="Float64",
-    is_valid="value -> all(isfinite, value.data)",
-    can_optimize=True,
     preamble=preamble,
 )
 ```
@@ -997,17 +975,18 @@ default constant optimizer:
 model = PySRRegressor(
     type_spec=type_spec,
     operators={
-        1: ["nn_relu(a::Value) = Value(max.(a.data, 0.0))"],
+        1: ["nn_relu(a) = NNValue(max.(a.data, 0.0))"],
         2: [
-            "nn_matmul(a::Value, b::Value) = Value(safe_matmul(a.data, b.data))",
-            "nn_add(a::Value, b::Value) = Value(safe_add(a.data, b.data))",
+            "nn_matmul(a, b) = NNValue(safe_matmul(a.data, b.data))",
+            "nn_add(a, b) = NNValue(safe_add(a.data, b.data))",
         ],
     },
-    elementwise_loss=(
-        "nn_mse(a::Value, b::Value)::Float64 = "
-        "a.data isa Vector && b.data isa Vector && size(a.data) == size(b.data) "
-        "? sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6"
-    ),
+    elementwise_loss="""
+    function nn_mse(a, b)::Float64
+        valid = a.data isa Vector && b.data isa Vector && size(a.data) == size(b.data)
+        return valid ? sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6
+    end
+    """,
     niterations=100,
     populations=4,
     maxsize=11,
@@ -1020,7 +999,7 @@ print(model.equations_)
 The search recovers a two-layer form such as
 `nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. Both biases
 are absorbed into the fitted constants, through $b_1 = W_1c$ and $b_2 = W_2b$;
-each displayed `Value` contains the fitted matrix or vector payload.
+each displayed constant contains the fitted matrix or vector payload.
 
 </details>
 
