@@ -156,6 +156,29 @@ def _process_constraints(
     return constraints
 
 
+def _map_type_spec_operator_keys(
+    values: Mapping[str, Any], operators: Mapping[str, AnyValue], option: str
+) -> AnyValue:
+    try:
+        return jl.Dict(
+            [
+                jl.Pair(
+                    operators[name],
+                    (
+                        _map_type_spec_operator_keys(value, operators, option)
+                        if isinstance(value, Mapping)
+                        else value
+                    ),
+                )
+                for name, value in values.items()
+            ]
+        )
+    except KeyError as error:
+        raise ValueError(
+            f"Unknown TypeSpec operator in `{option}`: {error.args[0]!r}."
+        ) from error
+
+
 def _maybe_create_inline_operators(
     operators: dict[int, list[str]],
     extra_sympy_mappings: dict[str, Callable] | None,
@@ -826,8 +849,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         `["x0 + x1", "x0^2"]`, `[["x0"], ["x1"]]` (multi-output),
         `[{"f": "#1 + #2"}]` (TemplateExpressionSpec where `#1`, `#2` are
         placeholders for the 1st, 2nd arguments of expression `f`).
-        Julia `Expr` objects may also be passed, which is useful for
-        seeding `type_spec` searches with non-scalar constants.
         Default is `None`.
     verbosity : int
         What verbosity level to use. 0 means minimal print statements.
@@ -1546,7 +1567,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             pickled_state["output_torch_format"] = False
             pickled_state["output_jax_format"] = False
             unpicklable_columns = ["jax_format", "torch_format"]
-            if getattr(self, "type_spec", None) is not None:
+            if self._has_fitted_type_spec():
                 # Live Julia objects cannot be unpickled in a fresh process
                 # before the TypeSpec definitions exist; these columns are
                 # rebuilt from `julia_state_` via `refresh()`.
@@ -1638,8 +1659,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     def expression_spec_(self):
         return self.expression_spec or ExpressionSpec()
 
+    def _has_fitted_type_spec(self) -> bool:
+        return hasattr(self, "_type_spec_module_source_")
+
     def _supports_export(self, format: str) -> bool:
-        return self.type_spec is None and bool(
+        return not self._has_fitted_type_spec() and bool(
             getattr(self.expression_spec_, f"supports_{format}")
         )
 
@@ -1756,12 +1780,15 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         AnyValue | None,
         _TypeSpecRuntime | None,
     ]:
-        if self.type_spec is not None:
-            if operators is None and hasattr(self, "_type_spec_module_source_"):
+        if self.type_spec is not None or (
+            operators is None and self._has_fitted_type_spec()
+        ):
+            if operators is None and self._has_fitted_type_spec():
                 module_source = self._stored_type_spec_module_source()
                 spec = self.type_spec_
                 validate = False
             else:
+                assert self.type_spec is not None
                 spec = copy.deepcopy(self.type_spec)
                 module_source = build_type_spec_module_source(
                     spec,
@@ -1927,12 +1954,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                         "TypeSpec does not support TemplateExpressionSpec `parameters`. "
                         "Represent optimizable values as TypeSpec constants instead."
                     )
-                if not self.expression_spec_.num_features:
-                    raise ValueError(
-                        "TypeSpec requires explicit TemplateExpressionSpec "
-                        "`num_features` for every inner expression."
-                    )
-
         legacy_mutation_weights_used = any(
             getattr(self, parameter) is not None
             for parameter in _LEGACY_MUTATION_PARAMETERS
@@ -2463,24 +2484,44 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             max_arity = max(operators.keys()) if operators else 2
             constraints_by_arity = {arity: None for arity in range(1, max_arity + 1)}
 
+        type_spec_operators = None
+        if type_spec_runtime is not None:
+            type_spec_operators = {
+                name: function
+                for arity, names in type_spec_runtime.operator_names.items()
+                for name, function in zip(names, type_spec_runtime.operators[arity])
+            }
+
         # Parse dict into Julia Dict for nested constraints::
         if nested_constraints is not None:
-            nested_constraints_str = "Dict("
-            for outer_k, outer_v in nested_constraints.items():
-                nested_constraints_str += f"({outer_k}) => Dict("
-                for inner_k, inner_v in outer_v.items():
-                    nested_constraints_str += f"({inner_k}) => {inner_v}, "
-                nested_constraints_str += "), "
-            nested_constraints_str += ")"
-            nested_constraints = jl.seval(nested_constraints_str)
+            if type_spec_operators is None:
+                nested_constraints_str = "Dict("
+                for outer_k, outer_v in nested_constraints.items():
+                    nested_constraints_str += f"({outer_k}) => Dict("
+                    for inner_k, inner_v in outer_v.items():
+                        nested_constraints_str += f"({inner_k}) => {inner_v}, "
+                    nested_constraints_str += "), "
+                nested_constraints_str += ")"
+                nested_constraints = jl.seval(nested_constraints_str)
+            else:
+                nested_constraints = _map_type_spec_operator_keys(
+                    nested_constraints, type_spec_operators, "nested_constraints"
+                )
 
         # Parse dict into Julia Dict for complexities:
         if complexity_of_operators is not None:
-            complexity_of_operators_str = "Dict("
-            for k, v in complexity_of_operators.items():
-                complexity_of_operators_str += f"({k}) => {v}, "
-            complexity_of_operators_str += ")"
-            complexity_of_operators = jl.seval(complexity_of_operators_str)
+            if type_spec_operators is None:
+                complexity_of_operators_str = "Dict("
+                for k, v in complexity_of_operators.items():
+                    complexity_of_operators_str += f"({k}) => {v}, "
+                complexity_of_operators_str += ")"
+                complexity_of_operators = jl.seval(complexity_of_operators_str)
+            else:
+                complexity_of_operators = _map_type_spec_operator_keys(
+                    complexity_of_operators,
+                    type_spec_operators,
+                    "complexity_of_operators",
+                )
         # TODO: Refactor this into helper function
 
         if isinstance(complexity_of_variables, list):
@@ -3000,8 +3041,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         check_is_fitted(
             self, attributes=["selection_mask_", "feature_names_in_", "nout_"]
         )
+        has_type_spec = self._has_fitted_type_spec()
         if (
-            self.type_spec is not None
+            has_type_spec
             and isinstance(self.equations_, pd.DataFrame)
             and "lambda_format" not in self.equations_.columns
         ):
@@ -3016,7 +3058,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # and then set the column/feature_names of X to be equal to those
         # generated during fit.
         if not isinstance(X, pd.DataFrame):
-            if self.type_spec is not None:
+            if has_type_spec:
                 X = object_array_2d(X)
                 if X.ndim != 2:
                     raise ValueError("X must be a 2D array.")
@@ -3053,18 +3095,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # order is preserved after conversion, the dataframe columns must be
         # reordered/reindexed to match those of the transformed (denoised and
         # feature selected) X in fit.
-        if self.type_spec is not None:
+        if has_type_spec:
             X = X.rename(columns=str)
             missing_features = set(self.feature_names_in_) - set(X.columns)
             if missing_features:
                 raise ValueError(f"X is missing features: {sorted(missing_features)}")
         X = X.reindex(columns=self.feature_names_in_)
-        X = (
-            X.to_numpy(dtype=object)
-            if self.type_spec is not None
-            else self._validate_data_X(X)
-        )
-        if self.expression_spec_.evaluates_in_julia and self.type_spec is None:
+        X = X.to_numpy(dtype=object) if has_type_spec else self._validate_data_X(X)
+        if self.expression_spec_.evaluates_in_julia and not has_type_spec:
             # Julia wants the right dtype
             X = X.astype(self._get_precision_mapped_dtype(X))
 
@@ -3078,7 +3116,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else:
                 return cast(ndarray, best_equation["lambda_format"](X))
         except Exception as error:
-            if self.type_spec is not None:
+            if has_type_spec:
                 raise
             raise ValueError(
                 "Failed to evaluate the expression. "
@@ -3089,7 +3127,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             ) from error
 
     def score(self, X, y, sample_weight=None):
-        if self.type_spec is not None:
+        if self._has_fitted_type_spec():
             raise NotImplementedError(
                 "The R^2 `score` is not defined for models using a `type_spec`. "
                 "Evaluate predictions with a metric suited to the value type."

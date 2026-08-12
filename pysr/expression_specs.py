@@ -100,7 +100,7 @@ class ExpressionSpec(AbstractExpressionSpec):
         search_output,
         i: int | None = None,
     ):
-        if model.type_spec is not None:
+        if model._has_fitted_type_spec():
             if search_output is None and hasattr(model, "julia_state_stream_"):
                 search_output = model.julia_state_
             if search_output is None:
@@ -162,8 +162,8 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         means p1 is a vector of length 2 and p2 is a vector of length 1. These parameters
         will be optimized during the search.
     num_features : dict[str, int], optional
-        Number of input features available to each inner expression. Required
-        when combining TemplateExpressionSpec with TypeSpec.
+        Number of input features available to each inner expression. Inferred
+        from `combine` when omitted.
 
     Examples
     --------
@@ -341,7 +341,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         # We try to load the raw julia state from a saved binary stream
         # if not provided.
         search_output = search_output or getattr(model, "julia_state_", None)
-        if model.type_spec is not None:
+        if model._has_fitted_type_spec():
             if search_output is None:
                 raise ValueError(
                     "Cannot reconstruct TypeSpec expressions without serialized "

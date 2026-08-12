@@ -448,21 +448,21 @@ def build_type_spec_module_source(
         lines.extend(
             (
                 f"const _mutate = {_include(spec.mutate, 'TypeSpec.mutate')}",
-                f"SymbolicRegression.mutate_value(rng::AbstractRNG, value::{type_name}, temperature, options) = _mutate(rng, value, temperature)",
+                "SymbolicRegression.mutate_value(rng::AbstractRNG, "
+                f"value::{type_name}, temperature, "
+                "mutation::SymbolicRegression.ConstantMutation) = "
+                "_mutate(rng, value, temperature)",
             )
         )
     else:
         lines.extend(
             (
-                f"function SymbolicRegression.mutate_value(rng::AbstractRNG, value::{type_name}, temperature, options)",
-                "    parameters = copy(_parameters(value))",
+                "function SymbolicRegression.mutate_value(rng::AbstractRNG, "
+                f"value::{type_name}, temperature, "
+                "mutation::SymbolicRegression.ConstantMutation)",
+                "    parameters = collect(_parameters(value))",
                 "    isempty(parameters) && return _sample(rng)",
                 "    i = rand(rng, eachindex(parameters))",
-                "    mutation = options === nothing ? SymbolicRegression.ConstantMutation() :",
-                "        SymbolicRegression.ConstantMutation(;",
-                "            perturbation_factor=options.perturbation_factor,",
-                "            probability_negate=options.probability_negate_constant,",
-                "        )",
                 "    parameters[i] = SymbolicRegression.MutationFunctionsModule."
                 "mutate_value(rng, parameters[i], temperature, mutation)",
                 "    return _with_parameters(value, parameters)",
@@ -760,13 +760,17 @@ def _validate_type_spec_runtime(runtime: _TypeSpecRuntime) -> None:
         _validate_optimization_value(runtime, initial, counts[0])
         _validate_optimization_value(runtime, sampled, counts[1])
 
-    mutated = _call_hook("mutate", sr.mutate_value, rng, sampled, 1.0, jl.nothing)
+    mutated = _call_hook(
+        "mutate", sr.mutate_value, rng, sampled, 1.0, sr.ConstantMutation()
+    )
     _validate_value(runtime, mutated, "mutate")
     mutated_count = _call_hook(
         "count_parameters", interface.count_scalar_constants, mutated
     )
     if not isinstance(mutated_count, int) or mutated_count < 0:
         raise ValueError("TypeSpec `count_parameters` must return a nonnegative `Int`.")
+    if runtime.spec.can_optimize:
+        _validate_optimization_value(runtime, mutated, mutated_count)
 
     formatted = _call_hook("string", runtime.module._string, sampled)
     if not bool(jl.seval("x -> x isa AbstractString")(formatted)):

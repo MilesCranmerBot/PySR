@@ -107,7 +107,6 @@ def identity_template():
         combine="f(x)",
         expressions=["f"],
         variable_names=["x"],
-        num_features={"f": 1},
     )
 
 
@@ -234,6 +233,17 @@ class _TypeSpecContractTests:
         with self.assertRaisesRegex(ValueError, "packed scalar representation"):
             load_type_spec_runtime(broken, module_source(broken))
 
+        immutable_parameters = vector_spec(
+            parameters=(
+                "value -> range(value.data[1], value.data[end]; "
+                "length=length(value.data))"
+            ),
+            with_parameters=("(value, parameters) -> VectorValue(collect(parameters))"),
+        )
+        load_type_spec_runtime(
+            immutable_parameters, module_source(immutable_parameters)
+        )
+
     def test_custom_init_mutation_validity_and_string(self):
         spec = vector_spec(
             init="() -> VectorValue([1.0, 2.0])",
@@ -272,6 +282,21 @@ class _TypeSpecContractTests:
         )
         with self.assertRaisesRegex(ValueError, "must preserve"):
             load_type_spec_runtime(bad_rebuild, module_source(bad_rebuild))
+
+        bad_mutation = vector_spec(
+            mutate="(rng, value, temperature) -> VectorValue([1.0, 2.0, 3.0])",
+            count_parameters=2,
+            pack_parameters=(
+                "(buffer, idx, value) -> "
+                "(buffer[idx:idx+1] .= value.data[1:2]; idx + 2)"
+            ),
+            unpack_parameters=(
+                "(buffer, idx, value) -> "
+                "(idx + 2, VectorValue(copy(buffer[idx:idx+1])))"
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "count_parameters.*disagrees"):
+            load_type_spec_runtime(bad_mutation, module_source(bad_mutation))
 
     def test_union_payload_parameterization(self):
         spec = TypeSpec(
@@ -594,12 +619,6 @@ class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
                 "parameters",
             ),
             (
-                TemplateExpressionSpec(
-                    combine="f(x)", expressions=["f"], variable_names=["x"]
-                ),
-                "num_features",
-            ),
-            (
                 TemplateExpressionSpec(["f"], "(fs, x) -> fs.f(x[1])", {"f": 1}),
                 "legacy",
             ),
@@ -651,8 +670,48 @@ class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
         model.fit(X, y)
         model.set_params(warm_start=False)
         model.fit(X, y)
+
+        equations = model.equations_
+        model.equations_ = equations.copy()
+
+        def fail_prediction(_):
+            raise RuntimeError("TypeSpec evaluation failed")
+
+        model.equations_["lambda_format"] = [fail_prediction] * len(model.equations_)
+        with self.assertRaisesRegex(RuntimeError, "TypeSpec evaluation failed"):
+            model.predict(X)
+        model.equations_ = equations
+
+        model.set_params(type_spec=None)
+        np.testing.assert_array_equal(model.predict(X), y)
+        with self.assertRaisesRegex(NotImplementedError, "score"):
+            model.score(X, y)
+        pickled_equations = model.__getstate__()["equations_"]
+        self.assertNotIn("lambda_format", pickled_equations.columns)
         exports = ExpressionSpec().create_exports(model, model.equations_, None)
         self.assertIn("lambda_format", exports)
+
+    def test_private_operator_options(self):
+        operator = "private_identity_value(x::StringValue) = x"
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        model = tiny_model(
+            string_spec(),
+            operators={1: [operator]},
+            complexity_of_operators={"private_identity_value": 2},
+            nested_constraints={
+                "private_identity_value": {"private_identity_value": 0}
+            },
+        )
+        model.fit(X, X[:, 0])
+        self.assertEqual(model.predict(X).shape, (4,))
+
+        model = tiny_model(
+            string_spec(),
+            operators={1: [operator]},
+            complexity_of_operators={"missing_operator": 2},
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown TypeSpec operator"):
+            model.fit(X, X[:, 0])
 
     def test_multi_field_fit_predicts_tuples(self):
         spec = TypeSpec(
@@ -677,9 +736,12 @@ class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
 
     def test_multiprocessing(self):
         X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
-        y = np.array(["a", "b", "a", "b"], dtype=object)
+        y = np.array(["a", "a", "a", "a"], dtype=object)
         model = tiny_model(
-            string_spec(),
+            string_spec(
+                sample='rng -> StringValue("a")',
+                mutate="(rng, value, temperature) -> value",
+            ),
             expression_spec=identity_template(),
             parallelism="multiprocessing",
             procs=2,
@@ -777,6 +839,7 @@ print(json.dumps(model.predict(X).tolist()))
 
     def test_expression_export_requires_checkpoint_state(self):
         model = tiny_model(string_spec())
+        model._instantiate_julia_definitions(model._operators_from_params())
         for expression_spec in (ExpressionSpec(), identity_template()):
             with self.subTest(expression_spec=type(expression_spec).__name__):
                 with self.assertRaisesRegex(ValueError, "serialized Julia state"):
@@ -823,6 +886,12 @@ print(json.dumps(model.predict(X).tolist()))
         prediction = model.predict(X)
         self.assertEqual(prediction.shape, y.shape)
         self.assertTrue(np.isfinite(prediction).all())
+        model.set_params(
+            type_spec=string_spec(),
+            operators={1: ["identity_value(x::StringValue) = x"]},
+        )
+        np.testing.assert_array_equal(model.predict(X), prediction)
+        self.assertTrue(model._supports_export("sympy"))
 
 
 if __name__ == "__main__":

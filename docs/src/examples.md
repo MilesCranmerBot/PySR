@@ -817,8 +817,8 @@ The target can be represented as
 learned vector-valued constant. PySR searches over both the program structure
 and the two components of that constant.
 
-The same value type can be used inside a template. Provide `num_features` so
-PySR does not need to infer the inner expressions using scalar probe values:
+The same value type can be used inside a template. PySR infers how many features
+each inner expression receives from the calls in `combine`:
 
 ```python
 from pysr import TemplateExpressionSpec
@@ -827,7 +827,6 @@ expression_spec = TemplateExpressionSpec(
     combine="add_vectors(f(x1), g(x2))",
     expressions=["f", "g"],
     variable_names=["x1", "x2"],
-    num_features={"f": 1, "g": 1},
 )
 
 model = PySRRegressor(
