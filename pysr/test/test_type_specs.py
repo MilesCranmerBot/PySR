@@ -722,6 +722,30 @@ class TestTypeSpecs(_TypeSpecContractTests, unittest.TestCase):
         exports = ExpressionSpec().create_exports(model, model.equations_, None)
         self.assertIn("lambda_format", exports)
 
+    def test_numeric_state_access_does_not_install_future_type_spec(self):
+        X = np.arange(8.0).reshape(-1, 1)
+        model = PySRRegressor(
+            niterations=0,
+            populations=1,
+            population_size=8,
+            tournament_selection_n=3,
+            progress=False,
+            verbosity=0,
+            temp_equation_file=True,
+        )
+        model.fit(X, X[:, 0])
+        model.set_params(
+            type_spec=string_spec(),
+            operators={1: ["identity_value(x::StringValue) = x"]},
+            elementwise_loss=(
+                "value_loss(x::StringValue, y::StringValue)::Float64 = "
+                "x == y ? 0.0 : 1.0"
+            ),
+        )
+        _ = model.julia_state_
+        _ = model.julia_options_
+        self.assertFalse(model._has_fitted_type_spec())
+
     def test_private_operator_options(self):
         operator = "private_identity_value(x::StringValue) = x"
         X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)

@@ -261,7 +261,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
                 "old",
                 str(self.function_symbols),
                 self.combine,
-                str(self.num_features),
+                str(self._ordered_num_features()),
             )
         else:
             return (
@@ -270,8 +270,18 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
                 str(self.expressions),
                 str(self.variable_names),
                 str(self.parameters),
-                str(self.num_features),
+                str(self._ordered_num_features()),
             )
+
+    def _ordered_num_features(self):
+        if self.num_features is None:
+            return None
+        expressions = self.function_symbols if self._old_format else self.expressions
+        if set(self.num_features) != set(expressions):
+            raise ValueError(
+                "`num_features` must have exactly the same keys as `expressions`."
+            )
+        return {expression: self.num_features[expression] for expression in expressions}
 
     def julia_expression_spec(self):
         key = self._get_cache_key()
@@ -297,9 +307,10 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
             template_inputs.append(
                 f"parameters=({', '.join([f'{p}={self.parameters[p]}' for p in self.parameters]) + ','})"
             )
-        if self.num_features:
+        num_features = self._ordered_num_features()
+        if num_features:
             template_inputs.append(
-                f"num_features=({', '.join([f'{f}={self.num_features[f]}' for f in self.num_features]) + ','})"
+                f"num_features=({', '.join([f'{f}={num_features[f]}' for f in num_features]) + ','})"
             )
         if prototype is not None:
             template_inputs.append(f"prototype={prototype}")
@@ -327,7 +338,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
             return (; structure)
         end
         """)
-        return creator(self.function_symbols, f_combine, self.num_features)
+        return creator(self.function_symbols, f_combine, self._ordered_num_features())
 
     @property
     def evaluates_in_julia(self):

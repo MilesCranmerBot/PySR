@@ -1038,7 +1038,7 @@ each displayed constant contains the fitted matrix or vector payload.
 
 </details>
 
-## 15. Additional features
+## 14. Additional features
 
 For the many other features available in PySR, please
 read the [Options section](options.md).

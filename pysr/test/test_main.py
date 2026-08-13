@@ -2440,6 +2440,27 @@ class TestDimensionalConstraints(unittest.TestCase):
 
 
 class TestTemplateExpressionSpec(unittest.TestCase):
+    def test_num_features_order_does_not_matter(self):
+        spec = TemplateExpressionSpec(
+            combine="f(x) + g(y)",
+            expressions=["f", "g"],
+            variable_names=["x", "y"],
+            num_features={"g": 1, "f": 1},
+        )
+        expression_spec = spec.julia_expression_spec()
+        names = jl.propertynames(expression_spec.structure.num_features)
+        self.assertEqual(names, (jl.Symbol("f"), jl.Symbol("g")))
+
+        legacy = TemplateExpressionSpec(
+            ["f", "g"],
+            "combine(fs, vars) = fs.f(vars[1]) + fs.g(vars[2])",
+            {"g": 1, "f": 1},
+        )
+        names = jl.propertynames(
+            legacy.julia_expression_options().structure.num_features
+        )
+        self.assertEqual(names, (jl.Symbol("f"), jl.Symbol("g")))
+
     def test_num_features_symbol_keys(self):
         # ponytail: one check — dict keys must reach Julia as Symbols
         spec = TemplateExpressionSpec(

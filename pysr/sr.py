@@ -1633,13 +1633,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     @property
     def julia_options_(self):
         """The deserialized julia options."""
-        self._instantiate_julia_definitions()
+        self._restore_julia_definitions()
         return jl_deserialize(self.julia_options_stream_)
 
     @property
     def julia_state_(self):
         """The deserialized state."""
-        self._instantiate_julia_definitions()
+        self._restore_julia_definitions()
         return cast(
             Union[Tuple[VectorValue, AnyValue], None],
             jl_deserialize(self.julia_state_stream_),
@@ -1860,6 +1860,23 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             custom_full_objective,
             custom_loss_expression,
             None,
+        )
+
+    def _restore_julia_definitions(self) -> None:
+        if self._has_fitted_type_spec():
+            self._instantiate_julia_definitions()
+            return
+        fitted = getattr(self, "_fitted_julia_definition_sources_", None)
+        if fitted is None:
+            self._instantiate_julia_definitions()
+            return
+        _create_julia_operators_and_loss_functions(
+            operators=copy.deepcopy(fitted["operators"]),
+            extra_sympy_mappings=self.extra_sympy_mappings,
+            supports_sympy=fitted["supports_sympy"],
+            elementwise_loss=fitted["elementwise_loss"],
+            loss_function=fitted["loss_function"],
+            loss_function_expression=fitted["loss_function_expression"],
         )
 
     def _stored_type_spec_module_source(self) -> _TypeSpecModuleSource:
@@ -2420,6 +2437,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # Need to be global as we don't want to recreate/reinstate julia for
         # every new instance of PySRRegressor
         global ALREADY_RAN
+
+        self._fitted_julia_definition_sources_ = {
+            "operators": copy.deepcopy(runtime_params.operators),
+            "elementwise_loss": self.elementwise_loss,
+            "loss_function": self.loss_function,
+            "loss_function_expression": self.loss_function_expression,
+            "supports_sympy": self.expression_spec_.supports_sympy,
+        }
 
         # These are the parameters which may be modified from the ones
         # specified in init, so we define them here locally:
