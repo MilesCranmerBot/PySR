@@ -100,18 +100,11 @@ class ExpressionSpec(AbstractExpressionSpec):
         search_output,
         i: int | None = None,
     ):
-        if model._has_fitted_type_spec():
-            if search_output is None and hasattr(model, "julia_state_stream_"):
-                search_output = model.julia_state_
-            if search_output is None:
-                raise ValueError(
-                    "Cannot reconstruct TypeSpec expressions without serialized "
-                    "Julia state. Load from a run directory containing "
-                    "`checkpoint.pkl` saved by the original search."
-                )
-            return _search_output_to_callable_expressions(
-                equations, search_output, i, model._load_fitted_type_spec_runtime()
-            )
+        type_spec_exports = _create_type_spec_exports(
+            model, equations, search_output, i
+        )
+        if type_spec_exports is not None:
+            return type_spec_exports
         return add_export_formats(
             equations,
             feature_names_in=model.feature_names_in_,
@@ -274,14 +267,15 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
             )
 
     def _ordered_num_features(self):
-        if self.num_features is None:
+        num_features = getattr(self, "num_features", None)
+        if num_features is None:
             return None
         expressions = self.function_symbols if self._old_format else self.expressions
-        if set(self.num_features) != set(expressions):
+        if set(num_features) != set(expressions):
             raise ValueError(
                 "`num_features` must have exactly the same keys as `expressions`."
             )
-        return {expression: self.num_features[expression] for expression in expressions}
+        return {expression: num_features[expression] for expression in expressions}
 
     def julia_expression_spec(self):
         key = self._get_cache_key()
@@ -353,17 +347,12 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     ) -> pd.DataFrame:
         # We try to load the raw julia state from a saved binary stream
         # if not provided.
-        search_output = search_output or getattr(model, "julia_state_", None)
-        if model._has_fitted_type_spec():
-            if search_output is None:
-                raise ValueError(
-                    "Cannot reconstruct TypeSpec expressions without serialized "
-                    "Julia state. Load from a run directory containing "
-                    "`checkpoint.pkl` saved by the original search."
-                )
-            return _search_output_to_callable_expressions(
-                equations, search_output, i, model._load_fitted_type_spec_runtime()
-            )
+        type_spec_exports = _create_type_spec_exports(
+            model, equations, search_output, i
+        )
+        if type_spec_exports is not None:
+            return type_spec_exports
+        search_output = search_output or model.julia_state_
         return _search_output_to_callable_expressions(equations, search_output, i)
 
 
@@ -383,6 +372,22 @@ class CallableJuliaExpression:
         if self.type_spec_runtime is not None:
             return type_spec_to_python_array(self.type_spec_runtime, raw_output)
         return np.array(raw_output).T
+
+
+def _create_type_spec_exports(model, equations, search_output, i):
+    if not model._has_fitted_type_spec():
+        return None
+    if search_output is None and hasattr(model, "julia_state_stream_"):
+        search_output = model.julia_state_
+    if search_output is None:
+        raise ValueError(
+            "Cannot reconstruct TypeSpec expressions without serialized Julia state. "
+            "Load from a run directory containing `checkpoint.pkl` saved by the "
+            "original search."
+        )
+    return _search_output_to_callable_expressions(
+        equations, search_output, i, model._load_fitted_type_spec_runtime()
+    )
 
 
 def _search_output_to_callable_expressions(

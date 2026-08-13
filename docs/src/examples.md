@@ -740,9 +740,10 @@ fields or use a package-qualified name.
 TypeSpec supports the default expression shape, prediction, checkpoint reload,
 and serial, multithreaded, or multiprocessing search. It does not support
 guesses, weights, units, denoising, feature selection, resampling, multi-output
-targets, turbo or bumper evaluation, autodiff backends, alternate expression
-specifications, or SymPy, JAX, Torch, and LaTeX export. Restoring a TypeSpec
-model requires its `checkpoint.pkl`; a hall-of-fame CSV is insufficient.
+targets, turbo or bumper evaluation, autodiff backends, expression specifications
+other than `TemplateExpressionSpec`, or SymPy, JAX, Torch, and LaTeX export.
+Restoring a TypeSpec model requires its `checkpoint.pkl`; a hall-of-fame CSV is
+insufficient.
 
 ### Vector-valued expression trees
 

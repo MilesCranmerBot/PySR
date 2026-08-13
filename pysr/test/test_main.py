@@ -36,6 +36,7 @@ from pysr.feature_selection import _handle_feature_selection, run_feature_select
 from pysr.julia_helpers import _load_cluster_manager, init_julia
 from pysr.sr import (
     _check_assertions,
+    _create_julia_operators_and_loss_functions,
     _process_constraints,
     _suggest_keywords,
     _validate_elementwise_loss,
@@ -352,9 +353,14 @@ class TestPipeline(unittest.TestCase):
         _validate_elementwise_loss(jl.seval("1.0"), has_weights=False)
 
     def test_elementwise_loss_accepts_lossfunctions_object(self):
-        _, _, custom_loss, _, _, _ = PySRRegressor(
-            elementwise_loss="LPDistLoss{3}()"
-        )._instantiate_julia_definitions()
+        _, custom_loss, _, _ = _create_julia_operators_and_loss_functions(
+            operators={2: ["+", "-", "/", "*"]},
+            extra_sympy_mappings=None,
+            supports_sympy=True,
+            elementwise_loss="LPDistLoss{3}()",
+            loss_function=None,
+            loss_function_expression=None,
+        )
         self.assertTrue(jl.applicable(custom_loss, 1.0, 1.0))
 
     def test_validate_export_mappings_typechecks(self):
