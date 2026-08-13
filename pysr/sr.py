@@ -1570,7 +1570,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 "Unsupported PySR checkpoint schema: "
                 f"expected {_CHECKPOINT_SCHEMA_VERSION}, found {schema_version!r}."
             )
-        state.setdefault("type_spec", None)
         self.__dict__.update(state)
 
     def _checkpoint(self):

@@ -154,10 +154,6 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         Dictionary mapping parameter names to their lengths. For example, {"p1": 2, "p2": 1}
         means p1 is a vector of length 2 and p2 is a vector of length 1. These parameters
         will be optimized during the search.
-    num_features : dict[str, int], optional
-        Number of input features available to each inner expression. Inferred
-        from `combine` when omitted.
-
     Examples
     --------
     ```python
@@ -206,7 +202,6 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         expressions: list[str],
         variable_names: list[str],
         parameters: dict[str, int] | None = None,
-        num_features: dict[str, int] | None = None,
     ) -> None: ...
 
     def __init__(
@@ -240,13 +235,11 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         expressions: list[str],
         variable_names: list[str],
         parameters: dict[str, int] | None = None,
-        num_features: dict[str, int] | None = None,
     ):
         self.combine = combine
         self.expressions = expressions
         self.variable_names = variable_names
         self.parameters = parameters
-        self.num_features = num_features
 
     def _get_cache_key(self):
         if self._old_format:
@@ -254,7 +247,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
                 "old",
                 str(self.function_symbols),
                 self.combine,
-                str(self._ordered_num_features()),
+                str(self.num_features),
             )
         else:
             return (
@@ -263,19 +256,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
                 str(self.expressions),
                 str(self.variable_names),
                 str(self.parameters),
-                str(self._ordered_num_features()),
             )
-
-    def _ordered_num_features(self):
-        num_features = getattr(self, "num_features", None)
-        if num_features is None:
-            return None
-        expressions = self.function_symbols if self._old_format else self.expressions
-        if set(num_features) != set(expressions):
-            raise ValueError(
-                "`num_features` must have exactly the same keys as `expressions`."
-            )
-        return {expression: num_features[expression] for expression in expressions}
 
     def julia_expression_spec(self):
         key = self._get_cache_key()
@@ -300,11 +281,6 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         if self.parameters:
             template_inputs.append(
                 f"parameters=({', '.join([f'{p}={self.parameters[p]}' for p in self.parameters]) + ','})"
-            )
-        num_features = self._ordered_num_features()
-        if num_features:
-            template_inputs.append(
-                f"num_features=({', '.join([f'{f}={num_features[f]}' for f in num_features]) + ','})"
             )
         if prototype is not None:
             template_inputs.append(f"prototype={prototype}")
@@ -332,7 +308,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
             return (; structure)
         end
         """)
-        return creator(self.function_symbols, f_combine, self._ordered_num_features())
+        return creator(self.function_symbols, f_combine, self.num_features)
 
     @property
     def evaluates_in_julia(self):

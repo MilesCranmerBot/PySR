@@ -616,7 +616,6 @@ class TestTypeSpecs(unittest.TestCase):
                     expressions=["f"],
                     variable_names=["x"],
                     parameters={"p": 1},
-                    num_features={"f": 1},
                 ),
                 "parameters",
             ),
@@ -823,10 +822,9 @@ print(json.dumps(model.predict(X).tolist()))
         model.set_params(
             warm_start=True,
             expression_spec=TemplateExpressionSpec(
-                combine="f(x)",
+                combine="f(input)",
                 expressions=["f"],
-                variable_names=["x"],
-                num_features={"f": 2},
+                variable_names=["input"],
             ),
         )
         with self.assertRaisesRegex(ValueError, "Cannot warm-start"):
