@@ -374,7 +374,9 @@ class CallableJuliaExpression:
         return np.array(raw_output).T
 
 
-def _create_type_spec_exports(model, equations, search_output, i):
+def _create_type_spec_exports(
+    model, equations, search_output, i
+) -> pd.DataFrame | None:
     if not model._has_fitted_type_spec():
         return None
     if search_output is None and hasattr(model, "julia_state_stream_"):

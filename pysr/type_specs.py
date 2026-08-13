@@ -467,9 +467,9 @@ def _optional_source(source: str | None) -> str:
 
 
 def _count_parameters_config(count: int | str | None) -> str:
-    if type(count) is int:
-        return str(count)
-    return _optional_source(count)
+    if count is None or isinstance(count, str):
+        return _optional_source(count)
+    return str(count)
 
 
 def _loss_configuration(
