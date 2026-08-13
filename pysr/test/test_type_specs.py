@@ -141,11 +141,9 @@ class TestTypeSpecs(unittest.TestCase):
                 module_source(spec or string_spec(), operators, **losses)
             )
 
-    def test_requires_name_fields_sample_and_keyword_only_configuration(self):
+    def test_requires_name_fields_and_sample(self):
         with self.assertRaises(TypeError):
             TypeSpec(fields={"data": "String"}, sample="rng -> nothing")
-        with self.assertRaises(TypeError):
-            TypeSpec("StringValue", {"data": "String"}, "rng -> nothing")
         with self.assertRaises(TypeError):
             TypeSpec("StringValue", fields={"data": "String"})
 
@@ -670,10 +668,11 @@ class TestTypeSpecs(unittest.TestCase):
         self.assertTrue(
             model._type_spec_definition_.module_name.startswith("_PySRTypeSpec_")
         )
+        module = model._load_type_spec_runtime().module
         self.assertTrue(
             bool(
                 jl.seval("(a, b) -> a === b")(
-                    model.julia_type_spec_module_, model.julia_type_spec_module_
+                    module, model._load_type_spec_runtime().module
                 )
             )
         )

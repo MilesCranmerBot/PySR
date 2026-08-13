@@ -48,7 +48,7 @@ def object_array_2d(values: Any) -> np.ndarray:
     return array
 
 
-@dataclass(frozen=True, init=False)
+@dataclass
 class TypeSpec:
     """Declarative definition of a custom symbolic-regression value type.
 
@@ -110,40 +110,6 @@ class TypeSpec:
     string: str | None = None
     preamble: str | None = None
     loss_type: str | None = None
-
-    def __init__(
-        self,
-        name: str,
-        *,
-        fields: dict[str, str],
-        sample: str,
-        parameters: str | None = None,
-        with_parameters: str | None = None,
-        init: str | None = None,
-        mutate: str | None = None,
-        is_valid: str | None = None,
-        count_parameters: int | str | None = None,
-        pack_parameters: str | None = None,
-        unpack_parameters: str | None = None,
-        string: str | None = None,
-        preamble: str | None = None,
-        loss_type: str | None = None,
-    ) -> None:
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "fields", fields)
-        object.__setattr__(self, "sample", sample)
-        object.__setattr__(self, "parameters", parameters)
-        object.__setattr__(self, "with_parameters", with_parameters)
-        object.__setattr__(self, "init", init)
-        object.__setattr__(self, "mutate", mutate)
-        object.__setattr__(self, "is_valid", is_valid)
-        object.__setattr__(self, "count_parameters", count_parameters)
-        object.__setattr__(self, "pack_parameters", pack_parameters)
-        object.__setattr__(self, "unpack_parameters", unpack_parameters)
-        object.__setattr__(self, "string", string)
-        object.__setattr__(self, "preamble", preamble)
-        object.__setattr__(self, "loss_type", loss_type)
-        self.__post_init__()
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.isidentifier():
@@ -417,9 +383,6 @@ _TYPE_SPEC_MODULE = _block(r"""
     needs_brackets(::_TypeSpecValue) = false
     string_constant(
         value::_TypeSpecValue, ::Val{precision}, unit
-    ) where {precision} = _string(value) * unit
-    string_constant(
-        value::_TypeSpecValue, bracketed, ::Val{precision}, unit
     ) where {precision} = _string(value) * unit
     const _operators = map(_config.operators) do (arity, sources)
         arity => Tuple(

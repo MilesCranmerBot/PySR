@@ -1805,14 +1805,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             loss_function_expression=fitted["loss_function_expression"],
         )
 
-    def _load_fitted_type_spec_runtime(self) -> _TypeSpecRuntime:
-        return self._load_type_spec_runtime()
-
-    @property
-    def julia_type_spec_module_(self):
-        """Private Julia module used by the fitted TypeSpec model."""
-        return self._load_fitted_type_spec_runtime().module
-
     def _validate_and_modify_params(self) -> _DynamicallySetParams:
         """
         Ensure parameters passed at initialization are valid.
@@ -2363,9 +2355,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             del self._fitted_julia_definition_sources_
 
         type_spec_runtime = (
-            self._load_fitted_type_spec_runtime()
-            if self.type_spec is not None
-            else None
+            self._load_type_spec_runtime() if self.type_spec is not None else None
         )
         if type_spec_runtime is None:
             value_type = None

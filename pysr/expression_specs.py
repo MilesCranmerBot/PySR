@@ -364,7 +364,7 @@ def _create_type_spec_exports(
             "original search."
         )
     return _search_output_to_callable_expressions(
-        equations, search_output, i, model._load_fitted_type_spec_runtime()
+        equations, search_output, i, model._load_type_spec_runtime()
     )
 
 
