@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -8,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from juliacall import JuliaError  # type: ignore
 
 from pysr import PySRRegressor, TemplateExpressionSpec, TypeSpec, jl
 from pysr.expression_specs import ExpressionSpec
@@ -18,6 +18,8 @@ from pysr.type_specs import (
     object_array_2d,
     type_spec_to_julia_array,
     type_spec_to_python_array,
+    validate_type_spec_configuration,
+    validate_type_spec_options,
     wrap_type_spec_addprocs_function,
 )
 
@@ -27,10 +29,10 @@ def string_spec(**overrides):
     return TypeSpec(
         name,
         fields=overrides.pop("fields", {"data": "String"}),
-        sample=overrides.pop("sample", 'rng -> StringValue(rand(rng, ("a", "b")))'),
+        sample=overrides.pop("sample", f'rng -> {name}(rand(rng, ("a", "b")))'),
         mutate=overrides.pop(
             "mutate",
-            '(rng, value, temperature) -> StringValue(rand(rng, ("a", "b")))',
+            f'(rng, value, temperature) -> {name}(rand(rng, ("a", "b")))',
         ),
         **overrides,
     )
@@ -41,64 +43,28 @@ def vector_spec(**overrides):
     return TypeSpec(
         name,
         fields=overrides.pop("fields", {"data": "Vector{Float64}"}),
-        sample=overrides.pop("sample", "rng -> VectorValue([3.0, 4.0])"),
+        sample=overrides.pop("sample", f"rng -> {name}([3.0, 4.0])"),
         parameters=overrides.pop("parameters", "value -> value.data"),
         with_parameters=overrides.pop(
-            "with_parameters", "(value, parameters) -> VectorValue(parameters)"
+            "with_parameters", f"(value, parameters) -> {name}(parameters)"
         ),
         **overrides,
     )
 
 
-def low_level_spec(**overrides):
-    return vector_spec(
-        count_parameters=overrides.pop("count_parameters", 2),
-        pack_parameters=overrides.pop(
-            "pack_parameters",
-            "(buffer, idx, value) -> (buffer[idx:idx+1] .= value.data; idx + 2)",
-        ),
-        unpack_parameters=overrides.pop(
-            "unpack_parameters",
-            "(buffer, idx, value) -> (idx + 2, VectorValue(copy(buffer[idx:idx+1])))",
-        ),
-        **overrides,
-    )
-
-
-def module_source(
-    spec,
-    operators=None,
-    *,
-    elementwise_loss=None,
-    loss_function=None,
-    loss_function_expression=None,
-):
-    type_name = spec.name
-    if (
-        elementwise_loss is None
-        and loss_function is None
-        and loss_function_expression is None
-    ):
-        elementwise_loss = (
-            f"value_loss(x::{type_name}, y::{type_name})::Float64 = "
-            "x == y ? 0.0 : 1.0"
-        )
-    return compile_type_spec(
-        spec,
-        operators or {1: [f"identity_value(x::{type_name}) = x"]},
-        elementwise_loss=elementwise_loss,
-        loss_function=loss_function,
-        loss_function_expression=loss_function_expression,
-    )
+def module_source(spec):
+    return compile_type_spec(spec)
 
 
 def tiny_model(spec, *, parallelism="serial", procs=None, **overrides):
     type_name = spec.name
+    operator_name = f"identity_{type_name}"
+    loss_name = f"loss_{type_name}"
     parameters = {
         "type_spec": spec,
-        "operators": {1: [f"identity_value(x::{type_name}) = x"]},
+        "operators": {1: [f"{operator_name}(x::{type_name}) = x"]},
         "elementwise_loss": (
-            f"value_loss(x::{type_name}, y::{type_name})::Float64 = "
+            f"{loss_name}(x::{type_name}, y::{type_name})::Float64 = "
             "x == y ? 0.0 : 1.0"
         ),
         "niterations": 1,
@@ -135,11 +101,9 @@ def string_data(*, constant=False):
 
 
 class TestTypeSpecs(unittest.TestCase):
-    def _assert_invalid_runtime(self, message, spec=None, operators=None, **losses):
+    def _assert_invalid_runtime(self, message, spec=None):
         with self.assertRaisesRegex(ValueError, message):
-            load_type_spec_runtime(
-                module_source(spec or string_spec(), operators, **losses)
-            )
+            load_type_spec_runtime(module_source(spec or string_spec()))
 
     def test_requires_name_fields_and_sample(self):
         with self.assertRaises(TypeError):
@@ -148,17 +112,12 @@ class TestTypeSpecs(unittest.TestCase):
             TypeSpec("StringValue", fields={"data": "String"})
 
     def test_rejects_invalid_fields_and_optimization_combinations(self):
-        low_level = {
-            "pack_parameters": "(buffer, idx, value) -> idx",
-            "unpack_parameters": "(buffer, idx, value) -> (idx, value)",
-        }
         cases = (
             ({"name": "not valid"}, "not an identifier"),
             ({"fields": {}}, "non-empty"),
             ({"fields": {"not valid": "String"}}, "not an identifier"),
             ({"parameters": "value -> Float64[]"}, "provided together"),
             ({"mutate": None}, "requires an explicit `mutate`"),
-            ({"count_parameters": 0, **low_level}, "require `parameters`"),
             ({"fields": {"data": ""}}, "requires a Julia type"),
             ({"sample": ""}, "must contain Julia source"),
             ({"init": ""}, "cannot be empty"),
@@ -168,26 +127,11 @@ class TestTypeSpecs(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 with self.assertRaisesRegex(ValueError, message):
                     string_spec(**overrides)
-        for overrides, message in (
-            ({"pack_parameters": low_level["pack_parameters"]}, "provided together"),
-            ({"count_parameters": -1, **low_level}, "nonnegative"),
-            ({"count_parameters": "", **low_level}, "cannot be empty"),
-        ):
-            with self.subTest(overrides=overrides):
-                with self.assertRaisesRegex(ValueError, message):
-                    vector_spec(**overrides)
-        if not os.environ.get("PYSR_USE_BEARTYPE"):
-            with self.assertRaisesRegex(ValueError, "nonnegative integer"):
-                vector_spec(
-                    count_parameters=object(),
-                    pack_parameters="identity",
-                    unpack_parameters="identity",
-                )
 
     def test_rejects_invalid_operator_and_loss_declarations(self):
         def build(operators, **losses):
-            return compile_type_spec(
-                string_spec(),
+            return validate_type_spec_configuration(
+                string_spec(loss_type=losses.pop("loss_type", None)),
                 operators,
                 elementwise_loss=losses.get("elementwise_loss"),
                 loss_function=losses.get("loss_function"),
@@ -210,6 +154,17 @@ class TestTypeSpecs(unittest.TestCase):
                 {1: ["identity_value(x::StringValue) = x"]},
                 elementwise_loss="value_loss(x, y) = 0.0",
                 loss_function="full_loss(tree, dataset, options) = 0.0",
+            )
+        with self.assertRaisesRegex(ValueError, "explicit `loss_type`"):
+            build(
+                {1: ["identity_value(x::StringValue) = x"]},
+                loss_function="full_loss(tree, dataset, options) = 0.0",
+            )
+        with self.assertRaisesRegex(ValueError, "return type is inferred"):
+            build(
+                {1: ["identity_value(x::StringValue) = x"]},
+                elementwise_loss="value_loss(x, y) = 0.0",
+                loss_type="Float64",
             )
 
     def test_python_object_array_helpers(self):
@@ -240,18 +195,73 @@ class TestTypeSpecs(unittest.TestCase):
         )
 
         immutable_parameters = vector_spec(
+            name="ImmutableParametersValue",
             parameters=(
                 "value -> range(value.data[1], value.data[end]; "
                 "length=length(value.data))"
             ),
-            with_parameters=("(value, parameters) -> VectorValue(collect(parameters))"),
+            with_parameters=(
+                "(value, parameters) -> "
+                "ImmutableParametersValue(collect(parameters))"
+            ),
         )
         load_type_spec_runtime(module_source(immutable_parameters))
 
+    def test_named_type_is_imported_into_main(self):
+        runtime = load_type_spec_runtime(
+            module_source(string_spec(name="MainVisibleValue"))
+        )
+        self.assertTrue(
+            bool(
+                jl.seval("(a, b) -> a === b")(
+                    jl.getproperty(jl.Main, jl.Symbol("MainVisibleValue")),
+                    runtime.value_type,
+                )
+            )
+        )
+
+    def test_derived_parameter_packing_honors_offsets(self):
+        runtime = load_type_spec_runtime(
+            module_source(vector_spec(name="OffsetVectorValue"))
+        )
+        first = runtime.module._convert_value([1.0, 2.0])
+        second = runtime.module._convert_value([3.0, 4.0])
+        packed, next_index, unpacked = jl.seval("""
+            function (first, second)
+                DE = SymbolicRegression.InterfaceDynamicExpressionsModule.DE
+                packed = fill(-99.0, 8)
+                idx = DE.pack_scalar_constants!(packed, 3, first)
+                idx = DE.pack_scalar_constants!(packed, idx, second)
+                idx, rebuilt_first =
+                    DE.unpack_scalar_constants(packed, 3, first)
+                idx, rebuilt_second =
+                    DE.unpack_scalar_constants(packed, idx, second)
+                return packed, idx, (rebuilt_first, rebuilt_second)
+            end
+            """)(first, second)
+        self.assertEqual(list(packed), [-99.0, -99.0, 1.0, 2.0, 3.0, 4.0, -99.0, -99.0])
+        self.assertEqual(int(next_index), 7)
+        self.assertEqual(
+            [list(value.data) for value in unpacked],
+            [[1.0, 2.0], [3.0, 4.0]],
+        )
+
+    def test_low_level_parameter_overrides_are_not_public(self):
+        with self.assertRaisesRegex(TypeError, "count_parameters"):
+            vector_spec(
+                count_parameters=2,
+                pack_parameters="identity",
+                unpack_parameters="identity",
+            )
+
     def test_custom_init_mutation_validity_and_string(self):
         spec = vector_spec(
-            init="() -> VectorValue([1.0, 2.0])",
-            mutate="(rng, value, temperature) -> VectorValue(value.data .+ temperature)",
+            name="CustomHooksValue",
+            init="() -> CustomHooksValue([1.0, 2.0])",
+            mutate=(
+                "(rng, value, temperature) -> "
+                "CustomHooksValue(value.data .+ temperature)"
+            ),
             is_valid="value -> all(>(0), value.data)",
             string='value -> "vec($(join(value.data, ", ")))"',
         )
@@ -353,168 +363,188 @@ class TestTypeSpecs(unittest.TestCase):
     def test_optimization_contract_rejects_each_invalid_hook(self):
         broken_specs = (
             (
-                vector_spec(parameters="value -> 1.0"),
+                vector_spec(
+                    name="ScalarParametersValue",
+                    parameters="value -> 1.0",
+                ),
                 "must return an `AbstractVector`",
             ),
             (
                 vector_spec(
+                    name="IntegerParametersValue",
                     parameters="value -> [1, 2]",
-                    with_parameters="(value, p) -> VectorValue(collect(p))",
+                    with_parameters=(
+                        "(value, p) -> IntegerParametersValue(collect(p))"
+                    ),
                 ),
                 "concrete `AbstractFloat`",
             ),
             (
-                vector_spec(with_parameters="(value, parameters) -> parameters"),
-                "must return `VectorValue`",
-            ),
-            (
-                low_level_spec(
-                    pack_parameters="(buffer, idx, value) -> idx + 1",
+                vector_spec(
+                    name="WrongWithParametersValue",
+                    with_parameters="(value, parameters) -> parameters",
                 ),
-                "pack_parameters.*wrong next index",
-            ),
-            (
-                low_level_spec(
-                    unpack_parameters="(buffer, idx, value) -> value",
-                ),
-                "must return `\\(next_idx, VectorValue\\)`",
-            ),
-            (
-                low_level_spec(
-                    unpack_parameters="(buffer, idx, value) -> (idx + 1, value)",
-                ),
-                "unpack_parameters.*wrong next index",
-            ),
-            (
-                low_level_spec(
-                    unpack_parameters="(buffer, idx, value) -> (idx + 2, value.data)",
-                ),
-                "unpack_parameters.*return `VectorValue`",
-            ),
-            (
-                low_level_spec(
-                    mutate="(rng, value, temperature) -> VectorValue([1.0])",
-                    count_parameters="value -> length(value.data) == 1 ? -1 : 2",
-                ),
-                "count_parameters.*nonnegative",
-            ),
-            (
-                low_level_spec(
-                    unpack_parameters=(
-                        "(buffer, idx, value) -> (idx + 2, "
-                        "VectorValue(copy(buffer[idx:idx+1]) .+ 1.0))"
-                    )
-                ),
-                "packed scalar representation",
-            ),
-            (
-                low_level_spec(
-                    count_parameters=1,
-                    pack_parameters="(buffer, idx, value) -> (buffer[idx] = value.data[1]; idx + 1)",
-                    unpack_parameters="(buffer, idx, value) -> (idx + 1, VectorValue([buffer[idx], value.data[2]]))",
-                ),
-                "count_parameters.*disagrees",
-            ),
-            (
-                low_level_spec(
-                    pack_parameters="(buffer, idx, value) -> (buffer[idx:idx+1] .= reverse(value.data); idx + 2)"
-                ),
-                "pack_parameters.*disagrees",
+                "must return `WrongWithParametersValue`",
             ),
             (
                 vector_spec(
-                    with_parameters="(value, parameters) -> VectorValue(reverse(collect(parameters)))"
+                    name="ReversedParametersValue",
+                    with_parameters=(
+                        "(value, parameters) -> "
+                        "ReversedParametersValue(reverse(collect(parameters)))"
+                    ),
                 ),
                 "must preserve",
             ),
             (
-                low_level_spec(
-                    mutate="(rng, value, temperature) -> VectorValue([1.0, 2.0, 3.0])",
-                    pack_parameters="(buffer, idx, value) -> (buffer[idx:idx+1] .= value.data[1:2]; idx + 2)",
-                ),
-                "count_parameters.*disagrees",
-            ),
-            (vector_spec(string="value -> 1"), "string.*AbstractString"),
-            (string_spec(sample='() -> StringValue("a")'), "sample"),
-            (string_spec(is_valid="value -> 1"), "is_valid.*Bool"),
-            (string_spec(init='() -> ""'), "init.*return `StringValue`"),
-            (string_spec(is_valid="value -> false"), "returned an invalid value"),
-            (
                 vector_spec(
-                    count_parameters="value -> -1",
-                    pack_parameters="(buffer, idx, value) -> idx",
-                    unpack_parameters="(buffer, idx, value) -> (idx, value)",
+                    name="InvalidStringValue",
+                    string="value -> 1",
                 ),
-                "nonnegative `Int`",
+                "string.*AbstractString",
+            ),
+            (
+                string_spec(
+                    name="WrongSampleArityValue",
+                    sample='() -> WrongSampleArityValue("a")',
+                ),
+                "sample",
+            ),
+            (
+                string_spec(
+                    name="InvalidPredicateValue",
+                    is_valid="value -> 1",
+                ),
+                "is_valid.*Bool",
+            ),
+            (
+                string_spec(
+                    name="WrongInitValue",
+                    init='() -> ""',
+                ),
+                "init.*return `WrongInitValue`",
+            ),
+            (
+                string_spec(
+                    name="RejectedValue",
+                    is_valid="value -> false",
+                ),
+                "returned an invalid value",
             ),
         )
         for spec, message in broken_specs:
             with self.subTest(message=message):
                 self._assert_invalid_runtime(message, spec)
 
-    def test_hook_and_loss_validation(self):
-        self._assert_invalid_runtime(
-            "AbstractFloat",
-            elementwise_loss=(
-                "value_loss(x::StringValue, y::StringValue) = rand(Bool) ? 1.0 : 1"
-            ),
+    def test_operator_and_elementwise_loss_type_stability(self):
+        type_name = "TypeStableValue"
+        runtime = load_type_spec_runtime(module_source(string_spec(name=type_name)))
+        valid_loss = jl.seval(
+            f"value_loss(x::{type_name}, y::{type_name})::Float64 = 0.0"
         )
-        with self.assertRaisesRegex(ValueError, "explicit `loss_type`"):
-            module_source(
-                string_spec(),
-                elementwise_loss=None,
-                loss_function="full_loss(tree, dataset, options) = 0.0",
-            )
-        with self.assertRaisesRegex(ValueError, "return type is inferred"):
-            module_source(string_spec(loss_type="Float64"))
-        for operators, message in (
-            ({1: ["x -> x"]}, "named Julia functions"),
-            ({1: ["1"]}, "Julia function"),
+        for source in (
+            f'bad_operator(x::{type_name}) = "bad"',
             (
-                {1: ['bad_operator(x::StringValue) = "bad"']},
-                "operator.*infer `StringValue`",
-            ),
-            (
-                {1: ['unstable_operator(x::StringValue) = rand(Bool) ? x : "bad"']},
-                "operator.*infer `StringValue`",
+                f"function unstable_operator(x::{type_name})\n"
+                "    values = Any[x]\n"
+                "    return values[1]\n"
+                "end"
             ),
         ):
-            with self.subTest(message=message):
-                self._assert_invalid_runtime(message, operators=operators)
+            operator = jl.seval(source)
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, "type-stable.*TypeStableValue"):
+                    validate_type_spec_options(
+                        runtime,
+                        {1: (operator,)},
+                        valid_loss,
+                    )
 
-    def test_preamble_low_level_overrides_and_full_objectives(self):
-        spec = low_level_spec(
+        unstable_loss = jl.seval(f"""
+            value_loss(x::{type_name}, y::{type_name}) =
+                rand(Bool) ? 1.0 : 1
+            """)
+        with self.assertRaisesRegex(ValueError, "AbstractFloat"):
+            validate_type_spec_options(runtime, {}, unstable_loss)
+
+    def test_preamble_helper_is_visible_to_long_form_operator(self):
+        type_name = "PreambleValue"
+        spec = vector_spec(
+            name=type_name,
             fields={"data": "TypeSpecPayload"},
             preamble=(
                 "const TypeSpecPayload = Vector{Float64}\n"
-                "const TYPE_SPEC_TEST_VALUE = 1"
+                "const TYPE_SPEC_TEST_VALUE = 1\n"
+                "increment_payload(data) = data .+ TYPE_SPEC_TEST_VALUE"
             ),
-            count_parameters="value -> 2 * TYPE_SPEC_TEST_VALUE",
         )
-        runtime = load_type_spec_runtime(module_source(spec))
-        self.assertEqual(runtime.module.TYPE_SPEC_TEST_VALUE, 1)
+        operator_source = f"""
+            function preamble_operator(x::{type_name})::{type_name}
+                return {type_name}(increment_payload(x.data))
+            end
+        """
+        X = np.empty((2, 1), dtype=object)
+        X[:, 0] = [np.array([1.0, 2.0]), np.array([3.0, 4.0])]
+        y = X[:, 0].copy()
+        model = tiny_model(spec, operators={1: [operator_source]})
+        model.fit(X, y)
 
-        full_spec = string_spec(loss_type="Float64")
-        for mode, source in (
-            (
-                "loss_function",
-                "full_loss(tree, dataset, options)::Float64 = 0.0",
-            ),
-            (
-                "loss_function_expression",
-                "full_expression_loss(expression, dataset, options)::Float64 = 0.0",
-            ),
+        runtime = model._load_type_spec_runtime()
+        self.assertEqual(runtime.module.TYPE_SPEC_TEST_VALUE, 1)
+        value = runtime.module._convert_value([3.0, 4.0])
+        self.assertEqual(list(runtime.module.preamble_operator(value).data), [4.0, 5.0])
+
+    def test_full_objectives_use_normal_dispatch(self):
+        X, y = string_data()
+        for mode, argument in (
+            ("loss_function", "tree"),
+            ("loss_function_expression", "expression"),
         ):
+            suffix = "Tree" if mode == "loss_function" else "Expression"
+            type_name = f"FullObjective{suffix}Value"
+            function_name = f"type_spec_{mode}"
+            called_name = f"TYPE_SPEC_{suffix.upper()}_SAW_BATCH"
+            source = f"""
+            begin
+                const {called_name} = Ref(false)
+                function {function_name}(
+                    {argument}, dataset, options, idx=nothing
+                )::Float64
+                    {called_name}[] |= idx !== nothing
+                    return 0.0
+                end
+                {function_name}
+            end
+            """
             with self.subTest(mode=mode):
-                losses = {
-                    "elementwise_loss": None,
-                    "loss_function": None,
-                    "loss_function_expression": None,
-                }
-                losses[mode] = source
-                generated = module_source(full_spec, **losses)
-                runtime = load_type_spec_runtime(generated)
-                self.assertIsNotNone(getattr(runtime, mode))
+                model = tiny_model(
+                    string_spec(name=type_name, loss_type="Float64"),
+                    operators={1: [f"identity_{suffix.lower()}(x::{type_name}) = x"]},
+                    elementwise_loss=None,
+                    batching=True,
+                    batch_size=2,
+                    **{mode: source},
+                )
+                model.fit(X, y)
+                runtime = model._load_type_spec_runtime()
+                self.assertTrue(
+                    bool(
+                        jl.getindex(
+                            jl.getproperty(runtime.module, jl.Symbol(called_name))
+                        )
+                    )
+                )
+
+    def test_complexity_mapping_can_reference_type_name(self):
+        X, y = string_data()
+        type_name = "ComplexityMappedValue"
+        model = tiny_model(
+            string_spec(name=type_name),
+            operators={1: [f"identity_complexity(x::{type_name}) = x"]},
+            complexity_mapping=("expression -> ComplexityMappedValue <: Any ? 1 : 1"),
+        )
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
 
     def test_default_addprocs_wrapper(self):
         source = module_source(string_spec())
@@ -532,14 +562,7 @@ class TestTypeSpecs(unittest.TestCase):
             sample='rng -> PairValue(0.0, "")',
             mutate="(rng, value, temperature) -> value",
         )
-        source = module_source(
-            spec,
-            {1: ["identity_value(x::PairValue) = x"]},
-            elementwise_loss=(
-                "value_loss(x::PairValue, y::PairValue)::Float64 = "
-                "x == y ? 0.0 : 1.0"
-            ),
-        )
+        source = module_source(spec)
         runtime = load_type_spec_runtime(source)
         values = np.empty(2, dtype=object)
         values[:] = [(1.0, "one"), (2.0, "two")]
@@ -578,8 +601,9 @@ class TestTypeSpecs(unittest.TestCase):
         )
 
     def test_template_custom_combiner_infers_num_features(self):
+        type_name = "TemplateVectorValue"
         model = tiny_model(
-            vector_spec(),
+            vector_spec(name=type_name),
             expression_spec=TemplateExpressionSpec(
                 combine="add_vectors(f(x1), g(x2))",
                 expressions=["f", "g"],
@@ -587,78 +611,64 @@ class TestTypeSpecs(unittest.TestCase):
             ),
             operators={
                 2: [
-                    """
-                    add_vectors(a::VectorValue, b::VectorValue) =
-                        VectorValue(a.data + b.data)
+                    f"""
+                    add_vectors(a::{type_name}, b::{type_name}) =
+                        {type_name}(a.data + b.data)
                     add_vectors(a::ValidVector, b::ValidVector) =
                         ValidVector(map(add_vectors, a.x, b.x), a.valid && b.valid)
                     """
                 ]
             },
             elementwise_loss=(
-                "vector_loss(a::VectorValue, b::VectorValue)::Float64 = "
+                f"vector_loss(a::{type_name}, b::{type_name})::Float64 = "
                 "sum(abs2, a.data - b.data)"
             ),
         )
-        runtime = model._load_type_spec_runtime(model._operators_from_params())
-        assert runtime.expression_spec is not None
-        self.assertEqual(int(runtime.expression_spec.structure.num_features.f), 1)
-        self.assertEqual(int(runtime.expression_spec.structure.num_features.g), 1)
+        X = np.empty((4, 2), dtype=object)
+        X[:, 0] = [np.array([1.0, 2.0])] * 4
+        X[:, 1] = [np.array([3.0, 4.0])] * 4
+        y = np.empty(4, dtype=object)
+        y[:] = [np.array([4.0, 6.0])] * 4
+        model.fit(X, y, variable_names=["x1", "x2"])
+        structure = model.julia_options_.expression_options.structure
+        self.assertEqual(int(structure.num_features.f), 1)
+        self.assertEqual(int(structure.num_features.g), 1)
 
-    def test_template_type_spec_rejects_unsupported_shapes(self):
+    def test_template_type_spec_rejects_parameters(self):
         X, y = string_data()
-        cases = (
-            (
-                TemplateExpressionSpec(
-                    combine="p[1] * f(x)",
-                    expressions=["f"],
-                    variable_names=["x"],
-                    parameters={"p": 1},
-                ),
-                "parameters",
-            ),
-            (
-                TemplateExpressionSpec(["f"], "(fs, x) -> fs.f(x[1])", {"f": 1}),
-                "legacy",
-            ),
+        expression_spec = TemplateExpressionSpec(
+            combine="p[1] * f(x)",
+            expressions=["f"],
+            variable_names=["x"],
+            parameters={"p": 1},
         )
-        for expression_spec, message in cases:
-            with self.subTest(message=message):
-                model = tiny_model(string_spec(), expression_spec=expression_spec)
-                with self.assertRaisesRegex(ValueError, message):
-                    model.fit(X, y)
+        model = tiny_model(string_spec(), expression_spec=expression_spec)
+        with self.assertRaisesRegex(ValueError, "parameters"):
+            model.fit(X, y)
 
-    def test_private_modules_isolate_identical_local_names(self):
-        spec = string_spec(
-            sample='rng -> StringValue("Ab")',
-            mutate="(rng, value, temperature) -> value",
-        )
-        lower_source = module_source(
-            spec,
-            {1: ["same_operator(x::StringValue) = " "StringValue(lowercase(x.data))"]},
-        )
-        upper_source = module_source(
-            spec,
-            {1: ["same_operator(x::StringValue) = " "StringValue(uppercase(x.data))"]},
-        )
-        lower = load_type_spec_runtime(lower_source)
-        upper = load_type_spec_runtime(upper_source)
-        self.assertNotEqual(lower_source.module_name, upper_source.module_name)
-        value = lower.module._convert_value("Ab")
-        self.assertEqual(lower.operators[1][0](value).data, "ab")
-        value = upper.module._convert_value("Ab")
-        self.assertEqual(upper.operators[1][0](value).data, "AB")
-        value = lower.module._convert_value("Ab")
-        self.assertEqual(lower.operators[1][0](value).data, "ab")
-
-    def test_invalid_runtime_is_not_cached(self):
+    def test_template_type_spec_supports_legacy_constructor(self):
+        X, y = string_data()
         model = tiny_model(
             string_spec(),
-            operators={1: ['bad_operator(x::StringValue) = "bad"']},
+            expression_spec=TemplateExpressionSpec(
+                ["f"],
+                "(fs, x) -> fs.f(x[1])",
+                {"f": 1},
+            ),
         )
-        with self.assertRaisesRegex(ValueError, "operator"):
-            model._load_type_spec_runtime(model._operators_from_params())
-        self.assertFalse(model._has_fitted_type_spec())
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_invalid_operator_is_rejected_before_search(self):
+        X, y = string_data()
+        type_name = "InvalidOperatorValue"
+        model = tiny_model(
+            string_spec(name=type_name),
+            operators={1: [f'bad_operator(x::{type_name}) = "bad"']},
+        )
+        with self.assertRaisesRegex(ValueError, "type-stable"):
+            model.fit(X, y)
+        self.assertIsNone(model.julia_state_stream_)
 
     def test_serial_fit_predicts_logical_payloads(self):
         X, y = string_data()
@@ -744,8 +754,18 @@ class TestTypeSpecs(unittest.TestCase):
             operators={1: [operator]},
             complexity_of_operators={"missing_operator": 2},
         )
-        with self.assertRaisesRegex(ValueError, "Unknown TypeSpec operator"):
+        with self.assertRaisesRegex(JuliaError, "missing_operator"):
             model.fit(X, X[:, 0])
+
+    def test_operator_names_are_isolated_between_type_specs(self):
+        X, y = string_data()
+        for type_name in ("FirstSharedOperatorValue", "SecondSharedOperatorValue"):
+            model = tiny_model(
+                string_spec(name=type_name),
+                operators={1: [f"shared_identity(x::{type_name}) = x"]},
+            )
+            model.fit(X, y)
+            np.testing.assert_array_equal(model.predict(X), y)
 
     def test_multi_field_fit_predicts_tuples(self):
         spec = TypeSpec(
@@ -769,17 +789,47 @@ class TestTypeSpecs(unittest.TestCase):
 
     def test_multiprocessing(self):
         X, y = string_data(constant=True)
+        type_name = "MultiprocessingStringValue"
         model = tiny_model(
             string_spec(
-                sample='rng -> StringValue("a")',
+                name=type_name,
+                sample=f'rng -> {type_name}("a")',
                 mutate="(rng, value, temperature) -> value",
             ),
+            operators={
+                1: [
+                    f"identity_{type_name}(x::{type_name}) = x",
+                ]
+            },
             expression_spec=identity_template(),
             parallelism="multiprocessing",
             procs=2,
         )
         model.fit(X, y)
         np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_schema_two_checkpoint_defaults_missing_type_spec(self):
+        original = PySRRegressor(niterations=1)
+        state = original.__dict__.copy()
+        state.pop("type_spec")
+        state["_checkpoint_schema_version"] = 2
+        restored = PySRRegressor.__new__(PySRRegressor)
+        restored.__setstate__(state)
+        self.assertIsNone(restored.type_spec)
+        self.assertIsNone(restored.get_params()["type_spec"])
+
+    def test_type_spec_variable_names_use_explicit_validation(self):
+        X, y = string_data()
+        with self.assertRaisesRegex(
+            ValueError, "variable_names.*one name per TypeSpec feature"
+        ):
+            tiny_model(string_spec(name="WrongVariableCountValue")).fit(
+                X, y, variable_names=["first", "extra"]
+            )
+
+        model = tiny_model(string_spec(name="SympyNamedFeatureValue"))
+        model.fit(X, y, variable_names=["N"])
+        self.assertEqual(model.feature_names_in_.tolist(), ["N"])
 
     def test_fresh_process_checkpoint(self):
         X, y = string_data()
@@ -797,19 +847,24 @@ class TestTypeSpecs(unittest.TestCase):
             code = f"""
 import json
 import numpy as np
+import warnings
 from pysr import PySRRegressor, jl
 name = {model._type_spec_definition_.module_name!r}
 assert not bool(jl.isdefined(jl.Main, jl.Symbol(name)))
-model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
+assert not any("not fully supported" in str(item.message) for item in caught)
 X = np.array([[\"a\"], [\"b\"], [\"a\"], [\"b\"]], dtype=object)
 print(json.dumps(model.predict(X).tolist()))
 """
             result = subprocess.run(
                 [sys.executable, "-c", code],
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
             )
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 json.loads(result.stdout.strip().splitlines()[-1]), y.tolist()
             )
@@ -820,11 +875,12 @@ print(json.dumps(model.predict(X).tolist()))
         model.fit(X, y)
         model.set_params(
             warm_start=True,
-            expression_spec=TemplateExpressionSpec(
-                combine="f(input)",
-                expressions=["f"],
-                variable_names=["input"],
-            ),
+            type_spec=string_spec(name="ChangedTypeSpecValue"),
+            operators={
+                1: [
+                    "identity_value(x::ChangedTypeSpecValue) = x",
+                ]
+            },
         )
         with self.assertRaisesRegex(ValueError, "Cannot warm-start"):
             model.fit(X, y)
@@ -868,7 +924,7 @@ print(json.dumps(model.predict(X).tolist()))
 
     def test_expression_export_requires_checkpoint_state(self):
         model = tiny_model(string_spec())
-        model._load_type_spec_runtime(model._operators_from_params())
+        model._load_type_spec_runtime(for_fit=True)
         for expression_spec in (ExpressionSpec(), identity_template()):
             with self.subTest(expression_spec=type(expression_spec).__name__):
                 with self.assertRaisesRegex(ValueError, "serialized Julia state"):

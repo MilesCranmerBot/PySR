@@ -732,18 +732,30 @@ The template example above coordinates several scalar-valued expression trees.
 With `TypeSpec`, vectors or tensors flow through each expression, constant, and
 operator.
 
-Each specification creates a private Julia type with the name you choose. Its
-preamble, operators, and loss are replayed on multiprocessing workers and when
-loading a checkpoint. Put every required Julia definition in those source
-fields or use a package-qualified name.
+Each specification creates a fingerprinted private Julia module. PySR evaluates
+the preamble, generated type, operators, and losses in that module, then imports
+the chosen type into `Main` for the ordinary search and template paths. These
+definitions are replayed on multiprocessing workers and before deserializing a
+checkpoint. Put every required Julia definition in the preamble or use a
+package-qualified name. `complexity_mapping` uses the ordinary Julia evaluation
+path after the chosen type is imported into `Main`.
 
-TypeSpec supports the default expression shape, prediction, checkpoint reload,
-and serial, multithreaded, or multiprocessing search. It does not support
-guesses, weights, units, denoising, feature selection, resampling, multi-output
-targets, turbo or bumper evaluation, autodiff backends, expression specifications
-other than `TemplateExpressionSpec`, or SymPy, JAX, Torch, and LaTeX export.
-Restoring a TypeSpec model requires its `checkpoint.pkl`; a hall-of-fame CSV is
-insufficient.
+TypeSpec supports `ExpressionSpec`, both `TemplateExpressionSpec` constructor
+forms, prediction, checkpoint reload, and serial, multithreaded, or
+multiprocessing search. It does not support guesses, weights, units, denoising,
+feature selection, resampling, multi-output targets, turbo or bumper
+evaluation, autodiff backends, template-level parameters, other expression
+specifications, or SymPy, JAX, Torch, and LaTeX export. Restoring a TypeSpec
+model requires its `checkpoint.pkl`; a hall-of-fame CSV is insufficient.
+
+Use `elementwise_loss`, `loss_function`, or `loss_function_expression` as with
+other PySR searches. A full objective must declare its concrete return type
+through `TypeSpec(loss_type="Float64")`; an elementwise loss has its return type
+inferred from its Julia method.
+
+Operators must be type-stable. PySR checks each method with `Base.promote_op`
+and requires Julia to infer the chosen TypeSpec type as its return type. Add an
+explicit return annotation such as `::Vec2` when Julia cannot infer it.
 
 ### Vector-valued expression trees
 

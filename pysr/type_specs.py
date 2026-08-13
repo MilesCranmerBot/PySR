@@ -13,7 +13,7 @@ from juliacall import JuliaError  # type: ignore
 
 from .julia_import import AnyValue, jl
 
-_CODEGEN_VERSION = 2
+_CODEGEN_VERSION = 3
 
 
 def object_array_1d(values: Any) -> np.ndarray:
@@ -77,15 +77,6 @@ class TypeSpec:
         Julia callable with signature ``value -> Bool``. The default checks that
         every optimization parameter is finite, or accepts every value for a
         non-optimizable type.
-    count_parameters : int or str, optional
-        Nonnegative fixed count or Julia callable with signature
-        ``value -> Int``. This is a performance override and must be provided
-        together with ``pack_parameters`` and ``unpack_parameters``.
-    pack_parameters : str, optional
-        Julia callable with signature ``(buffer, idx, value) -> next_idx``.
-    unpack_parameters : str, optional
-        Julia callable with signature
-        ``(buffer, idx, value) -> (next_idx, value)``.
     string : str, optional
         Julia callable with signature ``value -> AbstractString`` used to print
         constants in equations.
@@ -104,9 +95,6 @@ class TypeSpec:
     init: str | None = None
     mutate: str | None = None
     is_valid: str | None = None
-    count_parameters: int | str | None = None
-    pack_parameters: str | None = None
-    unpack_parameters: str | None = None
     string: str | None = None
     preamble: str | None = None
     loss_type: str | None = None
@@ -133,29 +121,12 @@ class TypeSpec:
                 "A non-optimizable TypeSpec requires an explicit `mutate` callable."
             )
 
-        low_level = ("count_parameters", "pack_parameters", "unpack_parameters")
-        configured = tuple(getattr(self, name) is not None for name in low_level)
-        if any(configured) != all(configured):
-            raise ValueError(
-                "`count_parameters`, `pack_parameters`, and `unpack_parameters` "
-                "must be provided together."
-            )
-        if all(configured) and not self.can_optimize:
-            raise ValueError(
-                "Low-level optimization overrides require `parameters` and "
-                "`with_parameters`."
-            )
-        if type(self.count_parameters) is int and self.count_parameters < 0:
-            raise ValueError("`count_parameters` must be nonnegative.")
-
         for name in (
             "parameters",
             "with_parameters",
             "init",
             "mutate",
             "is_valid",
-            "pack_parameters",
-            "unpack_parameters",
             "string",
             "preamble",
             "loss_type",
@@ -163,14 +134,6 @@ class TypeSpec:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"`{name}` cannot be empty.")
-        if self.count_parameters is not None and not (
-            type(self.count_parameters) is int or isinstance(self.count_parameters, str)
-        ):
-            raise ValueError(
-                "`count_parameters` must be a nonnegative integer or Julia source."
-            )
-        if isinstance(self.count_parameters, str) and not self.count_parameters.strip():
-            raise ValueError("`count_parameters` cannot be empty.")
 
     @property
     def can_optimize(self) -> bool:
@@ -193,42 +156,10 @@ class _TypeSpecRuntime:
     definition: _TypeSpecDefinition
     module: AnyValue
     value_type: AnyValue
-    operators: dict[int, tuple[AnyValue, ...]]
-    operator_names: dict[int, list[str]]
-    elementwise_loss: AnyValue | None
-    loss_function: AnyValue | None
-    loss_function_expression: AnyValue | None
-    loss_type: AnyValue
-    expression_spec: AnyValue | None
 
     @property
     def spec(self) -> TypeSpec:
         return self.definition.spec
-
-    def map_operator_keys(self, values: dict[str, Any], option: str) -> AnyValue:
-        operators = {
-            name: function
-            for arity, names in self.operator_names.items()
-            for name, function in zip(names, self.operators[arity])
-        }
-
-        def convert(mapping: dict[str, Any]) -> AnyValue:
-            try:
-                return jl.Dict(
-                    [
-                        jl.Pair(
-                            operators[name],
-                            convert(value) if isinstance(value, dict) else value,
-                        )
-                        for name, value in mapping.items()
-                    ]
-                )
-            except KeyError as error:
-                raise ValueError(
-                    f"Unknown TypeSpec operator in `{option}`: {error.args[0]!r}."
-                ) from error
-
-        return convert(values)
 
 
 def _quoted(source: str) -> str:
@@ -294,48 +225,30 @@ _TYPE_SPEC_MODULE = _block(r"""
             eltype(_parameters(init_value(_value_type)))
     end
 
-    const _count_parameters = if !_config.optimizable
-        _ -> 0
-    elseif _config.count_parameters isa Int
-        _ -> _config.count_parameters
-    elseif _config.count_parameters isa String
-        _include(_config.count_parameters, "TypeSpec.count_parameters")
-    else
-        value -> length(_parameters(value))
-    end
-    count_scalar_constants(value::_TypeSpecValue) = _count_parameters(value)
+    count_scalar_constants(value::_TypeSpecValue) =
+        _config.optimizable ? length(_parameters(value)) : 0
 
     if _config.optimizable
-        const _pack_parameters = if _config.pack_parameters === nothing
-            function (buffer, idx, value)
-                parameters = _parameters(value)
-                copyto!(
-                    buffer,
-                    idx,
-                    parameters,
-                    firstindex(parameters),
-                    length(parameters),
-                )
-                return idx + length(parameters)
-            end
-        else
-            _include(_config.pack_parameters, "TypeSpec.pack_parameters")
-        end
-        const _unpack_parameters = if _config.unpack_parameters === nothing
-            function (buffer, idx, value)
-                n = length(_parameters(value))
-                return idx + n,
-                _with_parameters(value, buffer[idx:(idx + n - 1)])
-            end
-        else
-            _include(_config.unpack_parameters, "TypeSpec.unpack_parameters")
-        end
-        pack_scalar_constants!(
+        function pack_scalar_constants!(
             buffer::AbstractVector{<:Number}, idx::Int, value::_TypeSpecValue
-        ) = _pack_parameters(buffer, idx, value)
-        unpack_scalar_constants(
+        )
+            parameters = _parameters(value)
+            copyto!(
+                buffer,
+                idx,
+                parameters,
+                firstindex(parameters),
+                length(parameters),
+            )
+            return idx + length(parameters)
+        end
+        function unpack_scalar_constants(
             buffer::AbstractVector{<:Number}, idx::Int, value::_TypeSpecValue
-        ) = _unpack_parameters(buffer, idx, value)
+        )
+            count = length(_parameters(value))
+            parameters = @view buffer[idx:(idx + count - 1)]
+            return idx + count, _with_parameters(value, parameters)
+        end
     end
 
     const _mutate = if _config.mutate === nothing
@@ -384,25 +297,6 @@ _TYPE_SPEC_MODULE = _block(r"""
     string_constant(
         value::_TypeSpecValue, ::Val{precision}, unit
     ) where {precision} = _string(value) * unit
-    const _operators = map(_config.operators) do (arity, sources)
-        arity => Tuple(
-            _include(source, "TypeSpec.operator[$arity][$index]")
-            for (index, source) in enumerate(sources)
-        )
-    end
-    const _loss_mode = _config.loss_mode
-    const _loss_impl = _include(_config.loss, "TypeSpec.$(_loss_mode)")
-    if _loss_mode === :elementwise_loss
-        _loss(a::_TypeSpecValue, b::_TypeSpecValue) = _loss_impl(a, b)
-    else
-        _loss(expression, dataset, options) =
-            _loss_impl(expression, dataset, options)
-        const _loss_type = _include(_config.loss_type, "TypeSpec.loss_type")
-    end
-    if _config.template !== nothing
-        const _template_expression_spec =
-            _include(_config.template, "TypeSpec.template")
-    end
 
     function _convert_value(x)
         x isa _value_type && return x
@@ -429,31 +323,31 @@ def _optional_source(source: str | None) -> str:
     return "nothing" if source is None else _quoted(source)
 
 
-def _count_parameters_config(count: int | str | None) -> str:
-    if count is None or isinstance(count, str):
-        return _optional_source(count)
-    return str(count)
-
-
-def _loss_configuration(
+def validate_type_spec_loss_configuration(
+    spec: TypeSpec,
     elementwise_loss: str | None,
     loss_function: str | None,
     loss_function_expression: str | None,
-) -> tuple[str, str]:
+) -> str:
     configured = [
         ("elementwise_loss", elementwise_loss),
         ("loss_function", loss_function),
         ("loss_function_expression", loss_function_expression),
     ]
-    selected = [(mode, source) for mode, source in configured if source is not None]
+    selected = [mode for mode, source in configured if source is not None]
     if len(selected) != 1:
         raise ValueError(
             "TypeSpec requires exactly one of `elementwise_loss`, `loss_function`, "
             "and `loss_function_expression`."
         )
-    mode, source = selected[0]
-    assert source is not None
-    return mode, source
+    mode = selected[0]
+    if mode == "elementwise_loss" and spec.loss_type is not None:
+        raise ValueError(
+            "Do not set `loss_type` with `elementwise_loss`; its return type is inferred."
+        )
+    if mode != "elementwise_loss" and spec.loss_type is None:
+        raise ValueError("TypeSpec full objectives require an explicit `loss_type`.")
+    return mode
 
 
 def _normalize_operators(
@@ -473,34 +367,25 @@ def _normalize_operators(
     return sorted(normalized)
 
 
-def compile_type_spec(
+def validate_type_spec_configuration(
     spec: TypeSpec,
     operators: dict[int, list[str]] | None,
     *,
     elementwise_loss: str | None,
     loss_function: str | None,
     loss_function_expression: str | None,
-    template: str | None = None,
-) -> _TypeSpecDefinition:
-    """Create deterministic Julia source without evaluating user code."""
-    normalized_operators = _normalize_operators(operators)
-    loss_mode, loss_source = _loss_configuration(
-        elementwise_loss, loss_function, loss_function_expression
+) -> None:
+    _normalize_operators(operators)
+    validate_type_spec_loss_configuration(
+        spec, elementwise_loss, loss_function, loss_function_expression
     )
-    if loss_mode == "elementwise_loss" and spec.loss_type is not None:
-        raise ValueError(
-            "Do not set `loss_type` with `elementwise_loss`; its return type is inferred."
-        )
-    if loss_mode != "elementwise_loss" and spec.loss_type is None:
-        raise ValueError("TypeSpec full objectives require an explicit `loss_type`.")
 
+
+def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
+    """Create deterministic Julia source without evaluating user code."""
     field_sources = ",\n".join(
         f"    {_quoted(name)} => {_quoted(field_type)}"
         for name, field_type in spec.fields.items()
-    )
-    operator_sources = ",\n".join(
-        f"    {arity} => ({', '.join(map(_quoted, sources))},)"
-        for arity, sources in normalized_operators
     )
     config = _block(f"""
         (
@@ -514,31 +399,23 @@ def compile_type_spec(
             init = {_optional_source(spec.init)},
             mutate = {_optional_source(spec.mutate)},
             is_valid = {_optional_source(spec.is_valid)},
-            count_parameters = {_count_parameters_config(spec.count_parameters)},
-            pack_parameters = {_optional_source(spec.pack_parameters)},
-            unpack_parameters = {_optional_source(spec.unpack_parameters)},
             string = {_optional_source(spec.string)},
             preamble = {_optional_source(spec.preamble)},
             optimizable = {str(spec.can_optimize).lower()},
-            operators = (
-            {operator_sources},
-            ),
-            loss_mode = :{loss_mode},
-            loss = {_quoted(loss_source)},
-            loss_type = {_optional_source(spec.loss_type)},
-            template = {_optional_source(template)},
         )
         """)
     body = _TYPE_SPEC_MODULE.replace("__TYPE_SPEC_CONFIG__", config, 1)
     fingerprint = hashlib.sha256(f"{_CODEGEN_VERSION}\0{body}".encode()).hexdigest()
+    module_name = f"_PySRTypeSpec_{fingerprint[:20]}"
     source = _block(f"""
-        module _PySRTypeSpec_{fingerprint[:20]}
+        module {module_name}
         using Random
         using SymbolicRegression
         using PythonCall
 
         {body}
         end
+        import .{module_name}: {spec.name}
         """) + "\n"
     return _TypeSpecDefinition(
         spec=copy.deepcopy(spec),
@@ -561,58 +438,12 @@ def load_type_spec_runtime(
     module = jl.getproperty(jl.Main, module_symbol)
     value_type = jl.getproperty(module, jl.Symbol(definition.spec.name))
 
-    operators = {}
-    operator_names = {}
-    for group in module._operators:
-        arity, functions = group
-        arity = int(arity)
-        functions = tuple(functions)
-        if any(not bool(jl.isa(function, jl.Function)) for function in functions):
-            raise ValueError(
-                "Every TypeSpec operator must evaluate to a Julia function."
-            )
-        names = [str(jl.nameof(function)) for function in functions]
-        if any(name.startswith("#") for name in names):
-            raise ValueError("TypeSpec operators must be named Julia functions.")
-        operators[arity] = functions
-        operator_names[arity] = names
-
-    elementwise_loss = None
-    loss_function = None
-    loss_function_expression = None
-    loss_mode = str(module._loss_mode)
-    if loss_mode == "elementwise_loss":
-        elementwise_loss = module._loss
-        loss_type = jl.Base.promote_op(elementwise_loss, value_type, value_type)
-    else:
-        if loss_mode == "loss_function":
-            loss_function = module._loss
-        else:
-            loss_function_expression = module._loss
-        loss_type = module._loss_type
-    if not bool(jl.seval("T -> isconcretetype(T) && T <: AbstractFloat")(loss_type)):
-        raise ValueError(
-            "The TypeSpec loss must return a concrete subtype of `AbstractFloat`; "
-            f"got `{loss_type}`. Add a concrete Julia return type annotation."
-        )
-    expression_spec = (
-        module._template_expression_spec
-        if bool(jl.isdefined(module, jl.Symbol("_template_expression_spec")))
-        else None
-    )
-
     runtime = _TypeSpecRuntime(
         definition=definition,
         module=module,
         value_type=value_type,
-        operators=operators,
-        operator_names=operator_names,
-        elementwise_loss=elementwise_loss,
-        loss_function=loss_function,
-        loss_function_expression=loss_function_expression,
-        loss_type=loss_type,
-        expression_spec=expression_spec,
     )
+
     if validate:
         _validate_type_spec_runtime(runtime)
     return runtime
@@ -654,11 +485,21 @@ def _type_spec_validator() -> AnyValue:
                 isconcretetype(number_type) && number_type <: AbstractFloat ||
                     fail("parameters", "must return a vector with a concrete `AbstractFloat` element type.")
 
-                packed = Vector{number_type}(undef, count)
-                next_idx = call("pack_parameters", DE.pack_scalar_constants!, packed, 1, value)
-                next_idx == count + 1 ||
+                offset = 3
+                packed = fill(number_type(NaN), count + 4)
+                next_idx = call(
+                    "pack_parameters",
+                    DE.pack_scalar_constants!,
+                    packed,
+                    offset,
+                    value,
+                )
+                next_idx == offset + count ||
                     fail("pack_parameters", "returned the wrong next index.")
-                isequal(packed, parameters) ||
+                all(isnan, packed[1:(offset - 1)]) &&
+                    all(isnan, packed[(offset + count):end]) ||
+                    fail("pack_parameters", "wrote outside its parameter range.")
+                isequal(packed[offset:(offset + count - 1)], parameters) ||
                     fail("pack_parameters", "disagrees with `parameters`.")
 
                 rebuilt = call("with_parameters", module_._with_parameters, value, parameters)
@@ -666,17 +507,29 @@ def _type_spec_validator() -> AnyValue:
                 isequal(rebuilt, value) ||
                     fail("with_parameters(value, parameters(value))", "must preserve the value.")
 
-                result = call("unpack_parameters", DE.unpack_scalar_constants, packed, 1, value)
+                result = call(
+                    "unpack_parameters",
+                    DE.unpack_scalar_constants,
+                    packed,
+                    offset,
+                    value,
+                )
                 result isa Tuple && length(result) == 2 ||
                     fail("unpack_parameters", "must return `(next_idx, $type_name)`.")
                 unpacked_idx, unpacked = result
-                unpacked_idx == count + 1 ||
+                unpacked_idx == offset + count ||
                     fail("unpack_parameters", "returned the wrong next index.")
                 unpacked isa T || fail("unpack_parameters", "must return `$type_name`.")
 
-                repacked = similar(packed)
-                repacked_idx = call("pack_parameters", DE.pack_scalar_constants!, repacked, 1, unpacked)
-                repacked_idx == count + 1 && isequal(packed, repacked) ||
+                repacked = fill(number_type(NaN), count + 4)
+                repacked_idx = call(
+                    "pack_parameters",
+                    DE.pack_scalar_constants!,
+                    repacked,
+                    offset,
+                    unpacked,
+                )
+                repacked_idx == offset + count && isequal(packed, repacked) ||
                     fail("optimization hooks", "must preserve the packed scalar representation.")
             end
 
@@ -697,14 +550,6 @@ def _type_spec_validator() -> AnyValue:
 
             call("string", module_._string, sampled) isa AbstractString ||
                 fail("string", "must return an `AbstractString`.")
-            for (arity, functions) in module_._operators, f in functions
-                Base.promote_op(f, ntuple(_ -> T, arity)...) === T ||
-                    fail("operator `$(nameof(f))`", "must infer `$type_name` as its return type.")
-                result = call(string(nameof(f)), f, ntuple(_ -> sampled, arity)...)
-                result isa T || fail("operator `$(nameof(f))`", "must return `$type_name`.")
-            end
-            module_._loss_mode === :elementwise_loss &&
-                call("elementwise_loss", module_._loss, sampled, sampled)
             return nothing
         end
         """)
@@ -717,6 +562,78 @@ def _validate_type_spec_runtime(runtime: _TypeSpecRuntime) -> None:
             runtime.value_type,
             runtime.spec.name,
             runtime.spec.can_optimize,
+        )
+    except JuliaError as error:
+        raise ValueError(str(jl.sprint(jl.showerror, error.args[0]))) from error
+
+
+@cache
+def _type_spec_operator_validator() -> AnyValue:
+    return jl.seval(r"""
+        function (module_, T, type_name, operator, arity)
+            inferred = Base.promote_op(operator, ntuple(_ -> T, arity)...)
+            inferred === T || throw(ArgumentError(
+                "TypeSpec operator `$(nameof(operator))` must be type-stable and " *
+                "infer `$type_name` as its return type; inferred `$inferred`. " *
+                "Add an explicit `::$type_name` return annotation if needed."
+            ))
+            sampled = module_._init()
+            result = operator(ntuple(_ -> sampled, arity)...)
+            result isa T || throw(ArgumentError(
+                "TypeSpec operator `$(nameof(operator))` must return `$type_name`."
+            ))
+            return nothing
+        end
+        """)
+
+
+@cache
+def _type_spec_loss_validator() -> AnyValue:
+    return jl.seval(r"""
+        function (module_, T, elementwise_loss, configured_loss_type)
+            loss_type = if elementwise_loss === nothing
+                configured_loss_type
+            else
+                inferred = Base.promote_op(elementwise_loss, T, T)
+                sample = module_._init()
+                elementwise_loss(sample, sample)
+                inferred
+            end
+            isconcretetype(loss_type) && loss_type <: AbstractFloat ||
+                throw(ArgumentError(
+                    "The TypeSpec loss must return a concrete subtype of " *
+                    "`AbstractFloat`; got `$loss_type`. Add a concrete Julia " *
+                    "return type annotation."
+                ))
+            return loss_type
+        end
+        """)
+
+
+def validate_type_spec_options(
+    runtime: _TypeSpecRuntime,
+    operators: dict[int, tuple[AnyValue, ...]],
+    elementwise_loss: AnyValue | None,
+) -> AnyValue:
+    """Validate ordinary Julia options against a loaded TypeSpec."""
+    try:
+        for arity, functions in operators.items():
+            for function in functions:
+                _type_spec_operator_validator()(
+                    runtime.module,
+                    runtime.value_type,
+                    runtime.spec.name,
+                    function,
+                    arity,
+                )
+        configured_loss_type = (
+            None if runtime.spec.loss_type is None else jl.seval(runtime.spec.loss_type)
+        )
+        return _type_spec_loss_validator()(
+            runtime.module,
+            runtime.value_type,
+            elementwise_loss,
+            configured_loss_type,
         )
     except JuliaError as error:
         raise ValueError(str(jl.sprint(jl.showerror, error.args[0]))) from error
@@ -758,15 +675,39 @@ def wrap_type_spec_addprocs_function(
     definition: _TypeSpecDefinition,
     addprocs_function: AnyValue | None,
     worker_imports: AnyValue | None,
+    operator_sources: AnyValue | None = None,
+    objective_sources: AnyValue | None = None,
+    template_source: str | None = None,
+    template_function_name: AnyValue | None = None,
 ) -> AnyValue:
     """Create workers and install the private module before function transfer."""
     jl.seval("using Distributed: Distributed")
     if addprocs_function is None:
         addprocs_function = jl.Distributed.addprocs
-    module_expression = jl.Meta.parse(definition.source)
+    module_expression = jl.Meta.parseall(definition.source)
+    module_symbol = jl.Symbol(definition.module_name)
+    operators = (
+        operator_sources if operator_sources is not None else jl.seval("String[]")
+    )
+    objectives = (
+        objective_sources if objective_sources is not None else jl.seval("String[]")
+    )
+    template = template_source if template_source is not None else jl.nothing
+    template_name = (
+        template_function_name if template_function_name is not None else jl.nothing
+    )
     imports = worker_imports if worker_imports is not None else jl.nothing
     return jl.seval("""
-        function (addprocs_function, module_expression, imports)
+        function (
+            addprocs_function,
+            module_expression,
+            module_symbol,
+            operator_sources,
+            objective_sources,
+            template_source,
+            template_function_name,
+            imports,
+        )
             return function (numprocs; kws...)
                 procs = addprocs_function(numprocs; kws...)
                 try
@@ -774,6 +715,59 @@ def wrap_type_spec_addprocs_function(
                         procs, pathof(SymbolicRegression), imports, 0
                     )
                     Distributed.remotecall_eval(Main, procs, module_expression)
+                    for (index, source) in pairs(operator_sources)
+                        expression = quote
+                            module_ = getproperty(
+                                Main, $(QuoteNode(module_symbol))
+                            )
+                            Base.include_string(
+                                module_,
+                                $source,
+                                $("PySR TypeSpec operator $index"),
+                            )
+                        end
+                        Distributed.remotecall_eval(Main, procs, expression)
+                    end
+                    for (index, source) in pairs(objective_sources)
+                        expression = quote
+                            module_ = getproperty(
+                                Main, $(QuoteNode(module_symbol))
+                            )
+                            Base.include_string(
+                                module_,
+                                $source,
+                                $("PySR TypeSpec objective $index"),
+                            )
+                        end
+                        Distributed.remotecall_eval(Main, procs, expression)
+                    end
+                    if template_source !== nothing
+                        expression = quote
+                            module_ = getproperty(
+                                Main, $(QuoteNode(module_symbol))
+                            )
+                            target_function_name = $(
+                                QuoteNode(template_function_name)
+                            )
+                            worker_spec = Base.include_string(
+                                module_,
+                                $template_source,
+                                "PySR TypeSpec template",
+                            )
+                            worker_function_name = nameof(
+                                worker_spec.structure.combine
+                            )
+                            if worker_function_name != target_function_name
+                                Base.include_string(
+                                    module_,
+                                    "$(target_function_name)(args...) = " *
+                                    "$(worker_function_name)(args...)",
+                                    "PySR TypeSpec template alias",
+                                )
+                            end
+                        end
+                        Distributed.remotecall_eval(Main, procs, expression)
+                    end
                 catch
                     Distributed.rmprocs(procs)
                     rethrow()
@@ -781,4 +775,13 @@ def wrap_type_spec_addprocs_function(
                 return procs
             end
         end
-        """)(addprocs_function, module_expression, imports)
+        """)(
+        addprocs_function,
+        module_expression,
+        module_symbol,
+        operators,
+        objectives,
+        template,
+        template_name,
+        imports,
+    )
