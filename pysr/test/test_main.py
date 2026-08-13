@@ -1,8 +1,11 @@
 import functools
 import importlib
+import json
 import os
 import pickle as pkl
 import platform
+import subprocess
+import sys
 import tempfile
 import traceback
 import unittest
@@ -892,6 +895,58 @@ class TestPipeline(unittest.TestCase):
             model.pytorch()
         with self.assertRaises(ValueError):
             model.latex_table()
+
+    def test_template_expression_checkpoint_in_fresh_process(self):
+        X = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
+        y = X[:, 0]
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor(
+                expression_spec=TemplateExpressionSpec(
+                    combine="myplus(f(x), 0.0)",
+                    expressions=["f"],
+                    variable_names=["x"],
+                ),
+                binary_operators=["myplus(x, y) = x + y"],
+                unary_operators=[],
+                guesses=[{"f": "#1"}],
+                niterations=1,
+                populations=1,
+                population_size=8,
+                ncycles_per_iteration=2,
+                tournament_selection_n=3,
+                parallelism="serial",
+                deterministic=True,
+                random_state=0,
+                progress=False,
+                verbosity=0,
+                output_directory=directory,
+                run_id="template-checkpoint",
+                temp_equation_file=False,
+                delete_tempfiles=False,
+            )
+            model.fit(X, y)
+
+            code = f"""
+import json
+import numpy as np
+from pysr import PySRRegressor
+
+model = PySRRegressor.from_file(run_directory={str(Path(directory) / "template-checkpoint")!r})
+X = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
+prediction = model.predict(X)
+model.set_params(warm_start=True, niterations=1)
+model.fit(X, X[:, 0])
+print(json.dumps(prediction.tolist()))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            np.testing.assert_allclose(
+                json.loads(result.stdout.strip().splitlines()[-1]), y
+            )
 
     def test_template_expression_with_parameters_multiout(self):
         # Create random data

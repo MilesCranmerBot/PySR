@@ -1386,10 +1386,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if "equations_" not in model.__dict__ or model.equations_ is None:
                 model.refresh()
 
-            if model.expression_spec is not None:
+            if not isinstance(
+                model.expression_spec_, (ExpressionSpec, TemplateExpressionSpec)
+            ):
                 warnings.warn(
-                    "Loading model from checkpoint file with a non-default expression spec "
-                    "is not fully supported as it relies on dynamic objects. This may result in unexpected behavior.",
+                    "Loading checkpoints with custom expression specs is not fully supported."
                 )
 
             return model
@@ -1538,9 +1539,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             pickled_state["output_torch_format"] = False
             pickled_state["output_jax_format"] = False
             unpicklable_columns = ["jax_format", "torch_format"]
-            if self._has_fitted_type_spec():
+            if self._has_fitted_type_spec() or isinstance(
+                self.expression_spec_, TemplateExpressionSpec
+            ):
                 # Live Julia objects cannot be unpickled in a fresh process
-                # before the TypeSpec definitions exist; these columns are
+                # before their Julia definitions exist; these columns are
                 # rebuilt from `julia_state_` via `refresh()`.
                 unpicklable_columns += ["julia_expression", "lambda_format"]
             if self.nout_ == 1:
@@ -1571,6 +1574,17 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 f"expected {_CHECKPOINT_SCHEMA_VERSION}, found {schema_version!r}."
             )
         self.__dict__.update(state)
+        equations = self.__dict__.get("equations_")
+        equation_tables = equations if isinstance(equations, list) else [equations]
+        if (
+            (
+                self._has_fitted_type_spec()
+                or isinstance(self.expression_spec_, TemplateExpressionSpec)
+            )
+            and equations is not None
+            and any("lambda_format" not in table.columns for table in equation_tables)
+        ):
+            self.refresh()
 
     def _checkpoint(self):
         """Save the model's current state to a checkpoint file.
@@ -1795,15 +1809,17 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 loss_function=self.loss_function,
                 loss_function_expression=self.loss_function_expression,
             )
-            return
-        _create_julia_operators_and_loss_functions(
-            operators=copy.deepcopy(fitted["operators"]),
-            extra_sympy_mappings=self.extra_sympy_mappings,
-            supports_sympy=fitted["supports_sympy"],
-            elementwise_loss=fitted["elementwise_loss"],
-            loss_function=fitted["loss_function"],
-            loss_function_expression=fitted["loss_function_expression"],
-        )
+        else:
+            _create_julia_operators_and_loss_functions(
+                operators=copy.deepcopy(fitted["operators"]),
+                extra_sympy_mappings=self.extra_sympy_mappings,
+                supports_sympy=fitted["supports_sympy"],
+                elementwise_loss=fitted["elementwise_loss"],
+                loss_function=fitted["loss_function"],
+                loss_function_expression=fitted["loss_function_expression"],
+            )
+        if isinstance(self.expression_spec_, TemplateExpressionSpec):
+            self.expression_spec_.julia_expression_spec()
 
     def _load_fitted_type_spec_runtime(self) -> _TypeSpecRuntime:
         return self._load_type_spec_runtime()
