@@ -16,8 +16,6 @@ from juliacall import JuliaError  # type: ignore
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, jl
 
-_CODEGEN_VERSION = 4
-
 
 def object_array_1d(values: Any) -> np.ndarray:
     """Build a 1D object array whose cells are the logical values themselves."""
@@ -695,7 +693,7 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
         )
         """)
     body = _TYPE_SPEC_MODULE.replace("__TYPE_SPEC_CONFIG__", config, 1)
-    fingerprint = hashlib.sha256(f"{_CODEGEN_VERSION}\0{body}".encode()).hexdigest()
+    fingerprint = hashlib.sha256(body.encode()).hexdigest()
     module_name = f"_PySRTypeSpec_{fingerprint[:20]}"
     source = _block(f"""
         module {module_name}
