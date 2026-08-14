@@ -801,35 +801,36 @@ Here, we write out a full function in Julia.
 
 ## 14. Custom value types
 
-After working with custom operators, losses, and expression specifications,
-`TypeSpec` lets you change the value type used throughout a search.
-
-The template example above coordinates several scalar-valued expression trees.
-With `TypeSpec`, vectors or tensors flow through each expression, constant, and
+`TypeSpec` changes the value type used throughout a search. Vectors, tensors,
+strings, or structured values can flow through each expression, constant, and
 operator.
 
-Each specification creates one fingerprinted private Julia module per process.
-PySR evaluates the preamble, generated type, operators, losses, templates, and
-Julia-valued options in that module, then imports the chosen type into `Main`
-for ordinary search paths. Definitions are replayed on multiprocessing workers
-and before deserializing a checkpoint. Put every required Julia definition in
-the preamble, refer to existing `Main` definitions as `Main.name`, or use a
-package-qualified name.
+Each `TypeSpec` creates a deterministic Julia module for the generated value
+type and imports that type into `Main` for SymbolicRegression.jl integration.
+Every complete runtime configuration creates a second fingerprinted module
+nested inside the type module. That configuration module contains the
+operators, loss, complexity mapping, early-stop condition, and `ExpressionSpec`
+used by the search. Exact source-equivalent configurations reuse the same
+modules; different sources remain isolated even when they define the same
+function names.
 
-Models with the same `TypeSpec` share this module. PySR reuses an identical
-definition source without evaluating it again. If a successful fit defines the
-same Julia function name from different source, PySR warns and the latest
-definition becomes visible to older models. Restoring a checkpoint refuses to
-replace a conflicting active definition.
+The fitted estimator stores the complete runtime definition. Checkpoint loading
+recreates both modules before Julia deserializes the saved options and search
+state, so prediction works in a fresh process without replaying mutable global
+definitions.
+TypeSpec source must be self-contained apart from SymbolicRegression.jl. Julia
+packages used by a preamble, operator, objective, or expression specification
+must be imported explicitly in that source and listed in `worker_imports` for
+multiprocessing. Ad hoc references to bindings in `Main` are unsupported
+because checkpoints and workers cannot recreate them.
 
-TypeSpec supports `ExpressionSpec`, the explicit keyword form of
-`TemplateExpressionSpec`, and custom `AbstractExpressionSpec` implementations
-that declare `supports_type_spec = True`. Prediction, checkpoint reload, and
-serial, multithreaded, or multiprocessing search are supported. TypeSpec does
-not support guesses, weights, units, denoising, feature selection, resampling,
-multi-output targets, turbo or bumper evaluation, autodiff backends,
-template-level parameters, or SymPy, JAX, Torch, and LaTeX export. Restoring a
-TypeSpec model requires its `checkpoint.pkl`; a hall-of-fame CSV is
+TypeSpec supports the default `ExpressionSpec`, `TemplateExpressionSpec`, and
+custom expression specifications that implement the TypeSpec source hooks. It
+supports prediction, checkpoint reload, and serial, multithreaded, or
+multiprocessing search. TypeSpec does not support guesses, weights, units,
+denoising, feature selection, resampling, multi-output targets, turbo or bumper
+evaluation, autodiff backends, or SymPy, JAX, Torch, and LaTeX export. Restoring
+a TypeSpec model requires its `checkpoint.pkl`; a hall-of-fame CSV is
 insufficient.
 
 A TypeSpec search requires exactly one of `elementwise_loss`,
@@ -921,41 +922,6 @@ The target can be represented as
 learned vector-valued constant. PySR searches over both the program structure
 and the two components of that constant.
 
-The same value type can be used inside a template. PySR infers how many features
-each inner expression receives from the calls in `combine`:
-
-```python
-from pysr import TemplateExpressionSpec
-
-expression_spec = TemplateExpressionSpec(
-    combine="add_vectors(f(x1), g(x2))",
-    expressions=["f", "g"],
-    variable_names=["x1", "x2"],
-)
-
-model = PySRRegressor(
-    type_spec=type_spec,
-    expression_spec=expression_spec,
-    operators={
-        1: [
-            "rotate90(a::Vec2) = Vec2([-a.data[2], a.data[1]])",
-            "double(a::Vec2) = Vec2(2a.data)",
-        ],
-        2: [
-            """
-            add_vectors(a::Vec2, b::Vec2) = Vec2(a.data + b.data)
-            add_vectors(a::ValidVector, b::ValidVector) =
-                ValidVector(map(add_vectors, a.x, b.x), a.valid && b.valid)
-            """
-        ],
-    },
-    elementwise_loss="vector_loss(a::Vec2, b::Vec2)::Float64 = sum(abs2, a.data - b.data)",
-)
-```
-
-Template-level `parameters` are unavailable with `TypeSpec`. Use TypeSpec
-constants and their `scalar_constants` and `with_scalar_constants` hooks
-instead.
 
 <details>
 <summary>String-valued expressions and discrete constants</summary>

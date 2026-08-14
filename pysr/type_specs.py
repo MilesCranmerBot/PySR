@@ -4,14 +4,16 @@ import copy
 import hashlib
 import json
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cache
 from textwrap import dedent
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from juliacall import JuliaError  # type: ignore
 
+from .julia_helpers import jl_array
 from .julia_import import AnyValue, jl
 
 _CODEGEN_VERSION = 4
@@ -83,7 +85,10 @@ class TypeSpec:
         Julia callable with signature ``value -> AbstractString`` used to print
         constants in equations.
     preamble : str, optional
-        Julia source evaluated before the generated type definition.
+        Julia source evaluated once before the generated type definition. Keep
+        it self-contained apart from SymbolicRegression and packages listed in
+        :class:`PySRRegressor` ``worker_imports`` so checkpoints and workers can
+        recreate it.
     loss_type : str, optional
         Concrete Julia ``AbstractFloat`` type returned by a custom full
         objective. Elementwise loss return types are inferred.
@@ -155,82 +160,48 @@ class _TypeSpecDefinition:
 
 
 @dataclass(frozen=True)
-class _TypeSpecJuliaDefinition:
-    kind: str
-    name: str
+class _TypeSpecRuntimeDefinition:
+    type_spec: _TypeSpecDefinition
+    operators: tuple[tuple[int, tuple[str, ...]], ...]
+    elementwise_loss: str | None
+    loss_function: str | None
+    loss_function_expression: str | None
+    complexity_mapping: str | None
+    early_stop_condition: str | None
+    expression_spec: str
+    expression_spec_function_selector: str | None
+    fingerprint: str
     source: str
 
-
-@dataclass(frozen=True)
-class _RegisteredTypeSpecJuliaDefinition:
-    source: str
-    function: AnyValue
-    value: AnyValue
+    @property
+    def module_name(self) -> str:
+        return f"_PySRConfig_{self.fingerprint[:20]}"
 
 
 @dataclass(frozen=True)
 class TypeSpecRuntime:
-    definition: _TypeSpecDefinition
+    definition: _TypeSpecDefinition | _TypeSpecRuntimeDefinition
     module: AnyValue
     value_type: AnyValue
+    configuration_module: AnyValue
+    operator_functions: dict[int, tuple[AnyValue, ...]]
+    operator_names: dict[int, tuple[str, ...]]
+    elementwise_loss: AnyValue | None = None
+    loss_function: AnyValue | None = None
+    loss_function_expression: AnyValue | None = None
+    complexity_mapping: AnyValue | None = None
+    early_stop_condition: AnyValue | None = None
+    expression_spec: AnyValue | None = None
+
+    @property
+    def type_definition(self) -> _TypeSpecDefinition:
+        if isinstance(self.definition, _TypeSpecRuntimeDefinition):
+            return self.definition.type_spec
+        return self.definition
 
     @property
     def spec(self) -> TypeSpec:
-        return self.definition.spec
-
-
-_TYPE_SPEC_DEFINITION_REGISTRY: dict[
-    tuple[str, str, str], _RegisteredTypeSpecJuliaDefinition
-] = {}
-
-
-@dataclass
-class _TypeSpecDefinitionTransaction:
-    runtime: TypeSpecRuntime
-    definitions: list[_TypeSpecJuliaDefinition] = field(default_factory=list)
-    _previous: dict[tuple[str, str, str], _RegisteredTypeSpecJuliaDefinition | None] = (
-        field(default_factory=dict)
-    )
-    _replaced: set[tuple[str, str, str]] = field(default_factory=set)
-
-    def evaluate(self, kind: str, source: str) -> AnyValue:
-        value, definition = _evaluate_type_spec_definition(
-            self.runtime, kind, source, transaction=self
-        )
-        for index, existing in enumerate(self.definitions):
-            if (existing.kind, existing.name) == (
-                definition.kind,
-                definition.name,
-            ):
-                self.definitions[index] = definition
-                break
-        else:
-            self.definitions.append(definition)
-        return value
-
-    def commit(self) -> None:
-        for _, _, name in sorted(self._replaced):
-            warnings.warn(
-                f"TypeSpec definition `{name}` was replaced in the shared "
-                "TypeSpec namespace; older models using this TypeSpec now see "
-                "the replacement.",
-                UserWarning,
-            )
-
-    def rollback(self) -> None:
-        for key, previous in reversed(self._previous.items()):
-            if previous is None:
-                _TYPE_SPEC_DEFINITION_REGISTRY.pop(key, None)
-                continue
-            _, kind, expected_name = key
-            value = _include_type_spec_source(self.runtime, previous.source, kind)
-            function = _definition_function(kind, value)
-            _bind_function_name(self.runtime.module, expected_name, function)
-            _TYPE_SPEC_DEFINITION_REGISTRY[key] = _RegisteredTypeSpecJuliaDefinition(
-                source=previous.source,
-                function=function,
-                value=value,
-            )
+        return self.type_definition.spec
 
 
 def _quoted(source: str) -> str:
@@ -241,155 +212,248 @@ def _block(source: str) -> str:
     return dedent(source).strip()
 
 
-@cache
-def _main_module_binder() -> AnyValue:
-    return jl.seval(r"""
-        function (module_)
-            for name in names(Main; all=true, imported=true)
-                isdefined(Main, name) || continue
-                value = getproperty(Main, name)
-                value isa Module || continue
-                isdefined(module_, name) && continue
-                Core.eval(
-                    module_,
-                    Expr(:const, Expr(:(=), name, QuoteNode(value))),
-                )
-            end
-            return nothing
-        end
-        """)
-
-
-@cache
-def _julia_function_checker() -> AnyValue:
-    return jl.seval("value -> value isa Function")
-
-
-@cache
-def _template_combiner() -> AnyValue:
-    return jl.seval("spec -> spec.structure.combine")
-
-
-@cache
-def _function_name_binder() -> AnyValue:
-    return jl.seval(r"""
-        function (module_, name, function_)
-            if isdefined(module_, name)
-                getproperty(module_, name) === function_ || throw(
-                    ArgumentError("Cannot replace Julia binding `$name`.")
-                )
-            else
-                Core.eval(
-                    module_,
-                    Expr(:const, Expr(:(=), name, QuoteNode(function_))),
-                )
-            end
-            return function_
-        end
-        """)
-
-
-def _include_type_spec_source(
-    runtime: TypeSpecRuntime, source: str, kind: str
-) -> AnyValue:
-    _main_module_binder()(runtime.module)
-    return jl.Base.include_string(
-        runtime.module,
-        source,
-        f"PySR TypeSpec {kind}",
+def _runtime_sources(
+    operators: tuple[tuple[int, tuple[str, ...]], ...],
+    elementwise_loss: str | None,
+    loss_function: str | None,
+    loss_function_expression: str | None,
+    complexity_mapping: str | None,
+    early_stop_condition: str | None,
+    expression_spec: str,
+) -> tuple[str, ...]:
+    sources = tuple(
+        source for _, operator_sources in operators for source in operator_sources
+    )
+    optional_sources = (
+        elementwise_loss,
+        loss_function,
+        loss_function_expression,
+        complexity_mapping,
+        early_stop_condition,
+    )
+    return (
+        *sources,
+        *(source for source in optional_sources if source is not None),
+        expression_spec,
     )
 
 
-def _definition_function(kind: str, value: AnyValue) -> AnyValue:
-    function = _template_combiner()(value) if kind == "template" else value
-    if not bool(_julia_function_checker()(function)):
-        raise ValueError(
-            f"TypeSpec `{kind}` must evaluate to a callable Julia function."
-        )
-    return function
-
-
-def _bind_function_name(
-    module: AnyValue, expected_name: str, function: AnyValue
-) -> None:
-    actual_name = str(jl.Base.nameof(function))
-    if actual_name != expected_name:
-        _function_name_binder()(
-            module,
-            jl.Symbol(expected_name),
-            function,
-        )
-
-
-def _evaluate_type_spec_definition(
-    runtime: TypeSpecRuntime,
-    kind: str,
-    source: str,
-    *,
-    transaction: _TypeSpecDefinitionTransaction,
-) -> tuple[AnyValue, _TypeSpecJuliaDefinition]:
-    module_name = runtime.definition.module_name
-    for (
-        registered_module,
-        registered_kind,
-        name,
-    ), registered in _TYPE_SPEC_DEFINITION_REGISTRY.items():
-        if (
-            registered_module == module_name
-            and registered_kind == kind
-            and registered.source == source
-        ):
-            return registered.value, _TypeSpecJuliaDefinition(
-                kind=kind,
-                name=name,
-                source=source,
+def _runtime_install_source(
+    type_definition: _TypeSpecDefinition,
+    runtime_module_name: str,
+    sources: tuple[str, ...],
+    expression_spec_function_selector: str | None,
+) -> str:
+    source_literals = ",\n".join(f"            {_quoted(source)}" for source in sources)
+    selector = _optional_source(expression_spec_function_selector)
+    return _block(f"""
+        if !isdefined(Main, Symbol({_quoted(type_definition.module_name)}))
+            Base.include_string(
+                Main,
+                {_quoted(type_definition.source)},
+                {_quoted("PySR." + type_definition.module_name)},
             )
-
-    value = _include_type_spec_source(runtime, source, kind)
-    function = _definition_function(kind, value)
-    name = str(jl.Base.nameof(function))
-    key = (module_name, kind, name)
-    previous = _TYPE_SPEC_DEFINITION_REGISTRY.get(key)
-    transaction._previous.setdefault(key, previous)
-    if previous is not None and previous.source != source:
-        transaction._replaced.add(key)
-    _TYPE_SPEC_DEFINITION_REGISTRY[key] = _RegisteredTypeSpecJuliaDefinition(
-        source=source,
-        function=function,
-        value=value,
-    )
-    return value, _TypeSpecJuliaDefinition(kind=kind, name=name, source=source)
-
-
-def restore_type_spec_definitions(
-    runtime: TypeSpecRuntime,
-    definitions: tuple[_TypeSpecJuliaDefinition, ...],
-) -> None:
-    module_name = runtime.definition.module_name
-    for definition in definitions:
-        key = (module_name, definition.kind, definition.name)
-        registered = _TYPE_SPEC_DEFINITION_REGISTRY.get(key)
-        if registered is not None:
-            if registered.source != definition.source:
-                raise ValueError(
-                    f"Cannot restore TypeSpec definition `{definition.name}`: "
-                    "a conflicting source is active in the shared TypeSpec "
-                    "namespace."
+        end
+        let
+            parent = getproperty(
+                Main, Symbol({_quoted(type_definition.module_name)})
+            )
+            module_name = Symbol({_quoted(runtime_module_name)})
+            needs_install = !isdefined(parent, module_name)
+            if !needs_install
+                existing = Base.invokelatest(getproperty, parent, module_name)
+                needs_install = !isdefined(existing, :_definition_values)
+            end
+            if needs_install
+                if isdefined(parent, module_name)
+                    module_ = Base.invokelatest(getproperty, parent, module_name)
+                else
+                    Core.eval(parent, Expr(:module, true, module_name, Expr(:block)))
+                    module_ = Base.invokelatest(getproperty, parent, module_name)
+                end
+                Core.eval(module_, :(using SymbolicRegression))
+                for name in getproperty(parent, :_PYSR_PARENT_BINDING_NAMES)
+                    isdefined(module_, name) && continue
+                    Core.eval(
+                        module_,
+                        Expr(
+                            :const,
+                            Expr(
+                                :(=),
+                                name,
+                                QuoteNode(getproperty(parent, name)),
+                            ),
+                        ),
+                    )
+                end
+                sources = String[
+        {source_literals}
+                ]
+                values = Any[]
+                for (index, source) in enumerate(sources)
+                    value = Base.include_string(
+                        module_,
+                        source,
+                        "PySR TypeSpec configuration $index",
+                    )
+                    Core.eval(
+                        module_,
+                        Expr(
+                            :const,
+                            Expr(
+                                :(=),
+                                Symbol("_pysr_def_", index - 1),
+                                QuoteNode(value),
+                            ),
+                        ),
+                    )
+                    push!(values, value)
+                end
+                selector_source = {selector}
+                if selector_source !== nothing
+                    selector_value = Base.include_string(
+                        module_,
+                        selector_source,
+                        "PySR TypeSpec expression function selector",
+                    )
+                    selected_value = Base.invokelatest(selector_value, values[end])
+                    Core.eval(
+                        module_,
+                        Expr(
+                            :const,
+                            Expr(
+                                :(=),
+                                :_pysr_expression_function,
+                                QuoteNode(selected_value),
+                            ),
+                        ),
+                    )
+                    push!(values, selected_value)
+                end
+                Core.eval(
+                    module_,
+                    Expr(
+                        :const,
+                        Expr(:(=), :_definition_values, QuoteNode(Tuple(values))),
+                    ),
                 )
-            continue
+            end
+        end
+        """) + "\n"
 
-        value = _include_type_spec_source(
-            runtime,
-            definition.source,
-            definition.kind,
+
+def compile_type_spec_runtime(
+    spec: TypeSpec,
+    operators: dict[int, list[str]],
+    *,
+    elementwise_loss: str | None,
+    loss_function: str | None,
+    loss_function_expression: str | None,
+    complexity_mapping: str | None,
+    early_stop_condition: str | None,
+    expression_spec: str | None = None,
+    expression_spec_function_selector: str | None = None,
+) -> _TypeSpecRuntimeDefinition:
+    validate_type_spec_configuration(
+        spec,
+        operators,
+        elementwise_loss=elementwise_loss,
+        loss_function=loss_function,
+        loss_function_expression=loss_function_expression,
+    )
+    type_definition = compile_type_spec(spec)
+    normalized_operators = tuple(
+        (arity, tuple(sources)) for arity, sources in _normalize_operators(operators)
+    )
+    if expression_spec is None:
+        expression_spec = _block(f"""
+            SymbolicRegression.ExpressionSpec(
+                node_type=SymbolicRegression.InterfaceDynamicExpressionsModule.DE.Node{{
+                    {spec.name}
+                }},
+            )
+            """)
+    payload = {
+        "type_spec": type_definition.fingerprint,
+        "operators": normalized_operators,
+        "elementwise_loss": elementwise_loss,
+        "loss_function": loss_function,
+        "loss_function_expression": loss_function_expression,
+        "complexity_mapping": complexity_mapping,
+        "early_stop_condition": early_stop_condition,
+        "expression_spec": expression_spec,
+        "expression_spec_function_selector": expression_spec_function_selector,
+        "loss_type": spec.loss_type,
+    }
+    fingerprint = hashlib.sha256(
+        ("2\0" + json.dumps(payload, sort_keys=True)).encode()
+    ).hexdigest()
+    runtime_module_name = f"_PySRConfig_{fingerprint[:20]}"
+    sources = _runtime_sources(
+        normalized_operators,
+        elementwise_loss,
+        loss_function,
+        loss_function_expression,
+        complexity_mapping,
+        early_stop_condition,
+        expression_spec,
+    )
+    source = _runtime_install_source(
+        type_definition,
+        runtime_module_name,
+        sources,
+        expression_spec_function_selector,
+    )
+    return _TypeSpecRuntimeDefinition(
+        type_spec=type_definition,
+        operators=normalized_operators,
+        elementwise_loss=elementwise_loss,
+        loss_function=loss_function,
+        loss_function_expression=loss_function_expression,
+        complexity_mapping=complexity_mapping,
+        early_stop_condition=early_stop_condition,
+        expression_spec=expression_spec,
+        expression_spec_function_selector=expression_spec_function_selector,
+        fingerprint=fingerprint,
+        source=source,
+    )
+
+
+def compile_type_spec_runtime_for_model(
+    model: Any,
+    operators: dict[int, list[str]],
+) -> _TypeSpecRuntimeDefinition:
+    """Compile one model configuration without evaluating its Julia sources."""
+    from .expression_specs import ExpressionSpec
+
+    spec = model.type_spec
+    assert spec is not None
+    expression_spec = model.expression_spec_
+    expression_spec_source = expression_spec._julia_expression_spec_source(
+        prototype=f"SymbolicRegression.init_value({spec.name})"
+    )
+    if expression_spec_source is None and type(expression_spec) is not ExpressionSpec:
+        raise ValueError(
+            f"{type(expression_spec).__name__} declares TypeSpec support "
+            "but does not provide Julia source."
         )
-        function = _definition_function(definition.kind, value)
-        _bind_function_name(runtime.module, definition.name, function)
-        _TYPE_SPEC_DEFINITION_REGISTRY[key] = _RegisteredTypeSpecJuliaDefinition(
-            source=definition.source,
-            function=function,
-            value=value,
-        )
+    return compile_type_spec_runtime(
+        spec,
+        operators,
+        elementwise_loss=model.elementwise_loss,
+        loss_function=model.loss_function,
+        loss_function_expression=model.loss_function_expression,
+        complexity_mapping=model.complexity_mapping,
+        early_stop_condition=(
+            None
+            if model.early_stop_condition is None
+            else str(model.early_stop_condition)
+        ),
+        expression_spec=expression_spec_source,
+        expression_spec_function_selector=(
+            expression_spec._julia_expression_spec_function_selector()
+        ),
+    )
 
 
 _TYPE_SPEC_MODULE = _block(r"""
@@ -640,6 +704,14 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
         using PythonCall
 
         {body}
+
+        const _PYSR_PARENT_BINDING_NAMES = Tuple(sort!(
+            filter(
+                name -> isdefined(@__MODULE__, name),
+                collect(names(@__MODULE__; all=true, imported=true)),
+            );
+            by=String,
+        ))
         end
         import .{module_name}: {spec.name}
         """) + "\n"
@@ -651,27 +723,184 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
 
 
 def load_type_spec_runtime(
-    definition: _TypeSpecDefinition, *, validate: bool = True
+    definition: _TypeSpecDefinition | _TypeSpecRuntimeDefinition,
 ) -> TypeSpecRuntime:
-    """Load a generated module and return its ephemeral Julia objects."""
-    module_symbol = jl.Symbol(definition.module_name)
-    if not bool(jl.isdefined(jl.Main, module_symbol)):
-        jl.Base.include_string(
-            jl.Main,
-            definition.source,
-            "PySR." + definition.module_name,
-        )
-    module = jl.getproperty(jl.Main, module_symbol)
-    value_type = jl.getproperty(module, jl.Symbol(definition.spec.name))
-
-    runtime = TypeSpecRuntime(
-        definition=definition,
-        module=module,
-        value_type=value_type,
+    """Load deterministic TypeSpec modules and return their Julia objects."""
+    type_definition = (
+        definition.type_spec
+        if isinstance(definition, _TypeSpecRuntimeDefinition)
+        else definition
     )
-    if validate:
-        _validate_type_spec_runtime(runtime)
+    if isinstance(definition, _TypeSpecRuntimeDefinition):
+        install_source = definition.source
+        filename = "PySR." + definition.module_name
+    else:
+        install_source = type_definition.source
+        filename = "PySR." + type_definition.module_name
+    module_symbol = jl.Symbol(type_definition.module_name)
+    runtime_module_symbol = (
+        jl.Symbol(definition.module_name)
+        if isinstance(definition, _TypeSpecRuntimeDefinition)
+        else None
+    )
+    needs_install = not bool(jl.isdefined(jl.Main, module_symbol))
+    if not needs_install and runtime_module_symbol is not None:
+        module = jl.getproperty(jl.Main, module_symbol)
+        needs_install = not bool(jl.isdefined(module, runtime_module_symbol))
+        if not needs_install:
+            configuration_module = jl.getproperty(module, runtime_module_symbol)
+            needs_install = not bool(
+                jl.isdefined(configuration_module, jl.Symbol("_definition_values"))
+            )
+    if needs_install:
+        jl.Base.include_string(jl.Main, install_source, filename)
+    module = jl.getproperty(jl.Main, module_symbol)
+    value_type = jl.getproperty(module, jl.Symbol(type_definition.spec.name))
+
+    if isinstance(definition, _TypeSpecDefinition):
+        runtime = TypeSpecRuntime(
+            definition=definition,
+            module=module,
+            value_type=value_type,
+            configuration_module=module,
+            operator_names={},
+            operator_functions={},
+        )
+    else:
+        assert runtime_module_symbol is not None
+        configuration_module = jl.getproperty(module, runtime_module_symbol)
+        raw_values = list(
+            jl.getproperty(configuration_module, jl.Symbol("_definition_values"))
+        )
+        source_count = len(
+            _runtime_sources(
+                definition.operators,
+                definition.elementwise_loss,
+                definition.loss_function,
+                definition.loss_function_expression,
+                definition.complexity_mapping,
+                definition.early_stop_condition,
+                definition.expression_spec,
+            )
+        )
+        expected_count = source_count + (
+            definition.expression_spec_function_selector is not None
+        )
+        if len(raw_values) != expected_count:
+            raise RuntimeError(
+                "TypeSpec runtime source/value ordering is inconsistent."
+            )
+        values = iter(raw_values[:source_count])
+        operator_functions = {
+            arity: tuple(next(values) for _ in operator_sources)
+            for arity, operator_sources in definition.operators
+        }
+        optional_sources = (
+            definition.elementwise_loss,
+            definition.loss_function,
+            definition.loss_function_expression,
+            definition.complexity_mapping,
+            definition.early_stop_condition,
+        )
+        optional_values = [
+            next(values) if source is not None else None for source in optional_sources
+        ]
+        runtime = TypeSpecRuntime(
+            definition=definition,
+            module=module,
+            value_type=value_type,
+            configuration_module=configuration_module,
+            operator_functions=operator_functions,
+            operator_names={
+                arity: tuple(str(jl.Base.nameof(function)) for function in functions)
+                for arity, functions in operator_functions.items()
+            },
+            elementwise_loss=optional_values[0],
+            loss_function=optional_values[1],
+            loss_function_expression=optional_values[2],
+            complexity_mapping=optional_values[3],
+            early_stop_condition=optional_values[4],
+            expression_spec=next(values),
+        )
     return runtime
+
+
+@cache
+def _type_spec_worker_addprocs_factory() -> AnyValue:
+    return jl.seval(r"""
+        begin
+            import Distributed
+            function (
+                addprocs_function,
+                source,
+                filename,
+                worker_imports,
+                type_module_name,
+                runtime_module_name,
+            )
+                addprocs = something(addprocs_function, Distributed.addprocs)
+                expression = Meta.parseall(source)
+                type_module_symbol = Symbol(type_module_name)
+                runtime_module_symbol = Symbol(runtime_module_name)
+                return function (numprocs; kwargs...)
+                    procs = addprocs(numprocs; kwargs...)
+                    try
+                        SymbolicRegression.import_module_on_workers(
+                            procs,
+                            pathof(SymbolicRegression),
+                            worker_imports,
+                            0,
+                        )
+                        Distributed.remotecall_eval(Main, procs, expression)
+                        head_module = getproperty(
+                            getproperty(Main, type_module_symbol),
+                            runtime_module_symbol,
+                        )
+                        module_expression = :(
+                            getproperty(
+                                getproperty(
+                                    Main,
+                                    $(QuoteNode(type_module_symbol)),
+                                ),
+                                $(QuoteNode(runtime_module_symbol)),
+                            )
+                        )
+                        for proc in procs
+                            worker_module = Distributed.remotecall_fetch(
+                                Core.eval,
+                                proc,
+                                Main,
+                                module_expression,
+                            )
+                            worker_module === head_module || error(
+                                "TypeSpec runtime identity differs on worker $proc."
+                            )
+                        end
+                    catch
+                        Distributed.rmprocs(procs)
+                        rethrow()
+                    end
+                    return procs
+                end
+            end
+        end
+        """)
+
+
+def create_type_spec_addprocs_function(
+    definition: _TypeSpecRuntimeDefinition,
+    addprocs_function: AnyValue | None,
+    worker_imports: AnyValue | None,
+) -> AnyValue:
+    """Wrap worker creation so every new process installs the exact runtime source."""
+    return _type_spec_worker_addprocs_factory()(
+        addprocs_function,
+        definition.source,
+        "PySR." + definition.module_name,
+        worker_imports,
+        definition.type_spec.module_name,
+        definition.module_name,
+    )
 
 
 @cache
@@ -785,14 +1014,15 @@ def _type_spec_validator() -> AnyValue:
 
             call("string", module_._string, sampled) isa AbstractString ||
                 fail("string", "must return an `AbstractString`.")
-            return nothing
+            return sampled
         end
         """)
 
 
-def _validate_type_spec_runtime(runtime: TypeSpecRuntime) -> None:
+def validate_type_spec_runtime(runtime: TypeSpecRuntime) -> None:
+    """Invoke TypeSpec hooks once before searching a new configuration."""
     try:
-        _type_spec_validator()(
+        sampled = _type_spec_validator()(
             runtime.module,
             runtime.value_type,
             runtime.spec.name,
@@ -800,23 +1030,31 @@ def _validate_type_spec_runtime(runtime: TypeSpecRuntime) -> None:
         )
     except JuliaError as error:
         raise ValueError(str(jl.sprint(jl.showerror, error.args[0]))) from error
+    validate_type_spec_options(
+        runtime,
+        runtime.operator_functions,
+        runtime.elementwise_loss,
+        probe_value=sampled,
+    )
 
 
 @cache
 def _type_spec_operator_validator() -> AnyValue:
     return jl.seval(r"""
-        function (module_, T, type_name, operator, arity)
+        function (T, type_name, operator, arity, probe_value)
             inferred = Base.promote_op(operator, ntuple(_ -> T, arity)...)
             inferred === T || throw(ArgumentError(
                 "TypeSpec operator `$(nameof(operator))` must be type-stable and " *
                 "infer `$type_name` as its return type; inferred `$inferred`. " *
                 "Add an explicit `::$type_name` return annotation if needed."
             ))
-            sampled = module_._init()
-            result = operator(ntuple(_ -> sampled, arity)...)
-            result isa T || throw(ArgumentError(
-                "TypeSpec operator `$(nameof(operator))` must return `$type_name`."
-            ))
+            if probe_value !== nothing
+                args = ntuple(_ -> probe_value, arity)
+                result = Base.invokelatest(operator, args...)
+                result isa T || throw(ArgumentError(
+                    "TypeSpec operator `$(nameof(operator))` must return `$type_name`."
+                ))
+            end
             return nothing
         end
         """)
@@ -825,14 +1063,11 @@ def _type_spec_operator_validator() -> AnyValue:
 @cache
 def _type_spec_loss_validator() -> AnyValue:
     return jl.seval(r"""
-        function (module_, T, elementwise_loss, configured_loss_type)
+        function (T, elementwise_loss, configured_loss_type, probe_value)
             loss_type = if elementwise_loss === nothing
                 configured_loss_type
             else
-                inferred = Base.promote_op(elementwise_loss, T, T)
-                sample = module_._init()
-                elementwise_loss(sample, sample)
-                inferred
+                Base.promote_op(elementwise_loss, T, T)
             end
             isconcretetype(loss_type) && loss_type <: AbstractFloat ||
                 throw(ArgumentError(
@@ -840,6 +1075,14 @@ def _type_spec_loss_validator() -> AnyValue:
                     "`AbstractFloat`; got `$loss_type`. Add a concrete Julia " *
                     "return type annotation."
                 ))
+            if probe_value !== nothing && elementwise_loss !== nothing
+                loss = Base.invokelatest(
+                    elementwise_loss, probe_value, probe_value
+                )
+                loss isa loss_type || throw(ArgumentError(
+                    "The TypeSpec elementwise loss must return `$loss_type`."
+                ))
+            end
             return loss_type
         end
         """)
@@ -849,17 +1092,19 @@ def validate_type_spec_options(
     runtime: TypeSpecRuntime,
     operators: dict[int, tuple[AnyValue, ...]],
     elementwise_loss: AnyValue | None,
+    *,
+    probe_value: AnyValue | None = None,
 ) -> AnyValue:
     """Validate ordinary Julia options against a loaded TypeSpec."""
     try:
         for arity, functions in operators.items():
             for function in functions:
                 _type_spec_operator_validator()(
-                    runtime.module,
                     runtime.value_type,
                     runtime.spec.name,
                     function,
                     arity,
+                    probe_value,
                 )
         configured_loss_type = (
             None
@@ -871,10 +1116,10 @@ def validate_type_spec_options(
             )
         )
         return _type_spec_loss_validator()(
-            runtime.module,
             runtime.value_type,
             elementwise_loss,
             configured_loss_type,
+            probe_value,
         )
     except JuliaError as error:
         raise ValueError(str(jl.sprint(jl.showerror, error.args[0]))) from error
@@ -912,140 +1157,178 @@ def type_spec_to_python_array(runtime: TypeSpecRuntime, values: Any) -> np.ndarr
     return output
 
 
-def wrap_type_spec_addprocs_function(
-    definition: _TypeSpecDefinition,
-    addprocs_function: AnyValue | None,
-    worker_imports: AnyValue | None,
-    operator_sources: AnyValue | None = None,
-    objective_sources: AnyValue | None = None,
-    template_source: str | None = None,
-    template_function_name: AnyValue | None = None,
-    option_sources: AnyValue | None = None,
-) -> AnyValue:
-    """Create workers and install the private module before function transfer."""
-    jl.seval("using Distributed: Distributed")
-    if addprocs_function is None:
-        addprocs_function = jl.Distributed.addprocs
-    module_expression = jl.Meta.parseall(definition.source)
-    module_symbol = jl.Symbol(definition.module_name)
-    operators = (
-        operator_sources if operator_sources is not None else jl.seval("String[]")
-    )
-    objectives = (
-        objective_sources if objective_sources is not None else jl.seval("String[]")
-    )
-    options = option_sources if option_sources is not None else jl.seval("String[]")
-    template = template_source if template_source is not None else jl.nothing
-    template_name = (
-        template_function_name if template_function_name is not None else jl.nothing
-    )
-    imports = worker_imports if worker_imports is not None else jl.nothing
-    return jl.seval("""
-        function (
-            addprocs_function,
-            module_expression,
-            module_symbol,
-            operator_sources,
-            objective_sources,
-            option_sources,
-            template_source,
-            template_function_name,
-            imports,
+class CallableJuliaExpression:
+    def __init__(self, expression: AnyValue, runtime: TypeSpecRuntime):
+        self.expression = expression
+        self.runtime = runtime
+
+    def __call__(self, X: np.ndarray, *args):
+        jl_X = type_spec_to_julia_array(
+            self.runtime,
+            object_array_2d(X),
+            transpose=True,
         )
-            return function (numprocs; kws...)
-                procs = addprocs_function(numprocs; kws...)
-                try
-                    SymbolicRegression.import_module_on_workers(
-                        procs, pathof(SymbolicRegression), imports, 0
-                    )
-                    Distributed.remotecall_eval(Main, procs, module_expression)
-                    setup_expression = quote
-                        module_ = getproperty(
-                            Main, $(QuoteNode(module_symbol))
-                        )
-                        for name in names(Main; all=true, imported=true)
-                            isdefined(Main, name) || continue
-                            value = getproperty(Main, name)
-                            value isa Module || continue
-                            isdefined(module_, name) && continue
-                            Core.eval(
-                                module_,
-                                Expr(
-                                    :const,
-                                    Expr(:(=), name, QuoteNode(value)),
-                                ),
-                            )
-                        end
-                    end
-                    Distributed.remotecall_eval(Main, procs, setup_expression)
-                    for (kind, sources) in (
-                        ("operator", operator_sources),
-                        ("objective", objective_sources),
-                        ("option", option_sources),
-                    )
-                        for (index, source) in pairs(sources)
-                            expression = quote
-                                module_ = getproperty(
-                                    Main, $(QuoteNode(module_symbol))
-                                )
-                                Base.include_string(
-                                    module_,
-                                    $source,
-                                    $("PySR TypeSpec $kind $index"),
-                                )
-                            end
-                            Distributed.remotecall_eval(Main, procs, expression)
-                        end
-                    end
-                    if template_source !== nothing
-                        expression = quote
-                            module_ = getproperty(
-                                Main, $(QuoteNode(module_symbol))
-                            )
-                            target_function_name = $(
-                                QuoteNode(template_function_name)
-                            )
-                            worker_spec = Base.include_string(
-                                module_,
-                                $template_source,
-                                "PySR TypeSpec template",
-                            )
-                            worker_function_name = nameof(
-                                worker_spec.structure.combine
-                            )
-                            if worker_function_name != target_function_name
-                                Core.eval(
-                                    module_,
-                                    Expr(
-                                        :const,
-                                        Expr(
-                                            :(=),
-                                            target_function_name,
-                                            QuoteNode(
-                                                worker_spec.structure.combine
-                                            ),
-                                        ),
-                                    ),
-                                )
-                            end
-                        end
-                        Distributed.remotecall_eval(Main, procs, expression)
-                    end
-                catch
-                    Distributed.rmprocs(procs)
-                    rethrow()
-                end
-                return procs
-            end
-        end
-        """)(
-        addprocs_function,
-        module_expression,
-        module_symbol,
-        operators,
-        objectives,
-        options,
-        template,
-        template_name,
-        imports,
+        raw_output = self.expression(jl_X, *args)
+        return type_spec_to_python_array(self.runtime, raw_output)
+
+
+def create_type_spec_exports(
+    runtime: TypeSpecRuntime,
+    equations: pd.DataFrame,
+    search_output: AnyValue,
+    output_index: int | None,
+) -> pd.DataFrame:
+    equations = copy.deepcopy(equations)
+    _, all_out_hof = search_output
+    out_hof = all_out_hof[output_index] if output_index is not None else all_out_hof
+    expressions = []
+    callables = []
+    for _, row in equations.iterrows():
+        expression = out_hof.members[row["complexity"] - 1].tree
+        expressions.append(expression)
+        callables.append(CallableJuliaExpression(expression, runtime))
+    return pd.DataFrame(
+        {"julia_expression": expressions, "lambda_format": callables},
+        index=equations.index,
     )
+
+
+def prepare_type_spec_fit_data(
+    model: Any,
+    X: Any,
+    y: Any,
+    Xresampled: Any,
+    weights: Any,
+    variable_names: Any,
+    complexity_of_variables: Any,
+    X_units: Any,
+    y_units: Any,
+) -> tuple[np.ndarray, np.ndarray, None, Any, np.ndarray, Any, Any, Any]:
+    if Xresampled is not None or model.denoise or model.select_k_features:
+        raise NotImplementedError(
+            "TypeSpec does not support resampling, denoising, or feature selection."
+        )
+    if isinstance(X, pd.DataFrame):
+        if variable_names is not None:
+            warnings.warn(
+                "`variable_names` has been reset to `None` as `X` is a DataFrame."
+            )
+        variable_names = X.columns.astype(str).to_numpy()
+        X = X.to_numpy(dtype=object)
+    else:
+        X = object_array_2d(X)
+    if X.ndim != 2:
+        raise ValueError("TypeSpec X must be a 2D array of logical values.")
+    if X.shape[1] == 0:
+        raise ValueError("TypeSpec X must contain at least one feature.")
+    if variable_names is not None and len(variable_names) != X.shape[1]:
+        raise ValueError("`variable_names` must provide one name per TypeSpec feature.")
+    if variable_names is not None and any(" " in name for name in variable_names):
+        variable_names = [name.replace(" ", "_") for name in variable_names]
+        warnings.warn(
+            "Spaces in variable names are not supported. "
+            "Spaces have been replaced with underscores. \n"
+            "Please use valid names instead."
+        )
+
+    if isinstance(y, (pd.Series, pd.DataFrame)):
+        y = y.to_numpy(dtype=object)
+    else:
+        y = object_array_1d(y)
+    if y.ndim == 2 and y.shape[1] == 1:
+        y = y[:, 0]
+    if y.ndim != 1:
+        raise NotImplementedError("TypeSpec currently supports one output.")
+    if X.shape[0] != y.shape[0]:
+        raise ValueError("X and y have inconsistent numbers of samples.")
+    if X.shape[0] == 0:
+        raise ValueError("X and y must contain at least one sample.")
+    if weights is not None:
+        raise NotImplementedError("TypeSpec does not currently support weights.")
+    if X_units is not None or y_units is not None:
+        raise NotImplementedError("TypeSpec does not currently support units.")
+
+    model.n_features_in_ = X.shape[1]
+    if variable_names is None:
+        variable_names = np.array([f"x{i}" for i in range(X.shape[1])])
+    model.feature_names_in_ = np.asarray(variable_names, dtype=str)
+    model.display_feature_names_in_ = model.feature_names_in_
+    model.nout_ = 1
+    model.complexity_of_variables_ = copy.deepcopy(complexity_of_variables)
+    model.X_units_ = copy.deepcopy(X_units)
+    model.y_units_ = copy.deepcopy(y_units)
+    return (
+        X,
+        y,
+        None,
+        weights,
+        model.feature_names_in_,
+        complexity_of_variables,
+        X_units,
+        y_units,
+    )
+
+
+def prepare_type_spec_prediction_data(model: Any, X: Any) -> np.ndarray:
+    if not isinstance(X, pd.DataFrame):
+        X = object_array_2d(X)
+        if X.ndim != 2:
+            raise ValueError("X must be a 2D array.")
+        if X.shape[1] != model.n_features_in_:
+            raise ValueError("X has a different number of features than during fit.")
+        X = pd.DataFrame(X)
+    if isinstance(X.columns, pd.RangeIndex):
+        if model.selection_mask_ is not None:
+            X = X[X.columns[model.selection_mask_]]
+        X.columns = model.feature_names_in_
+    columns = X.columns.astype(str)
+    if columns.str.contains(" ").any():
+        X = X.copy()
+        X.columns = columns.str.replace(" ", "_")
+        warnings.warn(
+            "Spaces in DataFrame column names are not supported. "
+            "Spaces have been replaced with underscores. \n"
+            "Please rename the columns to valid names."
+        )
+    X = X.rename(columns=str)
+    missing_features = set(model.feature_names_in_) - set(X.columns)
+    if missing_features:
+        raise ValueError(f"X is missing features: {sorted(missing_features)}")
+    return np.asarray(X.reindex(columns=model.feature_names_in_).to_numpy(dtype=object))
+
+
+def validate_type_spec_model_configuration(model: Any) -> None:
+    if model.binary_operators is not None or model.unary_operators is not None:
+        raise ValueError(
+            "TypeSpec requires `operators={...}` and does not accept "
+            "`binary_operators` or `unary_operators`."
+        )
+    validate_type_spec_configuration(
+        model.type_spec,
+        model.operators,
+        elementwise_loss=model.elementwise_loss,
+        loss_function=model.loss_function,
+        loss_function_expression=model.loss_function_expression,
+    )
+    unsupported = {
+        "guesses": model.guesses is not None,
+        "turbo": model.turbo,
+        "bumper": model.bumper,
+        "autodiff_backend": model.autodiff_backend is not None,
+        "output_jax_format": model.output_jax_format,
+        "output_torch_format": model.output_torch_format,
+        "extra_sympy_mappings": model.extra_sympy_mappings is not None,
+        "extra_jax_mappings": model.extra_jax_mappings is not None,
+        "extra_torch_mappings": model.extra_torch_mappings is not None,
+    }
+    configured = [name for name, enabled in unsupported.items() if enabled]
+    if configured:
+        raise ValueError(
+            "TypeSpec does not support "
+            + ", ".join(f"`{name}`" for name in configured)
+            + "."
+        )
+    expression_spec = model.expression_spec_
+    if not expression_spec.supports_type_spec:
+        raise ValueError(f"{type(expression_spec).__name__} does not support TypeSpec.")
+    expression_spec._validate_type_spec()

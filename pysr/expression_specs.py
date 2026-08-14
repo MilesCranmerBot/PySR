@@ -12,12 +12,6 @@ import pandas as pd
 from .export import add_export_formats
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, SymbolicRegression, jl
-from .type_specs import (
-    TypeSpecRuntime,
-    object_array_2d,
-    type_spec_to_julia_array,
-    type_spec_to_python_array,
-)
 
 try:
     from typing import TypeAlias
@@ -46,8 +40,7 @@ class AbstractExpressionSpec(ABC):
     2. create_exports(), which will be used to create the exports of the equations, such as
         the executable format, the SymPy format, etc.
 
-    It may also optionally declare support for TypeSpec values and implement
-    the corresponding validation and Julia-source hooks.
+    Implementations may also declare the export formats they support.
     """
 
     @abstractmethod
@@ -56,6 +49,20 @@ class AbstractExpressionSpec(ABC):
         pass  # pragma: no cover
 
     def _julia_expression_spec_source(self, *, prototype: str | None) -> str | None:
+        """Return self-contained Julia source for a TypeSpec-compatible spec.
+
+        ``prototype`` is Julia source for one value of the generated type. PySR
+        evaluates the returned source once in the fingerprinted runtime module.
+        """
+        return None
+
+    def _julia_expression_spec_function_selector(self) -> str | None:
+        """Return Julia source selecting the callable nested in the spec.
+
+        PySR evaluates the source to a selector, invokes it with the expression
+        spec, and binds the result under a deterministic runtime-module name so
+        checkpoints and workers resolve the same callable identity.
+        """
         return None
 
     @property
@@ -110,11 +117,6 @@ class ExpressionSpec(AbstractExpressionSpec):
         search_output,
         i: int | None = None,
     ):
-        type_spec_exports = _create_type_spec_exports(
-            model, equations, search_output, i
-        )
-        if type_spec_exports is not None:
-            return type_spec_exports
         return add_export_formats(
             equations,
             feature_names_in=model.feature_names_in_,
@@ -240,6 +242,9 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     def _julia_expression_spec_source(self, *, prototype: str | None) -> str:
         return self._template_macro_str(prototype=prototype)
 
+    def _julia_expression_spec_function_selector(self) -> str:
+        return "spec -> spec.structure.combine"
+
     @property
     def supports_type_spec(self) -> bool:
         return True
@@ -262,58 +267,23 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         search_output,
         i: int | None = None,
     ) -> pd.DataFrame:
-        # We try to load the raw julia state from a saved binary stream
-        # if not provided.
-        type_spec_exports = _create_type_spec_exports(
-            model, equations, search_output, i
-        )
-        if type_spec_exports is not None:
-            return type_spec_exports
         search_output = search_output or model.julia_state_
         return _search_output_to_callable_expressions(equations, search_output, i)
 
 
 class CallableJuliaExpression:
-    def __init__(self, expression, type_spec_runtime: TypeSpecRuntime | None = None):
+    def __init__(self, expression):
         self.expression = expression
-        self.type_spec_runtime = type_spec_runtime
 
     def __call__(self, X: np.ndarray, *args):
-        if self.type_spec_runtime is not None:
-            jl_X = type_spec_to_julia_array(
-                self.type_spec_runtime, object_array_2d(X), transpose=True
-            )
-        else:
-            jl_X = jl_array(X.T)
-        raw_output = self.expression(jl_X, *args)
-        if self.type_spec_runtime is not None:
-            return type_spec_to_python_array(self.type_spec_runtime, raw_output)
+        raw_output = self.expression(jl_array(X.T), *args)
         return np.array(raw_output).T
-
-
-def _create_type_spec_exports(
-    model, equations, search_output, i
-) -> pd.DataFrame | None:
-    if not model._has_fitted_type_spec():
-        return None
-    if search_output is None and hasattr(model, "julia_state_stream_"):
-        search_output = model.julia_state_
-    if search_output is None:
-        raise ValueError(
-            "Cannot reconstruct TypeSpec expressions without serialized Julia state. "
-            "Load from a run directory containing `checkpoint.pkl` saved by the "
-            "original search."
-        )
-    return _search_output_to_callable_expressions(
-        equations, search_output, i, model._load_type_spec_runtime()
-    )
 
 
 def _search_output_to_callable_expressions(
     equations: pd.DataFrame,
     search_output,
     i: int | None,
-    type_spec_runtime: TypeSpecRuntime | None = None,
 ) -> pd.DataFrame:
     equations = copy.deepcopy(equations)
     _, all_out_hof = search_output
@@ -325,7 +295,7 @@ def _search_output_to_callable_expressions(
         curComplexity = row["complexity"]
         expression = out_hof.members[curComplexity - 1].tree
         expressions.append(expression)
-        callables.append(CallableJuliaExpression(expression, type_spec_runtime))
+        callables.append(CallableJuliaExpression(expression))
 
     df = pd.DataFrame(
         {"julia_expression": expressions, "lambda_format": callables},

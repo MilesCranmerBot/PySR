@@ -1482,14 +1482,23 @@ class TestMiscellaneous(unittest.TestCase):
 
     def test_checkpoint_schema(self):
         state = PySRRegressor().__getstate__()
-        self.assertEqual(state["_checkpoint_schema_version"], 2)
+        self.assertEqual(state["_checkpoint_schema_version"], 3)
 
-        for schema_version in (None, 1, 3):
+        schema_two_state = state.copy()
+        schema_two_state.pop("type_spec")
+        schema_two_model = PySRRegressor.__new__(PySRRegressor)
+        schema_two_model.__setstate__(schema_two_state)
+        self.assertIsNone(schema_two_model.type_spec)
+
+        missing_schema_state = state.copy()
+        missing_schema_state.pop("_checkpoint_schema_version")
+        missing_schema_model = PySRRegressor.__new__(PySRRegressor)
+        with self.assertRaisesRegex(ValueError, "Unsupported PySR checkpoint schema"):
+            missing_schema_model.__setstate__(missing_schema_state)
+
+        for schema_version in (1, 2, 4):
             incompatible_state = state.copy()
-            if schema_version is None:
-                incompatible_state.pop("_checkpoint_schema_version")
-            else:
-                incompatible_state["_checkpoint_schema_version"] = schema_version
+            incompatible_state["_checkpoint_schema_version"] = schema_version
 
             model = PySRRegressor.__new__(PySRRegressor)
             with self.assertRaisesRegex(
