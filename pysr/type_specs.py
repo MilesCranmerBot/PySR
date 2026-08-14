@@ -188,7 +188,7 @@ class TypeSpecRuntime:
     loss_function: AnyValue | None = None
     loss_function_expression: AnyValue | None = None
     complexity_mapping: AnyValue | None = None
-    early_stop_condition: AnyValue | None = None
+    early_stop_condition: float | AnyValue | None = None
     expression_spec: AnyValue | None = None
 
     @property
@@ -705,7 +705,8 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
 
         const _PYSR_PARENT_BINDING_NAMES = Tuple(sort!(
             filter(
-                name -> isdefined(@__MODULE__, name),
+                name -> isdefined(@__MODULE__, name) &&
+                    !startswith(String(name), '#'),
                 collect(names(@__MODULE__; all=true, imported=true)),
             );
             by=String,
@@ -1173,7 +1174,7 @@ class CallableJuliaExpression:
 def create_type_spec_exports(
     runtime: TypeSpecRuntime,
     equations: pd.DataFrame,
-    search_output: AnyValue,
+    search_output: tuple[AnyValue, AnyValue],
     output_index: int | None,
 ) -> pd.DataFrame:
     equations = copy.deepcopy(equations)

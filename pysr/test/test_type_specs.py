@@ -573,12 +573,16 @@ print(json.dumps({{
                 "extra_sympy_mappings",
             ),
             (
-                tiny_model(string_spec(), extra_jax_mappings={"f": "jnp.asarray"}),
+                tiny_model(
+                    string_spec(), extra_jax_mappings={lambda x: x: "jnp.asarray"}
+                ),
                 ValueError,
                 "extra_jax_mappings",
             ),
             (
-                tiny_model(string_spec(), extra_torch_mappings={"f": lambda x: x}),
+                tiny_model(
+                    string_spec(), extra_torch_mappings={lambda x: x: lambda x: x}
+                ),
                 ValueError,
                 "extra_torch_mappings",
             ),
