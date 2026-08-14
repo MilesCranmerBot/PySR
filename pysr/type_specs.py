@@ -384,7 +384,7 @@ def compile_type_spec_runtime(
         "loss_type": spec.loss_type,
     }
     fingerprint = hashlib.sha256(
-        ("2\0" + json.dumps(payload, sort_keys=True)).encode()
+        json.dumps(payload, sort_keys=True).encode()
     ).hexdigest()
     runtime_module_name = f"_PySRConfig_{fingerprint[:20]}"
     sources = _runtime_sources(
