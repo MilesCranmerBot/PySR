@@ -249,13 +249,6 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     def supports_type_spec(self) -> bool:
         return True
 
-    def _validate_type_spec(self) -> None:
-        if self.parameters:
-            raise ValueError(
-                "TypeSpec does not support TemplateExpressionSpec `parameters`. "
-                "Represent optimizable values as TypeSpec constants instead."
-            )
-
     @property
     def evaluates_in_julia(self):
         return True

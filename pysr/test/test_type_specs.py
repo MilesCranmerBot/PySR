@@ -1116,18 +1116,44 @@ print(json.dumps({{
         self.assertEqual(int(structure.num_features.f), 1)
         self.assertEqual(int(structure.num_features.g), 1)
 
-    def test_template_type_spec_rejects_parameters(self):
-        X, y = string_data()
+    def test_template_type_spec_parameters(self):
+        type_name = "TemplateParameterValue"
+        X, y = string_data(constant=True)
         expression_spec = TemplateExpressionSpec(
-            combine="p[1] * f(x)",
+            combine="choose_parameter(p[1], f(x))",
             expressions=["f"],
             variable_names=["x"],
             parameters={"p": 1},
         )
-        model = tiny_model(string_spec(), expression_spec=expression_spec)
+        model = tiny_model(
+            string_spec(
+                name=type_name,
+                sample=f'rng -> {type_name}("a")',
+                mutate="(rng, value, temperature) -> value",
+            ),
+            expression_spec=expression_spec,
+            operators={
+                1: [f"identity_{type_name}(x::{type_name}) = x"],
+                2: [
+                    f"""
+                    choose_parameter(a::{type_name}, b::{type_name}) = a
+                    choose_parameter(a::{type_name}, b::ValidVector) =
+                        ValidVector(map(_ -> a, b.x), b.valid)
+                    """
+                ],
+            },
+            parallelism="multiprocessing",
+            procs=2,
+        )
 
-        with self.assertRaisesRegex(ValueError, "parameters"):
-            model.fit(X, y)
+        model.fit(X, y)
+        fingerprint = model._type_spec_runtime_definition_.fingerprint
+        model.set_params(warm_start=True)
+
+        model.fit(X, y)
+
+        self.assertEqual(model._type_spec_runtime_definition_.fingerprint, fingerprint)
+        np.testing.assert_array_equal(model.predict(X), y)
 
     def test_numeric_path_remains_independent(self):
         X = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
