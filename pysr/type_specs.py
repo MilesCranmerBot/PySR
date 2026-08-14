@@ -169,7 +169,7 @@ class _RegisteredTypeSpecJuliaDefinition:
 
 
 @dataclass(frozen=True)
-class _TypeSpecRuntime:
+class TypeSpecRuntime:
     definition: _TypeSpecDefinition
     module: AnyValue
     value_type: AnyValue
@@ -186,7 +186,7 @@ _TYPE_SPEC_DEFINITION_REGISTRY: dict[
 
 @dataclass
 class _TypeSpecDefinitionTransaction:
-    runtime: _TypeSpecRuntime
+    runtime: TypeSpecRuntime
     definitions: list[_TypeSpecJuliaDefinition] = field(default_factory=list)
     _previous: dict[tuple[str, str, str], _RegisteredTypeSpecJuliaDefinition | None] = (
         field(default_factory=dict)
@@ -290,7 +290,7 @@ def _function_name_binder() -> AnyValue:
 
 
 def _include_type_spec_source(
-    runtime: _TypeSpecRuntime, source: str, kind: str
+    runtime: TypeSpecRuntime, source: str, kind: str
 ) -> AnyValue:
     _main_module_binder()(runtime.module)
     return jl.Base.include_string(
@@ -322,7 +322,7 @@ def _bind_function_name(
 
 
 def _evaluate_type_spec_definition(
-    runtime: _TypeSpecRuntime,
+    runtime: TypeSpecRuntime,
     kind: str,
     source: str,
     *,
@@ -362,7 +362,7 @@ def _evaluate_type_spec_definition(
 
 
 def restore_type_spec_definitions(
-    runtime: _TypeSpecRuntime,
+    runtime: TypeSpecRuntime,
     definitions: tuple[_TypeSpecJuliaDefinition, ...],
 ) -> None:
     module_name = runtime.definition.module_name
@@ -652,7 +652,7 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
 
 def load_type_spec_runtime(
     definition: _TypeSpecDefinition, *, validate: bool = True
-) -> _TypeSpecRuntime:
+) -> TypeSpecRuntime:
     """Load a generated module and return its ephemeral Julia objects."""
     module_symbol = jl.Symbol(definition.module_name)
     if not bool(jl.isdefined(jl.Main, module_symbol)):
@@ -664,7 +664,7 @@ def load_type_spec_runtime(
     module = jl.getproperty(jl.Main, module_symbol)
     value_type = jl.getproperty(module, jl.Symbol(definition.spec.name))
 
-    runtime = _TypeSpecRuntime(
+    runtime = TypeSpecRuntime(
         definition=definition,
         module=module,
         value_type=value_type,
@@ -790,7 +790,7 @@ def _type_spec_validator() -> AnyValue:
         """)
 
 
-def _validate_type_spec_runtime(runtime: _TypeSpecRuntime) -> None:
+def _validate_type_spec_runtime(runtime: TypeSpecRuntime) -> None:
     try:
         _type_spec_validator()(
             runtime.module,
@@ -846,7 +846,7 @@ def _type_spec_loss_validator() -> AnyValue:
 
 
 def validate_type_spec_options(
-    runtime: _TypeSpecRuntime,
+    runtime: TypeSpecRuntime,
     operators: dict[int, tuple[AnyValue, ...]],
     elementwise_loss: AnyValue | None,
 ) -> AnyValue:
@@ -881,7 +881,7 @@ def validate_type_spec_options(
 
 
 def type_spec_to_julia_array(
-    runtime: _TypeSpecRuntime, values: Any, *, transpose: bool = False
+    runtime: TypeSpecRuntime, values: Any, *, transpose: bool = False
 ) -> AnyValue:
     """Convert logical Python values to an array of the generated Julia type."""
     array = (
@@ -900,7 +900,7 @@ def type_spec_to_julia_array(
         raise ValueError(str(jl.sprint(jl.showerror, error.args[0]))) from error
 
 
-def type_spec_to_python_array(runtime: _TypeSpecRuntime, values: Any) -> np.ndarray:
+def type_spec_to_python_array(runtime: TypeSpecRuntime, values: Any) -> np.ndarray:
     """Unwrap generated values into their logical one-field or tuple payloads."""
     field_names = tuple(runtime.spec.fields)
     output = np.empty(len(values), dtype=object)

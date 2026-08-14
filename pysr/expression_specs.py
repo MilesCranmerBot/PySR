@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import copy
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from textwrap import dedent
-from typing import TYPE_CHECKING, Any, NewType
+from typing import TYPE_CHECKING, Any, ClassVar, NewType
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,7 @@ from .export import add_export_formats
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, SymbolicRegression, jl
 from .type_specs import (
-    _TypeSpecRuntime,
+    TypeSpecRuntime,
     object_array_2d,
     type_spec_to_julia_array,
     type_spec_to_python_array,
@@ -146,6 +147,7 @@ class ExpressionSpec(AbstractExpressionSpec):
         return True
 
 
+@dataclass
 class TemplateExpressionSpec(AbstractExpressionSpec):
     """Spec for templated expressions.
 
@@ -197,20 +199,12 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     the derivative of f with respect to its first argument, evaluated at x.
     """
 
-    _spec_cache: dict[tuple[str, ...], AnyValue] = {}
+    combine: str
+    expressions: list[str]
+    variable_names: list[str]
+    parameters: dict[str, int] | None = None
 
-    def __init__(
-        self,
-        *,
-        combine: str,
-        expressions: list[str],
-        variable_names: list[str],
-        parameters: dict[str, int] | None = None,
-    ) -> None:
-        self.combine = combine
-        self.expressions = expressions
-        self.variable_names = variable_names
-        self.parameters = parameters
+    _spec_cache: ClassVar[dict[tuple[str, ...], AnyValue]] = {}
 
     def _get_cache_key(self):
         return (
@@ -280,7 +274,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
 
 
 class CallableJuliaExpression:
-    def __init__(self, expression, type_spec_runtime: _TypeSpecRuntime | None = None):
+    def __init__(self, expression, type_spec_runtime: TypeSpecRuntime | None = None):
         self.expression = expression
         self.type_spec_runtime = type_spec_runtime
 
@@ -319,7 +313,7 @@ def _search_output_to_callable_expressions(
     equations: pd.DataFrame,
     search_output,
     i: int | None,
-    type_spec_runtime: _TypeSpecRuntime | None = None,
+    type_spec_runtime: TypeSpecRuntime | None = None,
 ) -> pd.DataFrame:
     equations = copy.deepcopy(equations)
     _, all_out_hof = search_output

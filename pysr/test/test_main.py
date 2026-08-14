@@ -7,6 +7,7 @@ import tempfile
 import traceback
 import unittest
 import warnings
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from textwrap import dedent
 from unittest import mock
@@ -2453,6 +2454,15 @@ class TestTemplateExpressionSpec(unittest.TestCase):
     def _check_macro_str(self, spec, expected_str):
         self.assertEqual(
             spec._template_macro_str().strip(), dedent(expected_str).strip()
+        )
+
+    def test_is_dataclass(self):
+        spec = TemplateExpressionSpec("f(x)", ["f"], ["x"])
+
+        self.assertTrue(is_dataclass(spec))
+        self.assertEqual(
+            [field.name for field in fields(spec)],
+            ["combine", "expressions", "variable_names", "parameters"],
         )
 
     def test_single_expression_no_params_single_variable(self):

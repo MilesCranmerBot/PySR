@@ -57,10 +57,10 @@ from .mutations import (
 from .plugins import AbstractPlugin
 from .type_specs import (
     TypeSpec,
+    TypeSpecRuntime,
     _TypeSpecDefinition,
     _TypeSpecDefinitionTransaction,
     _TypeSpecJuliaDefinition,
-    _TypeSpecRuntime,
     compile_type_spec,
     load_type_spec_runtime,
     object_array_1d,
@@ -1787,7 +1787,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             "supports_sympy": supports_sympy,
         }
 
-    def _load_type_spec_runtime(self, *, for_fit: bool = False) -> _TypeSpecRuntime:
+    def _load_type_spec_runtime(self, *, for_fit: bool = False) -> TypeSpecRuntime:
         if not for_fit:
             check_is_fitted(self, attributes=["_type_spec_definition_"])
             return load_type_spec_runtime(
@@ -1813,7 +1813,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
     def _julia_expression_spec(
         self,
-        type_spec_runtime: _TypeSpecRuntime | None = None,
+        type_spec_runtime: TypeSpecRuntime | None = None,
         transaction: _TypeSpecDefinitionTransaction | None = None,
     ) -> AnyValue:
         source = (
@@ -2360,7 +2360,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         weights: ndarray | None,
         seed: int,
         julia_definition_sources: dict[str, Any],
-        type_spec_runtime: _TypeSpecRuntime | None,
+        type_spec_runtime: TypeSpecRuntime | None,
         definition_transaction: _TypeSpecDefinitionTransaction | None,
     ):
         """
