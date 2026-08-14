@@ -783,18 +783,21 @@ offset = np.array([0.5, -1.0])
 y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
 ```
 
-PySR wraps each vector in a private Julia `Vec2` type. `parameters` extracts the
-continuous values optimized by BFGS, and `with_parameters` rebuilds the constant
-after optimization. PySR derives initialization, mutation, validation, counting,
-packing, and unpacking from this pair:
+PySR wraps each vector in a private Julia `Vec2` type. `scalar_constants`
+extracts the continuous values optimized by BFGS, and
+`with_scalar_constants` rebuilds the constant after optimization. PySR derives
+initialization, mutation, validation, counting, packing, and unpacking from
+this pair:
 
 ```python
 type_spec = TypeSpec(
     "Vec2",
     fields={"data": "Vector{Float64}"},
     sample="rng -> Vec2(randn(rng, 2))",
-    parameters="value -> value.data",
-    with_parameters="(value, parameters) -> Vec2(parameters)",
+    scalar_constants="value -> value.data",
+    with_scalar_constants=(
+        "(value, scalar_constants) -> Vec2(scalar_constants)"
+    ),
 )
 
 model = PySRRegressor(
@@ -863,7 +866,8 @@ model = PySRRegressor(
 ```
 
 Template-level `parameters` are unavailable with `TypeSpec`. Use TypeSpec
-constants and their `parameters` and `with_parameters` hooks instead.
+constants and their `scalar_constants` and `with_scalar_constants` hooks
+instead.
 
 <details>
 <summary>String-valued expressions and discrete constants</summary>
@@ -927,8 +931,9 @@ model.fit(X, y)
 print(model.equations_)
 ```
 
-Because this type has no `parameters` pair, PySR does not run BFGS on its
-constants. The explicit `mutate` hook resamples separators during evolution.
+Because this type has no scalar-constant hook pair, PySR does not run BFGS on
+its constants. The explicit `mutate` hook resamples separators during
+evolution.
 
 </details>
 
@@ -936,7 +941,7 @@ constants. The explicit `mutate` hook resamples separators during evolution.
 <summary>Advanced: recovering a neural network with tensor constants</summary>
 
 `TypeSpec` can place scalar, vector, and matrix constants in one Julia value
-type. The parameter hooks flatten each constant for BFGS and rebuild its
+type. The scalar-constant hooks flatten each constant for BFGS and rebuild its
 original shape.
 
 Here we recover a two-layer neural network
@@ -985,15 +990,15 @@ type_spec = TypeSpec(
         NNValue(value.data .+ temperature .* randn(rng, size(value.data)...))
     end
     """,
-    parameters="""
-    function parameters(value)
+    scalar_constants="""
+    function scalar_constants(value)
         return value.data isa Float64 ? [value.data] : vec(value.data)
     end
     """,
-    with_parameters="""
-    function with_parameters(value, parameters)
-        data = value.data isa Float64 ? parameters[1] :
-            reshape(collect(parameters), size(value.data))
+    with_scalar_constants="""
+    function with_scalar_constants(value, scalar_constants)
+        data = value.data isa Float64 ? scalar_constants[1] :
+            reshape(collect(scalar_constants), size(value.data))
         return NNValue(data)
     end
     """,

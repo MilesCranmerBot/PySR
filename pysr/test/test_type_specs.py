@@ -44,9 +44,10 @@ def vector_spec(**overrides):
         name,
         fields=overrides.pop("fields", {"data": "Vector{Float64}"}),
         sample=overrides.pop("sample", f"rng -> {name}([3.0, 4.0])"),
-        parameters=overrides.pop("parameters", "value -> value.data"),
-        with_parameters=overrides.pop(
-            "with_parameters", f"(value, parameters) -> {name}(parameters)"
+        scalar_constants=overrides.pop("scalar_constants", "value -> value.data"),
+        with_scalar_constants=overrides.pop(
+            "with_scalar_constants",
+            f"(value, scalar_constants) -> {name}(scalar_constants)",
         ),
         **overrides,
     )
@@ -116,7 +117,7 @@ class TestTypeSpecs(unittest.TestCase):
             ({"name": "not valid"}, "not an identifier"),
             ({"fields": {}}, "non-empty"),
             ({"fields": {"not valid": "String"}}, "not an identifier"),
-            ({"parameters": "value -> Float64[]"}, "provided together"),
+            ({"scalar_constants": "value -> Float64[]"}, "provided together"),
             ({"mutate": None}, "requires an explicit `mutate`"),
             ({"fields": {"data": ""}}, "requires a Julia type"),
             ({"sample": ""}, "must contain Julia source"),
@@ -194,18 +195,18 @@ class TestTypeSpecs(unittest.TestCase):
             "[1.0, 2.0]",
         )
 
-        immutable_parameters = vector_spec(
-            name="ImmutableParametersValue",
-            parameters=(
+        immutable_scalar_constants = vector_spec(
+            name="ImmutableScalarConstantsValue",
+            scalar_constants=(
                 "value -> range(value.data[1], value.data[end]; "
                 "length=length(value.data))"
             ),
-            with_parameters=(
-                "(value, parameters) -> "
-                "ImmutableParametersValue(collect(parameters))"
+            with_scalar_constants=(
+                "(value, scalar_constants) -> "
+                "ImmutableScalarConstantsValue(collect(scalar_constants))"
             ),
         )
-        load_type_spec_runtime(module_source(immutable_parameters))
+        load_type_spec_runtime(module_source(immutable_scalar_constants))
 
     def test_named_type_is_imported_into_main(self):
         runtime = load_type_spec_runtime(
@@ -220,7 +221,7 @@ class TestTypeSpecs(unittest.TestCase):
             )
         )
 
-    def test_derived_parameter_packing_honors_offsets(self):
+    def test_derived_scalar_constant_packing_honors_offsets(self):
         runtime = load_type_spec_runtime(
             module_source(vector_spec(name="OffsetVectorValue"))
         )
@@ -246,13 +247,17 @@ class TestTypeSpecs(unittest.TestCase):
             [[1.0, 2.0], [3.0, 4.0]],
         )
 
-    def test_low_level_parameter_overrides_are_not_public(self):
-        with self.assertRaisesRegex(TypeError, "count_parameters"):
-            vector_spec(
-                count_parameters=2,
-                pack_parameters="identity",
-                unpack_parameters="identity",
-            )
+    def test_low_level_scalar_constant_overrides_are_not_public(self):
+        for name in (
+            "parameters",
+            "with_parameters",
+            "count_scalar_constants",
+            "pack_scalar_constants",
+            "unpack_scalar_constants",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(TypeError, name):
+                    vector_spec(**{name: "identity"})
 
     def test_custom_init_mutation_validity_and_string(self):
         spec = vector_spec(
@@ -270,27 +275,30 @@ class TestTypeSpecs(unittest.TestCase):
         self.assertEqual(str(runtime.module._string(value)), "vec(1.0, 2.0)")
         self.assertEqual(str(jl.sprint(jl.show, value)), "vec(1.0, 2.0)")
 
-    def test_union_payload_parameterization(self):
+    def test_union_payload_scalar_constant_hooks(self):
         spec = TypeSpec(
             "TensorValue",
             fields={"data": "Union{Float64, Vector{Float64}, Matrix{Float64}}"},
             sample="rng -> TensorValue(randn(rng, 2, 2))",
-            parameters="""
-            function parameters(value)
+            scalar_constants="""
+            function scalar_constants(value)
                 return value.data isa Float64 ? [value.data] : vec(value.data)
             end
             """,
-            with_parameters="""
-            function with_parameters(value, parameters)
-                data = value.data isa Float64 ? parameters[1] :
-                    reshape(collect(parameters), size(value.data))
+            with_scalar_constants="""
+            function with_scalar_constants(value, scalar_constants)
+                data = value.data isa Float64 ? scalar_constants[1] :
+                    reshape(collect(scalar_constants), size(value.data))
                 return TensorValue(data)
             end
             """,
         )
         runtime = load_type_spec_runtime(module_source(spec))
         value = runtime.module._convert_value(np.eye(2))
-        self.assertEqual(list(runtime.module._parameters(value)), [1.0, 0.0, 0.0, 1.0])
+        self.assertEqual(
+            list(runtime.module._scalar_constants(value)),
+            [1.0, 0.0, 0.0, 1.0],
+        )
 
     def test_variable_length_vector_constants(self):
         spec = TypeSpec(
@@ -307,8 +315,10 @@ class TestTypeSpecs(unittest.TestCase):
                 return VariableVector(data)
             end
             """,
-            parameters="value -> value.data",
-            with_parameters="(value, parameters) -> VariableVector(parameters)",
+            scalar_constants="value -> value.data",
+            with_scalar_constants=(
+                "(value, scalar_constants) -> VariableVector(scalar_constants)"
+            ),
         )
         rng = np.random.default_rng(0)
         values = [rng.normal(size=2) for _ in range(64)]
@@ -364,34 +374,37 @@ class TestTypeSpecs(unittest.TestCase):
         broken_specs = (
             (
                 vector_spec(
-                    name="ScalarParametersValue",
-                    parameters="value -> 1.0",
+                    name="ScalarConstantsValue",
+                    scalar_constants="value -> 1.0",
                 ),
                 "must return an `AbstractVector`",
             ),
             (
                 vector_spec(
-                    name="IntegerParametersValue",
-                    parameters="value -> [1, 2]",
-                    with_parameters=(
-                        "(value, p) -> IntegerParametersValue(collect(p))"
+                    name="IntegerScalarConstantsValue",
+                    scalar_constants="value -> [1, 2]",
+                    with_scalar_constants=(
+                        "(value, p) -> IntegerScalarConstantsValue(collect(p))"
                     ),
                 ),
                 "concrete `AbstractFloat`",
             ),
             (
                 vector_spec(
-                    name="WrongWithParametersValue",
-                    with_parameters="(value, parameters) -> parameters",
+                    name="WrongWithScalarConstantsValue",
+                    with_scalar_constants=(
+                        "(value, scalar_constants) -> scalar_constants"
+                    ),
                 ),
-                "must return `WrongWithParametersValue`",
+                "must return `WrongWithScalarConstantsValue`",
             ),
             (
                 vector_spec(
-                    name="ReversedParametersValue",
-                    with_parameters=(
-                        "(value, parameters) -> "
-                        "ReversedParametersValue(reverse(collect(parameters)))"
+                    name="ReversedScalarConstantsValue",
+                    with_scalar_constants=(
+                        "(value, scalar_constants) -> "
+                        "ReversedScalarConstantsValue("
+                        "reverse(collect(scalar_constants)))"
                     ),
                 ),
                 "must preserve",

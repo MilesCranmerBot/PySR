@@ -61,21 +61,22 @@ class TypeSpec:
         Ordered mapping from field names to Julia field types.
     sample : str
         Julia callable with signature ``rng -> value``.
-    parameters : str, optional
-        Julia callable with signature ``value -> parameters``. Provide together
-        with ``with_parameters`` to enable continuous constant optimization.
-    with_parameters : str, optional
-        Julia callable with signature ``(value, parameters) -> value``.
+    scalar_constants : str, optional
+        Julia callable with signature ``value -> scalar_constants``. Provide
+        together with ``with_scalar_constants`` to enable continuous constant
+        optimization.
+    with_scalar_constants : str, optional
+        Julia callable with signature ``(value, scalar_constants) -> value``.
     init : str, optional
         Julia callable with signature ``() -> value``. The default samples a
         value using a deterministic local random-number generator.
     mutate : str, optional
         Julia callable with signature ``(rng, value, temperature) -> value``.
-        When parameters are configured, the default mutates one parameter using
-        SymbolicRegression.jl's scalar constant mutation.
+        When scalar constants are configured, the default mutates one scalar
+        using SymbolicRegression.jl's constant mutation.
     is_valid : str, optional
         Julia callable with signature ``value -> Bool``. The default checks that
-        every optimization parameter is finite, or accepts every value for a
+        every scalar constant is finite, or accepts every value for a
         non-optimizable type.
     string : str, optional
         Julia callable with signature ``value -> AbstractString`` used to print
@@ -90,8 +91,8 @@ class TypeSpec:
     name: str
     fields: dict[str, str]
     sample: str
-    parameters: str | None = None
-    with_parameters: str | None = None
+    scalar_constants: str | None = None
+    with_scalar_constants: str | None = None
     init: str | None = None
     mutate: str | None = None
     is_valid: str | None = None
@@ -112,9 +113,10 @@ class TypeSpec:
         if not isinstance(self.sample, str) or not self.sample.strip():
             raise ValueError("`sample` must contain Julia source.")
 
-        if (self.parameters is None) != (self.with_parameters is None):
+        if (self.scalar_constants is None) != (self.with_scalar_constants is None):
             raise ValueError(
-                "`parameters` and `with_parameters` must be provided together."
+                "`scalar_constants` and `with_scalar_constants` must be provided "
+                "together."
             )
         if not self.can_optimize and self.mutate is None:
             raise ValueError(
@@ -122,8 +124,8 @@ class TypeSpec:
             )
 
         for name in (
-            "parameters",
-            "with_parameters",
+            "scalar_constants",
+            "with_scalar_constants",
             "init",
             "mutate",
             "is_valid",
@@ -137,7 +139,7 @@ class TypeSpec:
 
     @property
     def can_optimize(self) -> bool:
-        return self.parameters is not None
+        return self.scalar_constants is not None
 
 
 @dataclass(frozen=True)
@@ -218,48 +220,52 @@ _TYPE_SPEC_MODULE = _block(r"""
     can_optimize(::Type{<:_TypeSpecValue}, _) = _config.optimizable
 
     if _config.optimizable
-        const _parameters = _include(_config.parameters, "TypeSpec.parameters")
-        const _with_parameters =
-            _include(_config.with_parameters, "TypeSpec.with_parameters")
+        const _scalar_constants =
+            _include(_config.scalar_constants, "TypeSpec.scalar_constants")
+        const _with_scalar_constants = _include(
+            _config.with_scalar_constants,
+            "TypeSpec.with_scalar_constants",
+        )
         get_number_type(::Type{<:_TypeSpecValue}) =
-            eltype(_parameters(init_value(_value_type)))
+            eltype(_scalar_constants(init_value(_value_type)))
     end
 
     count_scalar_constants(value::_TypeSpecValue) =
-        _config.optimizable ? length(_parameters(value)) : 0
+        _config.optimizable ? length(_scalar_constants(value)) : 0
 
     if _config.optimizable
         function pack_scalar_constants!(
             buffer::AbstractVector{<:Number}, idx::Int, value::_TypeSpecValue
         )
-            parameters = _parameters(value)
+            scalar_constants = _scalar_constants(value)
             copyto!(
                 buffer,
                 idx,
-                parameters,
-                firstindex(parameters),
-                length(parameters),
+                scalar_constants,
+                firstindex(scalar_constants),
+                length(scalar_constants),
             )
-            return idx + length(parameters)
+            return idx + length(scalar_constants)
         end
         function unpack_scalar_constants(
             buffer::AbstractVector{<:Number}, idx::Int, value::_TypeSpecValue
         )
-            count = length(_parameters(value))
-            parameters = @view buffer[idx:(idx + count - 1)]
-            return idx + count, _with_parameters(value, parameters)
+            count = length(_scalar_constants(value))
+            scalar_constants = @view buffer[idx:(idx + count - 1)]
+            return idx + count, _with_scalar_constants(value, scalar_constants)
         end
     end
 
     const _mutate = if _config.mutate === nothing
         function (rng, value, temperature, mutation)
-            parameters = collect(_parameters(value))
-            isempty(parameters) && return _sample(rng)
-            i = rand(rng, eachindex(parameters))
-            parameters[i] = SymbolicRegression.MutationFunctionsModule.mutate_value(
-                rng, parameters[i], temperature, mutation
-            )
-            return _with_parameters(value, parameters)
+            scalar_constants = collect(_scalar_constants(value))
+            isempty(scalar_constants) && return _sample(rng)
+            i = rand(rng, eachindex(scalar_constants))
+            scalar_constants[i] =
+                SymbolicRegression.MutationFunctionsModule.mutate_value(
+                    rng, scalar_constants[i], temperature, mutation
+                )
+            return _with_scalar_constants(value, scalar_constants)
         end
     else
         mutate = _include(_config.mutate, "TypeSpec.mutate")
@@ -275,7 +281,7 @@ _TYPE_SPEC_MODULE = _block(r"""
     const _is_valid = if _config.is_valid !== nothing
         _include(_config.is_valid, "TypeSpec.is_valid")
     elseif _config.optimizable
-        value -> all(isfinite, _parameters(value))
+        value -> all(isfinite, _scalar_constants(value))
     else
         _ -> true
     end
@@ -394,8 +400,8 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
             {field_sources},
             ),
             sample = {_quoted(spec.sample)},
-            parameters = {_optional_source(spec.parameters)},
-            with_parameters = {_optional_source(spec.with_parameters)},
+            scalar_constants = {_optional_source(spec.scalar_constants)},
+            with_scalar_constants = {_optional_source(spec.with_scalar_constants)},
             init = {_optional_source(spec.init)},
             mutate = {_optional_source(spec.mutate)},
             is_valid = {_optional_source(spec.is_valid)},
@@ -469,75 +475,85 @@ def _type_spec_validator() -> AnyValue:
                 valid || fail(hook, "returned an invalid value.")
                 return value
             end
-            function parameter_count(value)
-                count = call("count_parameters", DE.count_scalar_constants, value)
+            function scalar_constant_count(value)
+                count = call(
+                    "count_scalar_constants", DE.count_scalar_constants, value
+                )
                 count isa Int && count >= 0 ||
-                    fail("count_parameters", "must return a nonnegative `Int`.")
+                    fail("count_scalar_constants", "must return a nonnegative `Int`.")
                 return count
             end
             function check_optimization(value, count)
-                parameters = call("parameters", module_._parameters, value)
-                parameters isa AbstractVector ||
-                    fail("parameters", "must return an `AbstractVector`.")
-                length(parameters) == count ||
-                    fail("count_parameters", "disagrees with `parameters`.")
+                scalar_constants =
+                    call("scalar_constants", module_._scalar_constants, value)
+                scalar_constants isa AbstractVector ||
+                    fail("scalar_constants", "must return an `AbstractVector`.")
+                length(scalar_constants) == count ||
+                    fail("count_scalar_constants", "disagrees with `scalar_constants`.")
                 number_type = DE.get_number_type(T)
                 isconcretetype(number_type) && number_type <: AbstractFloat ||
-                    fail("parameters", "must return a vector with a concrete `AbstractFloat` element type.")
+                    fail("scalar_constants", "must return a vector with a concrete `AbstractFloat` element type.")
 
                 offset = 3
                 packed = fill(number_type(NaN), count + 4)
                 next_idx = call(
-                    "pack_parameters",
+                    "pack_scalar_constants!",
                     DE.pack_scalar_constants!,
                     packed,
                     offset,
                     value,
                 )
                 next_idx == offset + count ||
-                    fail("pack_parameters", "returned the wrong next index.")
+                    fail("pack_scalar_constants!", "returned the wrong next index.")
                 all(isnan, packed[1:(offset - 1)]) &&
                     all(isnan, packed[(offset + count):end]) ||
-                    fail("pack_parameters", "wrote outside its parameter range.")
-                isequal(packed[offset:(offset + count - 1)], parameters) ||
-                    fail("pack_parameters", "disagrees with `parameters`.")
+                    fail("pack_scalar_constants!", "wrote outside its scalar-constant range.")
+                isequal(packed[offset:(offset + count - 1)], scalar_constants) ||
+                    fail("pack_scalar_constants!", "disagrees with `scalar_constants`.")
 
-                rebuilt = call("with_parameters", module_._with_parameters, value, parameters)
-                rebuilt isa T || fail("with_parameters", "must return `$type_name`.")
+                rebuilt = call(
+                    "with_scalar_constants",
+                    module_._with_scalar_constants,
+                    value,
+                    scalar_constants,
+                )
+                rebuilt isa T ||
+                    fail("with_scalar_constants", "must return `$type_name`.")
                 isequal(rebuilt, value) ||
-                    fail("with_parameters(value, parameters(value))", "must preserve the value.")
+                    fail("with_scalar_constants(value, scalar_constants(value))", "must preserve the value.")
 
                 result = call(
-                    "unpack_parameters",
+                    "unpack_scalar_constants",
                     DE.unpack_scalar_constants,
                     packed,
                     offset,
                     value,
                 )
                 result isa Tuple && length(result) == 2 ||
-                    fail("unpack_parameters", "must return `(next_idx, $type_name)`.")
+                    fail("unpack_scalar_constants", "must return `(next_idx, $type_name)`.")
                 unpacked_idx, unpacked = result
                 unpacked_idx == offset + count ||
-                    fail("unpack_parameters", "returned the wrong next index.")
-                unpacked isa T || fail("unpack_parameters", "must return `$type_name`.")
+                    fail("unpack_scalar_constants", "returned the wrong next index.")
+                unpacked isa T ||
+                    fail("unpack_scalar_constants", "must return `$type_name`.")
 
                 repacked = fill(number_type(NaN), count + 4)
                 repacked_idx = call(
-                    "pack_parameters",
+                    "pack_scalar_constants!",
                     DE.pack_scalar_constants!,
                     repacked,
                     offset,
                     unpacked,
                 )
                 repacked_idx == offset + count && isequal(packed, repacked) ||
-                    fail("optimization hooks", "must preserve the packed scalar representation.")
+                    fail("scalar-constant optimization hooks", "must preserve the packed scalar representation.")
             end
 
             rng = module_.Random.Xoshiro(0)
             sampled = check_value("sample", call("sample", SymbolicRegression.sample_value, rng, T, nothing))
             initial = check_value("init", call("init", SymbolicRegression.init_value, T))
             for value in (initial, sampled)
-                count = parameter_count(value)
+                count = scalar_constant_count(value)
                 optimizable && check_optimization(value, count)
             end
 
@@ -545,7 +561,7 @@ def _type_spec_validator() -> AnyValue:
                 "mutate",
                 call("mutate", SymbolicRegression.mutate_value, rng, sampled, 1.0, SymbolicRegression.ConstantMutation()),
             )
-            count = parameter_count(mutated)
+            count = scalar_constant_count(mutated)
             optimizable && check_optimization(mutated, count)
 
             call("string", module_._string, sampled) isa AbstractString ||
