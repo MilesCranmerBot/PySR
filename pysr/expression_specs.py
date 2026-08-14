@@ -229,7 +229,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     def _call_template_macro(self):
         return jl.seval(self._template_macro_str())
 
-    def _template_macro_str(self, *, prototype: str | None = None):
+    def _template_macro_str(self, *, prototype: str | None = None) -> str:
         template_inputs = [f"expressions=({', '.join(self.expressions) + ','})"]
         if self.parameters:
             template_inputs.append(

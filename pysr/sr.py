@@ -210,7 +210,7 @@ def _create_julia_operators_and_loss_functions(
         supports_sympy=supports_sympy,
     )
 
-    def eval_source(source: str) -> AnyValue:
+    def eval_source(source: str) -> Any:
         return jl.seval(source)
 
     def eval_objective(source: str | None, knob: str) -> AnyValue | None:
@@ -2808,6 +2808,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if self.worker_imports is not None
             else None
         )
+        if type_spec_runtime is not None:
+            assert definition_transaction is not None
+        type_spec_definitions = (
+            definition_transaction.definitions
+            if definition_transaction is not None
+            else ()
+        )
         addprocs_function = (
             wrap_type_spec_addprocs_function(
                 type_spec_runtime.definition,
@@ -2816,14 +2823,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 jl_array(
                     [
                         definition.source
-                        for definition in definition_transaction.definitions
+                        for definition in type_spec_definitions
                         if definition.kind == "operator"
                     ]
                 ),
                 jl_array(
                     [
                         definition.source
-                        for definition in definition_transaction.definitions
+                        for definition in type_spec_definitions
                         if definition.kind
                         in {
                             "elementwise_loss",
@@ -2845,7 +2852,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 jl_array(
                     [
                         definition.source
-                        for definition in definition_transaction.definitions
+                        for definition in type_spec_definitions
                         if definition.kind
                         in {"complexity_mapping", "early_stop_condition"}
                     ]
@@ -2902,6 +2909,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 equations = self.get_hof(out)
             finally:
                 if had_fitted_definition:
+                    assert previous_definition is not None
                     self._type_spec_definition_ = previous_definition
                 else:
                     del self._type_spec_definition_
