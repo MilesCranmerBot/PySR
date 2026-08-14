@@ -35,11 +35,7 @@ from .export_latex import (
     with_preamble,
 )
 from .export_sympy import assert_valid_sympy_symbol
-from .expression_specs import (
-    AbstractExpressionSpec,
-    ExpressionSpec,
-    TemplateExpressionSpec,
-)
+from .expression_specs import AbstractExpressionSpec, ExpressionSpec
 from .feature_selection import run_feature_selection
 from .julia_extensions import load_required_packages
 from .julia_helpers import (
@@ -62,11 +58,14 @@ from .plugins import AbstractPlugin
 from .type_specs import (
     TypeSpec,
     _TypeSpecDefinition,
+    _TypeSpecDefinitionTransaction,
+    _TypeSpecJuliaDefinition,
     _TypeSpecRuntime,
     compile_type_spec,
     load_type_spec_runtime,
     object_array_1d,
     object_array_2d,
+    restore_type_spec_definitions,
     type_spec_to_julia_array,
     validate_type_spec_configuration,
     validate_type_spec_options,
@@ -162,7 +161,6 @@ def _maybe_create_inline_operators(
     operators: dict[int, list[str]],
     extra_sympy_mappings: dict[str, Callable] | None,
     supports_sympy: bool,
-    operator_module: AnyValue | None = None,
 ) -> dict[int, list[str]]:
     operators = {arity: op_list.copy() for arity, op_list in operators.items()}
 
@@ -171,13 +169,7 @@ def _maybe_create_inline_operators(
             is_user_defined_operator = "(" in op
 
             if is_user_defined_operator:
-                function = (
-                    jl.seval(op)
-                    if operator_module is None
-                    else jl.Base.include_string(
-                        operator_module, op, "PySR TypeSpec operator"
-                    )
-                )
+                function = jl.seval(op)
                 if not jl_is_function(function):
                     raise ValueError(
                         "Custom operator definitions must evaluate to a Julia function."
@@ -211,32 +203,26 @@ def _create_julia_operators_and_loss_functions(
     elementwise_loss: str | None,
     loss_function: str | None,
     loss_function_expression: str | None,
-    operator_module: AnyValue | None = None,
 ) -> tuple[dict[int, list[str]], AnyValue | None, AnyValue | None, AnyValue | None]:
     operators = _maybe_create_inline_operators(
         operators=operators,
         extra_sympy_mappings=extra_sympy_mappings,
         supports_sympy=supports_sympy,
-        operator_module=operator_module,
     )
 
-    def eval_source(source: str, label: str) -> AnyValue:
-        if operator_module is None:
-            return jl.seval(source)
-        return jl.Base.include_string(operator_module, source, f"PySR {label}")
+    def eval_source(source: str) -> AnyValue:
+        return jl.seval(source)
 
     def eval_objective(source: str | None, knob: str) -> AnyValue | None:
         if source is None:
             return None
-        loss = eval_source(str(source), knob)
+        loss = eval_source(str(source))
         if not jl_is_function(loss):
             raise ValueError(f"`{knob}` must evaluate to a callable Julia function.")
         return loss
 
     custom_loss = (
-        None
-        if elementwise_loss is None
-        else eval_source(str(elementwise_loss), "elementwise_loss")
+        None if elementwise_loss is None else eval_source(str(elementwise_loss))
     )
     custom_full_objective = eval_objective(loss_function, "loss_function")
     custom_loss_expression = eval_objective(
@@ -1035,6 +1021,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     equation_file_contents_: list[pd.DataFrame] | None
     show_pickle_warnings_: bool
     _type_spec_definition_: _TypeSpecDefinition
+    _fitted_julia_definitions_: tuple[_TypeSpecJuliaDefinition, ...]
+    _fitted_julia_definition_sources_: dict[str, Any]
+    _restored_julia_definition_fingerprint_: str | None
 
     def __init__(
         self,
@@ -1546,8 +1535,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     warnings.warn(warn_msg)
                 else:
                     pysr_logger.debug(warn_msg)
-        state_keys_to_clear = state_keys_containing_lambdas
-        state_keys_to_clear.append("logger_")
+        state_keys_to_clear = [
+            *state_keys_containing_lambdas,
+            "logger_",
+            "_restored_julia_definition_fingerprint_",
+        ]
         pickled_state = {
             key: (None if key in state_keys_to_clear else value)
             for key, value in state.items()
@@ -1625,16 +1617,22 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     @property
     def julia_options_(self):
         """The deserialized julia options."""
+        stream = getattr(self, "julia_options_stream_", None)
+        if stream is None:
+            return None
         self._restore_julia_definitions()
-        return jl_deserialize(self.julia_options_stream_)
+        return jl_deserialize(stream)
 
     @property
     def julia_state_(self):
         """The deserialized state."""
+        stream = getattr(self, "julia_state_stream_", None)
+        if stream is None:
+            return None
         self._restore_julia_definitions()
         return cast(
             Union[Tuple[VectorValue, AnyValue], None],
-            jl_deserialize(self.julia_state_stream_),
+            jl_deserialize(stream),
         )
 
     @property
@@ -1766,76 +1764,105 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         assert self.type_spec is not None
         return compile_type_spec(self.type_spec)
 
+    def _julia_definition_sources(
+        self, operators: dict[int, list[str]]
+    ) -> dict[str, Any]:
+        supports_sympy = self.type_spec is None and self.expression_spec_.supports_sympy
+        prototype = (
+            "SymbolicRegression.init_value(" f"{self.type_spec.name})"
+            if self.type_spec is not None
+            else None
+        )
+        template_source = self.expression_spec_._julia_expression_spec_source(
+            prototype=prototype
+        )
+        return {
+            "operators": copy.deepcopy(operators),
+            "elementwise_loss": self.elementwise_loss,
+            "loss_function": self.loss_function,
+            "loss_function_expression": self.loss_function_expression,
+            "complexity_mapping": self.complexity_mapping,
+            "early_stop_condition": self.early_stop_condition,
+            "template_source": template_source,
+            "supports_sympy": supports_sympy,
+        }
+
     def _load_type_spec_runtime(self, *, for_fit: bool = False) -> _TypeSpecRuntime:
         if not for_fit:
             check_is_fitted(self, attributes=["_type_spec_definition_"])
-            return load_type_spec_runtime(self._type_spec_definition_, validate=False)
+            return load_type_spec_runtime(
+                self._type_spec_definition_,
+                validate=False,
+            )
 
         definition = self._compile_type_spec()
-        fitted = getattr(self, "_type_spec_definition_", None)
-        if self.warm_start and fitted is not None and definition != fitted:
+        fitted_definition = getattr(self, "_type_spec_definition_", None)
+        if (
+            self.warm_start
+            and fitted_definition is not None
+            and definition != fitted_definition
+        ):
             raise ValueError(
                 "Cannot warm-start after changing the TypeSpec. "
                 "Start a new search with `warm_start=False`."
             )
-        if fitted is not None and definition == fitted:
-            return load_type_spec_runtime(fitted, validate=False)
-        runtime = load_type_spec_runtime(definition)
-        self._type_spec_definition_ = definition
-        return runtime
+        return load_type_spec_runtime(
+            definition,
+            validate=fitted_definition is None,
+        )
 
     def _julia_expression_spec(
-        self, type_spec_runtime: _TypeSpecRuntime | None = None
+        self,
+        type_spec_runtime: _TypeSpecRuntime | None = None,
+        transaction: _TypeSpecDefinitionTransaction | None = None,
     ) -> AnyValue:
-        if (
-            type_spec_runtime is not None
-            and isinstance(self.expression_spec_, TemplateExpressionSpec)
-            and not self.expression_spec_._old_format
-        ):
-            source = self.expression_spec_._template_macro_str(
+        source = (
+            self.expression_spec_._julia_expression_spec_source(
                 prototype=(
                     "SymbolicRegression.init_value(" f"{type_spec_runtime.spec.name})"
                 )
             )
-            return jl.Base.include_string(
-                type_spec_runtime.module, source, "PySR TemplateExpressionSpec"
-            )
-        return self.expression_spec_.julia_expression_spec()
+            if type_spec_runtime is not None
+            else None
+        )
+        if source is None:
+            return self.expression_spec_.julia_expression_spec()
+        assert transaction is not None
+        return transaction.evaluate("template", source)
 
     def _restore_julia_definitions(self) -> None:
-        type_spec_runtime = (
-            self._load_type_spec_runtime() if self._has_fitted_type_spec() else None
-        )
         fitted = getattr(self, "_fitted_julia_definition_sources_", None)
         if fitted is None:
-            _create_julia_operators_and_loss_functions(
-                operators=self._operators_from_params(),
-                extra_sympy_mappings=self.extra_sympy_mappings,
-                supports_sympy=(
-                    self.expression_spec_.supports_sympy
-                    and not self._has_fitted_type_spec()
-                ),
-                elementwise_loss=self.elementwise_loss,
-                loss_function=self.loss_function,
-                loss_function_expression=self.loss_function_expression,
-                operator_module=(
-                    None if type_spec_runtime is None else type_spec_runtime.module
-                ),
-            )
-        else:
-            _create_julia_operators_and_loss_functions(
-                operators=copy.deepcopy(fitted["operators"]),
-                extra_sympy_mappings=self.extra_sympy_mappings,
-                supports_sympy=fitted["supports_sympy"],
-                elementwise_loss=fitted["elementwise_loss"],
-                loss_function=fitted["loss_function"],
-                loss_function_expression=fitted["loss_function_expression"],
-                operator_module=(
-                    None if type_spec_runtime is None else type_spec_runtime.module
-                ),
-            )
-        if isinstance(self.expression_spec_, TemplateExpressionSpec):
-            self._julia_expression_spec(type_spec_runtime)
+            return
+
+        if self._has_fitted_type_spec():
+            runtime = self._load_type_spec_runtime()
+            definitions = getattr(self, "_fitted_julia_definitions_", ())
+            restore_type_spec_definitions(runtime, definitions)
+            return
+
+        restore_key = repr(fitted)
+        if (
+            getattr(self, "_restored_julia_definition_fingerprint_", None)
+            == restore_key
+        ):
+            return
+        _create_julia_operators_and_loss_functions(
+            operators=copy.deepcopy(fitted["operators"]),
+            extra_sympy_mappings=self.extra_sympy_mappings,
+            supports_sympy=fitted["supports_sympy"],
+            elementwise_loss=fitted["elementwise_loss"],
+            loss_function=fitted["loss_function"],
+            loss_function_expression=fitted["loss_function_expression"],
+        )
+        if fitted["complexity_mapping"] is not None:
+            jl.seval(fitted["complexity_mapping"])
+        if fitted["early_stop_condition"] is not None:
+            jl.seval(str(fitted["early_stop_condition"]))
+        if fitted["template_source"] is not None:
+            self._julia_expression_spec()
+
+        self._restored_julia_definition_fingerprint_ = restore_key
 
     def _validate_and_modify_params(self) -> _DynamicallySetParams:
         """
@@ -1892,18 +1919,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     + ", ".join(f"`{name}`" for name in configured)
                     + "."
                 )
-            if not isinstance(
-                self.expression_spec_, (ExpressionSpec, TemplateExpressionSpec)
-            ):
+            if not getattr(self.expression_spec_, "supports_type_spec", False):
                 raise ValueError(
-                    "TypeSpec supports `ExpressionSpec` and `TemplateExpressionSpec`."
+                    f"{type(self.expression_spec_).__name__} does not support TypeSpec."
                 )
-            if isinstance(self.expression_spec_, TemplateExpressionSpec):
-                if getattr(self.expression_spec_, "parameters", None):
-                    raise ValueError(
-                        "TypeSpec does not support TemplateExpressionSpec `parameters`. "
-                        "Represent optimizable values as TypeSpec constants instead."
-                    )
+            self.expression_spec_._validate_type_spec()
         legacy_mutation_weights_used = any(
             getattr(self, parameter) is not None
             for parameter in _LEGACY_MUTATION_PARAMETERS
@@ -2339,6 +2359,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         runtime_params: _DynamicallySetParams,
         weights: ndarray | None,
         seed: int,
+        julia_definition_sources: dict[str, Any],
+        type_spec_runtime: _TypeSpecRuntime | None,
+        definition_transaction: _TypeSpecDefinitionTransaction | None,
     ):
         """
         Run the symbolic regression fitting process on the julia backend.
@@ -2373,35 +2396,55 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         # every new instance of PySRRegressor
         global ALREADY_RAN
 
-        type_spec_runtime = (
-            self._load_type_spec_runtime() if self.type_spec is not None else None
-        )
         definition_module = (
             jl.Main if type_spec_runtime is None else type_spec_runtime.module
         )
-        supports_sympy = (
-            type_spec_runtime is None and self.expression_spec_.supports_sympy
-        )
-        self._fitted_julia_definition_sources_ = {
-            "operators": copy.deepcopy(runtime_params.operators),
-            "elementwise_loss": self.elementwise_loss,
-            "loss_function": self.loss_function,
-            "loss_function_expression": self.loss_function_expression,
-            "supports_sympy": supports_sympy,
-        }
-        operators, custom_loss, custom_full_objective, custom_loss_expression = (
-            _create_julia_operators_and_loss_functions(
-                operators=runtime_params.operators,
-                extra_sympy_mappings=self.extra_sympy_mappings,
-                supports_sympy=supports_sympy,
-                elementwise_loss=self.elementwise_loss,
-                loss_function=self.loss_function,
-                loss_function_expression=self.loss_function_expression,
-                operator_module=(
-                    None if type_spec_runtime is None else type_spec_runtime.module
-                ),
+        supports_sympy = julia_definition_sources["supports_sympy"]
+        type_spec_operator_functions: dict[int, tuple[AnyValue, ...]] | None = None
+        if type_spec_runtime is None:
+            operators, custom_loss, custom_full_objective, custom_loss_expression = (
+                _create_julia_operators_and_loss_functions(
+                    operators=runtime_params.operators,
+                    extra_sympy_mappings=self.extra_sympy_mappings,
+                    supports_sympy=supports_sympy,
+                    elementwise_loss=self.elementwise_loss,
+                    loss_function=self.loss_function,
+                    loss_function_expression=self.loss_function_expression,
+                )
             )
-        )
+        else:
+            assert definition_transaction is not None
+            type_spec_operator_functions = {
+                arity: tuple(
+                    definition_transaction.evaluate("operator", source)
+                    for source in sources
+                )
+                for arity, sources in runtime_params.operators.items()
+            }
+            operators = {
+                arity: [str(jl.Base.nameof(function)) for function in functions]
+                for arity, functions in type_spec_operator_functions.items()
+            }
+            custom_loss = (
+                definition_transaction.evaluate(
+                    "elementwise_loss", self.elementwise_loss
+                )
+                if self.elementwise_loss is not None
+                else None
+            )
+            custom_full_objective = (
+                definition_transaction.evaluate("loss_function", self.loss_function)
+                if self.loss_function is not None
+                else None
+            )
+            custom_loss_expression = (
+                definition_transaction.evaluate(
+                    "loss_function_expression",
+                    self.loss_function_expression,
+                )
+                if self.loss_function_expression is not None
+                else None
+            )
         value_type = None if type_spec_runtime is None else type_spec_runtime.value_type
         loss_type = None
         constraints = runtime_params.constraints
@@ -2506,11 +2549,22 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         if self.loss_function_expression is not None:
             _validate_custom_expression_objective(custom_loss_expression)
 
-        early_stop_condition = jl.seval(
-            str(self.early_stop_condition)
-            if self.early_stop_condition is not None
-            else "nothing"
-        )
+        if type_spec_runtime is None:
+            early_stop_condition = jl.seval(
+                str(self.early_stop_condition)
+                if self.early_stop_condition is not None
+                else "nothing"
+            )
+        else:
+            assert definition_transaction is not None
+            early_stop_condition = (
+                definition_transaction.evaluate(
+                    "early_stop_condition",
+                    str(self.early_stop_condition),
+                )
+                if self.early_stop_condition is not None
+                else None
+            )
 
         input_stream = jl.seval(self.input_stream)
 
@@ -2568,12 +2622,12 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         for arity in range(1, max_arity + 1):
             if arity in operators:
                 jl_op_list = []
-                for op in operators[arity]:
-                    jl_op = (
-                        jl.seval(op)
-                        if type_spec_runtime is None
-                        else jl.getproperty(type_spec_runtime.module, jl.Symbol(op))
-                    )
+                for op_index, op in enumerate(operators[arity]):
+                    if type_spec_runtime is None:
+                        jl_op = jl.seval(op)
+                    else:
+                        assert type_spec_operator_functions is not None
+                        jl_op = type_spec_operator_functions[arity][op_index]
                     if not jl_is_function(jl_op):
                         raise ValueError(
                             f"When building operators for arity {arity}, `'{op}'` did not return a Julia function"
@@ -2591,9 +2645,19 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 custom_loss,
             )
 
-        complexity_mapping = (
-            jl.seval(self.complexity_mapping) if self.complexity_mapping else None
-        )
+        if type_spec_runtime is None:
+            complexity_mapping = (
+                jl.seval(self.complexity_mapping) if self.complexity_mapping else None
+            )
+        else:
+            assert definition_transaction is not None
+            complexity_mapping = (
+                definition_transaction.evaluate(
+                    "complexity_mapping", self.complexity_mapping
+                )
+                if self.complexity_mapping is not None
+                else None
+            )
 
         if hasattr(self, "logger_") and self.logger_ is not None and self.warm_start:
             logger = self.logger_
@@ -2619,7 +2683,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if constraints_pairs:
                 jl_constraints_dict = jl.Dict(constraints_pairs)
 
-        expression_spec = self._julia_expression_spec(type_spec_runtime)
+        expression_spec = self._julia_expression_spec(
+            type_spec_runtime, definition_transaction
+        )
 
         # Call to Julia backend.
         # See https://github.com/astroautomata/SymbolicRegression.jl/blob/master/src/OptionsStruct.jl
@@ -2696,11 +2762,16 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             define_helper_functions=False,
         )
 
+        serialized_options = jl_serialize(options)
+        saved_state = (
+            jl_deserialize(self.julia_state_stream_)
+            if self.warm_start and self.julia_state_stream_ is not None
+            else None
+        )
         if self.warm_start and self.julia_options_stream_ is not None:
             SymbolicRegression.CoreModule.check_warm_start_compatibility(
-                self.julia_options_, options
+                jl_deserialize(self.julia_options_stream_), options
             )
-        self.julia_options_stream_ = jl_serialize(options)
 
         # Convert data to desired precision
 
@@ -2737,58 +2808,48 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if self.worker_imports is not None
             else None
         )
-        type_spec_operator_sources = (
-            jl_array(
-                [
-                    source
-                    for op_list in runtime_params.operators.values()
-                    for source in op_list
-                    if "(" in source
-                ]
-            )
-            if type_spec_runtime is not None
-            else None
-        )
-        type_spec_objective_sources = (
-            jl_array(
-                [
-                    source
-                    for source in (
-                        self.elementwise_loss,
-                        self.loss_function,
-                        self.loss_function_expression,
-                    )
-                    if source is not None
-                ]
-            )
-            if type_spec_runtime is not None
-            else None
-        )
-        if (
-            type_spec_runtime is not None
-            and isinstance(self.expression_spec_, TemplateExpressionSpec)
-            and not self.expression_spec_._old_format
-        ):
-            type_spec_template_source = self.expression_spec_._template_macro_str(
-                prototype=(
-                    "SymbolicRegression.init_value(" f"{type_spec_runtime.spec.name})"
-                )
-            )
-            type_spec_template_function_name = jl.seval(
-                "spec -> nameof(spec.structure.combine)"
-            )(expression_spec)
-        else:
-            type_spec_template_source = None
-            type_spec_template_function_name = None
         addprocs_function = (
             wrap_type_spec_addprocs_function(
                 type_spec_runtime.definition,
                 cluster_manager,
                 jl_worker_imports,
-                type_spec_operator_sources,
-                type_spec_objective_sources,
-                type_spec_template_source,
-                type_spec_template_function_name,
+                jl_array(
+                    [
+                        definition.source
+                        for definition in definition_transaction.definitions
+                        if definition.kind == "operator"
+                    ]
+                ),
+                jl_array(
+                    [
+                        definition.source
+                        for definition in definition_transaction.definitions
+                        if definition.kind
+                        in {
+                            "elementwise_loss",
+                            "loss_function",
+                            "loss_function_expression",
+                        }
+                    ]
+                ),
+                (
+                    julia_definition_sources["template_source"]
+                    if julia_definition_sources["template_source"] is not None
+                    else None
+                ),
+                (
+                    jl.Base.nameof(expression_spec.structure.combine)
+                    if julia_definition_sources["template_source"] is not None
+                    else None
+                ),
+                jl_array(
+                    [
+                        definition.source
+                        for definition in definition_transaction.definitions
+                        if definition.kind
+                        in {"complexity_mapping", "early_stop_condition"}
+                    ]
+                ),
             )
             if type_spec_runtime is not None and parallelism == "multiprocessing"
             else cluster_manager
@@ -2813,7 +2874,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             guesses=jl_guesses,
             numprocs=numprocs,
             parallelism=parallelism,
-            saved_state=self.julia_state_,
+            saved_state=saved_state,
             return_state=True,
             run_id=self.run_id_,
             addprocs_function=addprocs_function,
@@ -2832,10 +2893,34 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if not self.warm_start:
                 self.logger_spec.close(logger)
 
-        self.julia_state_stream_ = jl_serialize(out)
+        serialized_state = jl_serialize(out)
+        if type_spec_runtime is not None:
+            had_fitted_definition = hasattr(self, "_type_spec_definition_")
+            previous_definition = getattr(self, "_type_spec_definition_", None)
+            self._type_spec_definition_ = type_spec_runtime.definition
+            try:
+                equations = self.get_hof(out)
+            finally:
+                if had_fitted_definition:
+                    self._type_spec_definition_ = previous_definition
+                else:
+                    del self._type_spec_definition_
+        else:
+            equations = self.get_hof(out)
+        if type_spec_runtime is not None:
+            assert definition_transaction is not None
+            self._type_spec_definition_ = type_spec_runtime.definition
+            self._fitted_julia_definitions_ = tuple(definition_transaction.definitions)
+            restored_fingerprint = None
+        else:
+            restored_fingerprint = repr(julia_definition_sources)
+        self._fitted_julia_definition_sources_ = copy.deepcopy(julia_definition_sources)
+        self._restored_julia_definition_fingerprint_ = restored_fingerprint
+        self.julia_options_stream_ = serialized_options
+        self.julia_state_stream_ = serialized_state
 
         # Set attributes
-        self.equations_ = self.get_hof(out)
+        self.equations_ = equations
 
         ALREADY_RAN = True
 
@@ -2912,8 +2997,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             self.complexity_of_variables_ = None
             self.X_units_ = None
             self.y_units_ = None
-            if hasattr(self, "_type_spec_definition_"):
-                del self._type_spec_definition_
+            for attribute in (
+                "_type_spec_definition_",
+                "_fitted_julia_definitions_",
+                "_fitted_julia_definition_sources_",
+                "_restored_julia_definition_fingerprint_",
+            ):
+                if hasattr(self, attribute):
+                    delattr(self, attribute)
 
         self._setup_equation_file()
         self._clear_equation_file_contents()
@@ -2975,13 +3066,41 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         # Initially, just save model parameters, so that
         # it can be loaded from an early exit:
-        if self.type_spec is not None:
+        julia_definition_sources = self._julia_definition_sources(
+            runtime_params.operators
+        )
+        type_spec_runtime = (
             self._load_type_spec_runtime(for_fit=True)
+            if self.type_spec is not None
+            else None
+        )
+        definition_transaction = (
+            _TypeSpecDefinitionTransaction(type_spec_runtime)
+            if type_spec_runtime is not None
+            else None
+        )
         if not self.temp_equation_file:
             self._checkpoint()
 
         # Perform the search:
-        self._run(X, y, runtime_params, weights=weights, seed=seed)
+        try:
+            self._run(
+                X,
+                y,
+                runtime_params,
+                weights=weights,
+                seed=seed,
+                julia_definition_sources=julia_definition_sources,
+                type_spec_runtime=type_spec_runtime,
+                definition_transaction=definition_transaction,
+            )
+        except BaseException:
+            if definition_transaction is not None:
+                definition_transaction.rollback()
+            raise
+        else:
+            if definition_transaction is not None:
+                definition_transaction.commit()
 
         # Then, after fit, we save again, so the pickle file contains
         # the equations:

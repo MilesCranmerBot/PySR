@@ -1,8 +1,10 @@
 import json
+import pickle as pkl
 import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +12,7 @@ import pandas as pd
 from juliacall import JuliaError  # type: ignore
 
 from pysr import PySRRegressor, TemplateExpressionSpec, TypeSpec, jl
-from pysr.expression_specs import ExpressionSpec
+from pysr.expression_specs import AbstractExpressionSpec, ExpressionSpec
 from pysr.type_specs import (
     compile_type_spec,
     load_type_spec_runtime,
@@ -209,13 +211,12 @@ class TestTypeSpecs(unittest.TestCase):
         load_type_spec_runtime(module_source(immutable_scalar_constants))
 
     def test_named_type_is_imported_into_main(self):
-        runtime = load_type_spec_runtime(
-            module_source(string_spec(name="MainVisibleValue"))
-        )
+        type_name = "MainVisibleValue"
+        runtime = load_type_spec_runtime(module_source(string_spec(name=type_name)))
         self.assertTrue(
             bool(
                 jl.seval("(a, b) -> a === b")(
-                    jl.getproperty(jl.Main, jl.Symbol("MainVisibleValue")),
+                    jl.getproperty(jl.Main, jl.Symbol(type_name)),
                     runtime.value_type,
                 )
             )
@@ -560,11 +561,11 @@ class TestTypeSpecs(unittest.TestCase):
         np.testing.assert_array_equal(model.predict(X), y)
 
     def test_default_addprocs_wrapper(self):
-        source = module_source(string_spec())
-        default_wrapper = wrap_type_spec_addprocs_function(source, None, None)
+        definition = module_source(string_spec())
+        default_wrapper = wrap_type_spec_addprocs_function(definition, None, None)
         self.assertTrue(bool(jl.seval("x -> x isa Function")(default_wrapper)))
         explicit_wrapper = wrap_type_spec_addprocs_function(
-            source, jl.Distributed.addprocs, None
+            definition, jl.Distributed.addprocs, None
         )
         self.assertTrue(bool(jl.seval("x -> x isa Function")(explicit_wrapper)))
 
@@ -613,6 +614,39 @@ class TestTypeSpecs(unittest.TestCase):
             )
         )
 
+    def test_expression_spec_source_hook_receives_type_spec_prototype(self):
+        prototypes = []
+
+        class SourceExpressionSpec(AbstractExpressionSpec):
+            @property
+            def supports_type_spec(self):
+                return True
+
+            def julia_expression_spec(self):
+                return ExpressionSpec().julia_expression_spec()
+
+            def create_exports(self, *args, **kwargs):
+                return ExpressionSpec().create_exports(*args, **kwargs)
+
+            def _julia_expression_spec_source(self, *, prototype=None):
+                prototypes.append(prototype)
+                return f"""
+                @template_spec(expressions=(f,), prototype={prototype}) do x
+                    f(x)
+                end
+                """
+
+        X, y = string_data()
+        model = tiny_model(
+            string_spec(name="SourceHookValue"),
+            expression_spec=SourceExpressionSpec(),
+        )
+        model.fit(X, y)
+        self.assertTrue(prototypes)
+        self.assertEqual(
+            set(prototypes), {"SymbolicRegression.init_value(SourceHookValue)"}
+        )
+
     def test_template_custom_combiner_infers_num_features(self):
         type_name = "TemplateVectorValue"
         model = tiny_model(
@@ -658,19 +692,6 @@ class TestTypeSpecs(unittest.TestCase):
         model = tiny_model(string_spec(), expression_spec=expression_spec)
         with self.assertRaisesRegex(ValueError, "parameters"):
             model.fit(X, y)
-
-    def test_template_type_spec_supports_legacy_constructor(self):
-        X, y = string_data()
-        model = tiny_model(
-            string_spec(),
-            expression_spec=TemplateExpressionSpec(
-                ["f"],
-                "(fs, x) -> fs.f(x[1])",
-                {"f": 1},
-            ),
-        )
-        model.fit(X, y)
-        np.testing.assert_array_equal(model.predict(X), y)
 
     def test_invalid_operator_is_rejected_before_search(self):
         X, y = string_data()
@@ -770,15 +791,186 @@ class TestTypeSpecs(unittest.TestCase):
         with self.assertRaisesRegex(JuliaError, "missing_operator"):
             model.fit(X, X[:, 0])
 
-    def test_operator_names_are_isolated_between_type_specs(self):
+    def test_shared_operator_replacement_warns_and_restore_conflicts(self):
         X, y = string_data()
-        for type_name in ("FirstSharedOperatorValue", "SecondSharedOperatorValue"):
-            model = tiny_model(
+        type_name = "SharedRegistryValue"
+        operator_name = "shared_registry_identity"
+        first = tiny_model(
+            string_spec(name=type_name),
+            operators={1: [f"{operator_name}(x::{type_name}) = x"]},
+        )
+        second = tiny_model(
+            string_spec(name=type_name),
+            operators={
+                1: [
+                    f'{operator_name}(x::{type_name}) = {type_name}("a")',
+                ]
+            },
+        )
+        first.fit(X, y)
+        serialized_first = pkl.dumps(first)
+        with self.assertWarnsRegex(UserWarning, "older models.*replacement"):
+            second.fit(X, np.full(len(y), "a", dtype=object))
+
+        runtime = first._load_type_spec_runtime()
+        value = runtime.module._convert_value("b")
+        operator = jl.getproperty(runtime.module, jl.Symbol(operator_name))
+        self.assertEqual(operator(value).data, "a")
+
+        restored_first = pkl.loads(serialized_first)
+        with self.assertRaisesRegex(ValueError, "conflicting.*shared TypeSpec"):
+            _ = restored_first.julia_state_
+
+    def test_same_name_in_different_type_specs_does_not_conflict(self):
+        X, y = string_data()
+        operator_name = "cross_type_spec_identity"
+        models = [
+            tiny_model(
                 string_spec(name=type_name),
-                operators={1: [f"shared_identity(x::{type_name}) = x"]},
+                operators={
+                    1: [f"{operator_name}(x::{type_name}) = x"],
+                },
             )
+            for type_name in ("FirstCollisionValue", "SecondCollisionValue")
+        ]
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for model in models:
+                model.fit(X, y)
+        self.assertFalse(any("older models" in str(item.message) for item in caught))
+        first_runtime = models[0]._load_type_spec_runtime()
+        second_runtime = models[1]._load_type_spec_runtime()
+        first_operator = jl.getproperty(first_runtime.module, jl.Symbol(operator_name))
+        second_operator = jl.getproperty(
+            second_runtime.module, jl.Symbol(operator_name)
+        )
+        self.assertFalse(
+            bool(jl.seval("(a, b) -> a === b")(first_operator, second_operator))
+        )
+
+    def test_operator_expressions_resolve_in_type_spec_module(self):
+        X, y = string_data()
+        type_name = "QualifiedOperatorValue"
+        jl.seval("""
+            p(x) = x
+            module TypeSpecOperatorPackage
+                f(x) = x
+            end
+            """)
+        model = tiny_model(
+            string_spec(name=type_name),
+            operators={
+                1: [
+                    f"myop(x::{type_name}) = x",
+                    "Main.p",
+                    "TypeSpecOperatorPackage.f",
+                ]
+            },
+        )
+        runtime = model._load_type_spec_runtime(for_fit=True)
+        base_identity = jl.Base.include_string(
+            runtime.module, "Base.identity", "PySR test Base reference"
+        )
+        self.assertTrue(
+            bool(jl.seval("(a, b) -> a === b")(base_identity, jl.Base.identity))
+        )
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_loss_type_resolves_private_preamble_alias(self):
+        type_name = "PrivateLossAliasValue"
+        definition = module_source(
+            string_spec(
+                name=type_name,
+                preamble="const PrivateLossAlias = Float64",
+                loss_type="PrivateLossAlias",
+            )
+        )
+        runtime = load_type_spec_runtime(definition)
+        operator = jl.Base.include_string(
+            runtime.module,
+            f"private_loss_alias_identity(x::{type_name}) = x",
+            "PySR test operator",
+        )
+        loss_type = validate_type_spec_options(runtime, {1: (operator,)}, None)
+        self.assertTrue(bool(jl.seval("T -> T === Float64")(loss_type)))
+
+    def test_identical_sources_are_evaluated_once(self):
+        counter_name = "_pysr_type_spec_registry_source_count"
+        jl.seval(f"global {counter_name} = 0")
+        type_name = "SingleRegistryEvaluationValue"
+        operator_source = f"""
+        begin
+            Main.{counter_name} += 1
+            counted_registry_identity(x::{type_name}) = x
+        end
+        """
+        X, y = string_data()
+        first = tiny_model(
+            string_spec(name=type_name),
+            operators={1: [operator_source]},
+        )
+        second = tiny_model(
+            string_spec(name=type_name),
+            operators={1: [operator_source]},
+        )
+        first.fit(X, y)
+        second.fit(X, y)
+        self.assertEqual(int(jl.seval(counter_name)), 1)
+
+        restored = pkl.loads(pkl.dumps(second))
+        _ = restored.julia_state_
+        _ = restored.julia_state_
+        _ = restored.julia_options_
+        self.assertEqual(int(jl.seval(counter_name)), 1)
+
+    def test_failed_warm_start_restores_fitted_state(self):
+        X, y = string_data()
+        type_name = "TransactionalWarmStartValue"
+        operator_name = "transactional_identity"
+        original_source = f"{operator_name}(x::{type_name}) = x"
+        model = tiny_model(
+            string_spec(name=type_name),
+            operators={1: [original_source]},
+        )
+        model.fit(X, y)
+        state_before = model.julia_state_stream_.copy()
+        options_before = model.julia_options_stream_.copy()
+        equations_before = model.equations_.copy(deep=True)
+        definition_before = model._type_spec_definition_
+        sources_before = pkl.dumps(model._fitted_julia_definition_sources_)
+        definitions_before = pkl.dumps(model._fitted_julia_definitions_)
+
+        model.set_params(
+            warm_start=True,
+            operators={
+                1: [
+                    f"{operator_name}(x::{type_name})::{type_name} = "
+                    'x.data == "a" ? '
+                    'error("candidate warm start failed") : x',
+                ]
+            },
+        )
+        with self.assertRaisesRegex((ValueError, JuliaError), "not well-defined"):
             model.fit(X, y)
-            np.testing.assert_array_equal(model.predict(X), y)
+
+        np.testing.assert_array_equal(model.julia_state_stream_, state_before)
+        np.testing.assert_array_equal(model.julia_options_stream_, options_before)
+        pd.testing.assert_frame_equal(model.equations_, equations_before)
+        self.assertEqual(model._type_spec_definition_, definition_before)
+        self.assertEqual(
+            pkl.dumps(model._fitted_julia_definition_sources_),
+            sources_before,
+        )
+        self.assertEqual(
+            pkl.dumps(model._fitted_julia_definitions_),
+            definitions_before,
+        )
+        runtime = model._load_type_spec_runtime()
+        value = runtime.module._convert_value("b")
+        operator = jl.getproperty(runtime.module, jl.Symbol(operator_name))
+        self.assertEqual(operator(value).data, "b")
+        _ = model.julia_state_
 
     def test_multi_field_fit_predicts_tuples(self):
         spec = TypeSpec(
@@ -850,6 +1042,16 @@ class TestTypeSpecs(unittest.TestCase):
             model = tiny_model(
                 string_spec(),
                 expression_spec=identity_template(),
+                complexity_mapping=(
+                    "function checkpoint_complexity(expression)::Int64\n"
+                    "    return 1\n"
+                    "end"
+                ),
+                early_stop_condition=(
+                    "function checkpoint_early_stop(loss, complexity)::Bool\n"
+                    "    return false\n"
+                    "end"
+                ),
                 temp_equation_file=False,
                 output_directory=directory,
                 run_id="typespec-checkpoint",
@@ -869,7 +1071,16 @@ with warnings.catch_warnings(record=True) as caught:
     model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
 assert not any("not fully supported" in str(item.message) for item in caught)
 X = np.array([[\"a\"], [\"b\"], [\"a\"], [\"b\"]], dtype=object)
-print(json.dumps(model.predict(X).tolist()))
+runtime = model._load_type_spec_runtime()
+print(json.dumps({{
+    "prediction": model.predict(X).tolist(),
+    "complexity": str(jl.nameof(jl.getproperty(
+        runtime.module, jl.Symbol("checkpoint_complexity")
+    ))),
+    "early_stop": str(jl.nameof(jl.getproperty(
+        runtime.module, jl.Symbol("checkpoint_early_stop")
+    ))),
+}}))
 """
             result = subprocess.run(
                 [sys.executable, "-c", code],
@@ -878,9 +1089,10 @@ print(json.dumps(model.predict(X).tolist()))
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                json.loads(result.stdout.strip().splitlines()[-1]), y.tolist()
-            )
+            payload = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertEqual(payload["prediction"], y.tolist())
+            self.assertEqual(payload["complexity"], "checkpoint_complexity")
+            self.assertEqual(payload["early_stop"], "checkpoint_early_stop")
 
     def test_warm_start_rejects_runtime_changes(self):
         X, y = string_data()
@@ -923,9 +1135,7 @@ print(json.dumps(model.predict(X).tolist()))
             )._validate_and_modify_params()
         model = tiny_model(string_spec())
         model.expression_spec = object()
-        with self.assertRaisesRegex(
-            ValueError, "ExpressionSpec.*TemplateExpressionSpec"
-        ):
+        with self.assertRaisesRegex(ValueError, "object does not support TypeSpec"):
             model._validate_and_modify_params()
         with self.assertWarnsRegex(UserWarning, "large maxsize"):
             tiny_model(string_spec(), maxsize=41)._validate_and_modify_params()
@@ -935,17 +1145,10 @@ print(json.dumps(model.predict(X).tolist()))
         with self.assertRaisesRegex(ValueError, "at least one feature"):
             model.fit(np.empty((2, 0), dtype=object), np.array(["a", "b"]))
 
-    def test_expression_export_requires_checkpoint_state(self):
+    def test_absent_state_streams_return_none(self):
         model = tiny_model(string_spec())
-        model._load_type_spec_runtime(for_fit=True)
-        for expression_spec in (ExpressionSpec(), identity_template()):
-            with self.subTest(expression_spec=type(expression_spec).__name__):
-                with self.assertRaisesRegex(ValueError, "serialized Julia state"):
-                    expression_spec.create_exports(
-                        model,
-                        pd.DataFrame({"equation": ["x0"]}),
-                        search_output=None,
-                    )
+        self.assertIsNone(model.julia_state_)
+        self.assertIsNone(model.julia_options_)
 
     def test_csv_only_loading_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from abc import ABC, abstractmethod
 from textwrap import dedent
-from typing import TYPE_CHECKING, Any, NewType, overload
+from typing import TYPE_CHECKING, Any, NewType
 
 import numpy as np
 import pandas as pd
@@ -45,15 +45,24 @@ class AbstractExpressionSpec(ABC):
     2. create_exports(), which will be used to create the exports of the equations, such as
         the executable format, the SymPy format, etc.
 
-    It may also optionally implement:
-
-    - supports_sympy, supports_torch, supports_jax, supports_latex: Whether this expression type supports the corresponding export format.
+    It may also optionally declare support for TypeSpec values and implement
+    the corresponding validation and Julia-source hooks.
     """
 
     @abstractmethod
     def julia_expression_spec(self) -> AnyValue:
         """The expression specification"""
         pass  # pragma: no cover
+
+    def _julia_expression_spec_source(self, *, prototype: str | None) -> str | None:
+        return None
+
+    @property
+    def supports_type_spec(self) -> bool:
+        return False
+
+    def _validate_type_spec(self) -> None:
+        pass
 
     @abstractmethod
     def create_exports(
@@ -115,6 +124,10 @@ class ExpressionSpec(AbstractExpressionSpec):
             extra_jax_mappings=model.extra_jax_mappings,
             output_torch_format=model.output_torch_format,
         )
+
+    @property
+    def supports_type_spec(self) -> bool:
+        return True
 
     @property
     def supports_sympy(self):
@@ -186,92 +199,32 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
 
     _spec_cache: dict[tuple[str, ...], AnyValue] = {}
 
-    @overload
     def __init__(
         self,
-        function_symbols: list[str],
-        combine: str,
-        num_features: dict[str, int] | None = None,
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        combine: str,
         *,
+        combine: str,
         expressions: list[str],
         variable_names: list[str],
         parameters: dict[str, int] | None = None,
-    ) -> None: ...
-
-    def __init__(
-        self,
-        *args,
-        **kwargs,
-    ):
-        """Handle both formats with combine as explicit parameter"""
-        self._old_format = len(args) >= 2 or "function_symbols" in kwargs
-
-        if self._old_format:
-            self._load_old_format(*args, **kwargs)
-        else:
-            self._load_new_format(*args, **kwargs)
-
-    def _load_old_format(
-        self,
-        function_symbols: list[str],
-        combine: str,
-        num_features: dict[str, int] | None = None,
-    ):
-        self.function_symbols = function_symbols
-        self.combine = combine
-        self.num_features = num_features
-        # TODO: warn about old format after some versions
-
-    def _load_new_format(
-        self,
-        combine: str,
-        *,
-        expressions: list[str],
-        variable_names: list[str],
-        parameters: dict[str, int] | None = None,
-    ):
+    ) -> None:
         self.combine = combine
         self.expressions = expressions
         self.variable_names = variable_names
         self.parameters = parameters
 
     def _get_cache_key(self):
-        if self._old_format:
-            return (
-                "old",
-                str(self.function_symbols),
-                self.combine,
-                str(self.num_features),
-            )
-        else:
-            return (
-                "new",
-                self.combine,
-                str(self.expressions),
-                str(self.variable_names),
-                str(self.parameters),
-            )
+        return (
+            self.combine,
+            str(self.expressions),
+            str(self.variable_names),
+            str(self.parameters),
+        )
 
     def julia_expression_spec(self):
         key = self._get_cache_key()
-        if key in self._spec_cache:
-            return self._spec_cache[key]
-
-        if self._old_format:
-            result = SymbolicRegression.TemplateExpressionSpec(
-                structure=self.julia_expression_options().structure
-            )
-        else:
-            result = self._call_template_macro()
-
-        self._spec_cache[key] = result
-        return result
+        if key not in self._spec_cache:
+            self._spec_cache[key] = self._call_template_macro()
+        return self._spec_cache[key]
 
     def _call_template_macro(self):
         return jl.seval(self._template_macro_str())
@@ -290,25 +243,19 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         end
         """)
 
-    def julia_expression_options(self):
-        f_combine = jl.seval(self.combine)
-        creator = jl.seval("""
-        function _pysr_create_template_structure(
-            @nospecialize(function_symbols::AbstractVector),
-            @nospecialize(combine::Function),
-            @nospecialize(num_features::Union{Nothing,AbstractDict})
-        )
-            tuple_symbol = (map(Symbol, function_symbols)..., )
-            num_features = if num_features === nothing
-                nothing
-            else
-                NamedTuple(Symbol(k) => v for (k, v) in num_features)
-            end
-            structure = SymbolicRegression.TemplateStructure{tuple_symbol}(combine, num_features)
-            return (; structure)
-        end
-        """)
-        return creator(self.function_symbols, f_combine, self.num_features)
+    def _julia_expression_spec_source(self, *, prototype: str | None) -> str:
+        return self._template_macro_str(prototype=prototype)
+
+    @property
+    def supports_type_spec(self) -> bool:
+        return True
+
+    def _validate_type_spec(self) -> None:
+        if self.parameters:
+            raise ValueError(
+                "TypeSpec does not support TemplateExpressionSpec `parameters`. "
+                "Represent optimizable values as TypeSpec constants instead."
+            )
 
     @property
     def evaluates_in_julia(self):

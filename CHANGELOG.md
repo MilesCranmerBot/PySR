@@ -206,11 +206,11 @@ This PR updates the backend to SymbolicRegression.jl 2.0.0-alpha.8 and exposes s
 
 [#823](https://github.com/MilesCranmer/PySR/pull/823) adds support for _parameters in template expressions_, allowing you to learn expressions under a template, that have custom coefficients which can be optimized.
 
-Along with this, the `TemplateExpressionSpec` API has changed. (The old API will continue to function, but will not have parametric expressions available).
+Along with this, the `TemplateExpressionSpec` API changed to the explicit keyword form used below.
 
 ```python
 spec = TemplateExpressionSpec(
-    "fx = f(x); p[1] + p[2] * fx + p[3] * fx^2",
+    combine="fx = f(x); p[1] + p[2] * fx + p[3] * fx^2",
     expressions=["f"],
     variable_names=["x"],
     parameters={"p": 3},
@@ -224,7 +224,7 @@ You can have multiple parameter vectors, and these parameter vectors can also be
 ```python
 ### Learn different parameters for each class:
 spec = TemplateExpressionSpec(
-    "p1[category] * f(x1, x2) + p2[1] * g(x1^2)",
+    combine="p1[category] * f(x1, x2) + p2[1] * g(x1^2)",
     expressions=["f", "g"],
     variable_names=["x1", "x2", "category"],
     parameters={"p1": 3, "p2": 1},
@@ -237,18 +237,11 @@ where $c$ is the category, $\alpha_c$ is a learned parameter specific to each ca
 
 * Added support for expression-level loss functions via `loss_function_expression`, which allows you to specify custom loss functions that operate on the full expression object rather than just its evaluated output. This is particularly useful when working with template expressions.
 
-* Note that the old template expression syntax using function-style definitions is deprecated. Use the new, cleaner syntax instead:
+* The earlier function-style template syntax was removed in PySR 2.0. Use the explicit keyword form:
 
 ```python
-### # Old:
-### spec = TemplateExpressionSpec(
-###     function_symbols=["f", "g"],
-###     combine="((; f, g), (x1, x2, x3)) -> sin(f(x1, x2)) + g(x3)"
-### )
-
-### New:
 spec = TemplateExpressionSpec(
-    "sin(f(x1, x2)) + g(x3)"
+    combine="sin(f(x1, x2)) + g(x3)",
     expressions=["f", "g"],
     variable_names=["x1", "x2", "x3"],
 )
@@ -281,7 +274,9 @@ x = np.random.uniform(1, 10, (1000,))  # Integrand sampling points
 y = 1 / (x**2 * np.sqrt(x**2 - 1))     # Evaluation of the integrand
 
 expression_spec = TemplateExpressionSpec(
-    ["f"], "((; f), (x,)) -> D(f, 1)(x)"
+    combine="df = D(f, 1); df(x)",
+    expressions=["f"],
+    variable_names=["x"],
 )
 
 model = PySRRegressor(
@@ -357,7 +352,11 @@ PySR 1.0.0 introduces new ways to specify the structure of equations through "Ex
 `TemplateExpressionSpec` allows you to define a specific structure for your equations. For example:
 
 ```python
-expression_spec = TemplateExpressionSpec(["f", "g"], "((; f, g), (x1, x2, x3)) -> sin(f(x1, x2)) + g(x3)")
+expression_spec = TemplateExpressionSpec(
+    combine="sin(f(x1, x2)) + g(x3)",
+    expressions=["f", "g"],
+    variable_names=["x1", "x2", "x3"],
+)
 ```
 
 #### Parametric Expressions

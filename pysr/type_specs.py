@@ -3,7 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, field
 from functools import cache
 from textwrap import dedent
 from typing import Any
@@ -13,7 +14,7 @@ from juliacall import JuliaError  # type: ignore
 
 from .julia_import import AnyValue, jl
 
-_CODEGEN_VERSION = 3
+_CODEGEN_VERSION = 4
 
 
 def object_array_1d(values: Any) -> np.ndarray:
@@ -154,6 +155,20 @@ class _TypeSpecDefinition:
 
 
 @dataclass(frozen=True)
+class _TypeSpecJuliaDefinition:
+    kind: str
+    name: str
+    source: str
+
+
+@dataclass(frozen=True)
+class _RegisteredTypeSpecJuliaDefinition:
+    source: str
+    function: AnyValue
+    value: AnyValue
+
+
+@dataclass(frozen=True)
 class _TypeSpecRuntime:
     definition: _TypeSpecDefinition
     module: AnyValue
@@ -164,12 +179,217 @@ class _TypeSpecRuntime:
         return self.definition.spec
 
 
+_TYPE_SPEC_DEFINITION_REGISTRY: dict[
+    tuple[str, str, str], _RegisteredTypeSpecJuliaDefinition
+] = {}
+
+
+@dataclass
+class _TypeSpecDefinitionTransaction:
+    runtime: _TypeSpecRuntime
+    definitions: list[_TypeSpecJuliaDefinition] = field(default_factory=list)
+    _previous: dict[tuple[str, str, str], _RegisteredTypeSpecJuliaDefinition | None] = (
+        field(default_factory=dict)
+    )
+    _replaced: set[tuple[str, str, str]] = field(default_factory=set)
+
+    def evaluate(self, kind: str, source: str) -> AnyValue:
+        value, definition = _evaluate_type_spec_definition(
+            self.runtime, kind, source, transaction=self
+        )
+        for index, existing in enumerate(self.definitions):
+            if (existing.kind, existing.name) == (
+                definition.kind,
+                definition.name,
+            ):
+                self.definitions[index] = definition
+                break
+        else:
+            self.definitions.append(definition)
+        return value
+
+    def commit(self) -> None:
+        for _, _, name in sorted(self._replaced):
+            warnings.warn(
+                f"TypeSpec definition `{name}` was replaced in the shared "
+                "TypeSpec namespace; older models using this TypeSpec now see "
+                "the replacement.",
+                UserWarning,
+            )
+
+    def rollback(self) -> None:
+        for key, previous in reversed(self._previous.items()):
+            if previous is None:
+                _TYPE_SPEC_DEFINITION_REGISTRY.pop(key, None)
+                continue
+            _, kind, expected_name = key
+            value = _include_type_spec_source(self.runtime, previous.source, kind)
+            function = _definition_function(kind, value)
+            _bind_function_name(self.runtime.module, expected_name, function)
+            _TYPE_SPEC_DEFINITION_REGISTRY[key] = _RegisteredTypeSpecJuliaDefinition(
+                source=previous.source,
+                function=function,
+                value=value,
+            )
+
+
 def _quoted(source: str) -> str:
     return json.dumps(source, ensure_ascii=False).replace("$", r"\$")
 
 
 def _block(source: str) -> str:
     return dedent(source).strip()
+
+
+@cache
+def _main_module_binder() -> AnyValue:
+    return jl.seval(r"""
+        function (module_)
+            for name in names(Main; all=true, imported=true)
+                isdefined(Main, name) || continue
+                value = getproperty(Main, name)
+                value isa Module || continue
+                isdefined(module_, name) && continue
+                Core.eval(
+                    module_,
+                    Expr(:const, Expr(:(=), name, QuoteNode(value))),
+                )
+            end
+            return nothing
+        end
+        """)
+
+
+@cache
+def _julia_function_checker() -> AnyValue:
+    return jl.seval("value -> value isa Function")
+
+
+@cache
+def _template_combiner() -> AnyValue:
+    return jl.seval("spec -> spec.structure.combine")
+
+
+@cache
+def _function_name_binder() -> AnyValue:
+    return jl.seval(r"""
+        function (module_, name, function_)
+            if isdefined(module_, name)
+                getproperty(module_, name) === function_ || throw(
+                    ArgumentError("Cannot replace Julia binding `$name`.")
+                )
+            else
+                Core.eval(
+                    module_,
+                    Expr(:const, Expr(:(=), name, QuoteNode(function_))),
+                )
+            end
+            return function_
+        end
+        """)
+
+
+def _include_type_spec_source(
+    runtime: _TypeSpecRuntime, source: str, kind: str
+) -> AnyValue:
+    _main_module_binder()(runtime.module)
+    return jl.Base.include_string(
+        runtime.module,
+        source,
+        f"PySR TypeSpec {kind}",
+    )
+
+
+def _definition_function(kind: str, value: AnyValue) -> AnyValue:
+    function = _template_combiner()(value) if kind == "template" else value
+    if not bool(_julia_function_checker()(function)):
+        raise ValueError(
+            f"TypeSpec `{kind}` must evaluate to a callable Julia function."
+        )
+    return function
+
+
+def _bind_function_name(
+    module: AnyValue, expected_name: str, function: AnyValue
+) -> None:
+    actual_name = str(jl.Base.nameof(function))
+    if actual_name != expected_name:
+        _function_name_binder()(
+            module,
+            jl.Symbol(expected_name),
+            function,
+        )
+
+
+def _evaluate_type_spec_definition(
+    runtime: _TypeSpecRuntime,
+    kind: str,
+    source: str,
+    *,
+    transaction: _TypeSpecDefinitionTransaction,
+) -> tuple[AnyValue, _TypeSpecJuliaDefinition]:
+    module_name = runtime.definition.module_name
+    for (
+        registered_module,
+        registered_kind,
+        name,
+    ), registered in _TYPE_SPEC_DEFINITION_REGISTRY.items():
+        if (
+            registered_module == module_name
+            and registered_kind == kind
+            and registered.source == source
+        ):
+            return registered.value, _TypeSpecJuliaDefinition(
+                kind=kind,
+                name=name,
+                source=source,
+            )
+
+    value = _include_type_spec_source(runtime, source, kind)
+    function = _definition_function(kind, value)
+    name = str(jl.Base.nameof(function))
+    key = (module_name, kind, name)
+    previous = _TYPE_SPEC_DEFINITION_REGISTRY.get(key)
+    transaction._previous.setdefault(key, previous)
+    if previous is not None and previous.source != source:
+        transaction._replaced.add(key)
+    _TYPE_SPEC_DEFINITION_REGISTRY[key] = _RegisteredTypeSpecJuliaDefinition(
+        source=source,
+        function=function,
+        value=value,
+    )
+    return value, _TypeSpecJuliaDefinition(kind=kind, name=name, source=source)
+
+
+def restore_type_spec_definitions(
+    runtime: _TypeSpecRuntime,
+    definitions: tuple[_TypeSpecJuliaDefinition, ...],
+) -> None:
+    module_name = runtime.definition.module_name
+    for definition in definitions:
+        key = (module_name, definition.kind, definition.name)
+        registered = _TYPE_SPEC_DEFINITION_REGISTRY.get(key)
+        if registered is not None:
+            if registered.source != definition.source:
+                raise ValueError(
+                    f"Cannot restore TypeSpec definition `{definition.name}`: "
+                    "a conflicting source is active in the shared TypeSpec "
+                    "namespace."
+                )
+            continue
+
+        value = _include_type_spec_source(
+            runtime,
+            definition.source,
+            definition.kind,
+        )
+        function = _definition_function(definition.kind, value)
+        _bind_function_name(runtime.module, definition.name, function)
+        _TYPE_SPEC_DEFINITION_REGISTRY[key] = _RegisteredTypeSpecJuliaDefinition(
+            source=definition.source,
+            function=function,
+            value=value,
+        )
 
 
 _TYPE_SPEC_MODULE = _block(r"""
@@ -449,7 +669,6 @@ def load_type_spec_runtime(
         module=module,
         value_type=value_type,
     )
-
     if validate:
         _validate_type_spec_runtime(runtime)
     return runtime
@@ -643,7 +862,13 @@ def validate_type_spec_options(
                     arity,
                 )
         configured_loss_type = (
-            None if runtime.spec.loss_type is None else jl.seval(runtime.spec.loss_type)
+            None
+            if runtime.spec.loss_type is None
+            else jl.Base.include_string(
+                runtime.module,
+                runtime.spec.loss_type,
+                "PySR TypeSpec loss_type",
+            )
         )
         return _type_spec_loss_validator()(
             runtime.module,
@@ -695,6 +920,7 @@ def wrap_type_spec_addprocs_function(
     objective_sources: AnyValue | None = None,
     template_source: str | None = None,
     template_function_name: AnyValue | None = None,
+    option_sources: AnyValue | None = None,
 ) -> AnyValue:
     """Create workers and install the private module before function transfer."""
     jl.seval("using Distributed: Distributed")
@@ -708,6 +934,7 @@ def wrap_type_spec_addprocs_function(
     objectives = (
         objective_sources if objective_sources is not None else jl.seval("String[]")
     )
+    options = option_sources if option_sources is not None else jl.seval("String[]")
     template = template_source if template_source is not None else jl.nothing
     template_name = (
         template_function_name if template_function_name is not None else jl.nothing
@@ -720,6 +947,7 @@ def wrap_type_spec_addprocs_function(
             module_symbol,
             operator_sources,
             objective_sources,
+            option_sources,
             template_source,
             template_function_name,
             imports,
@@ -731,31 +959,43 @@ def wrap_type_spec_addprocs_function(
                         procs, pathof(SymbolicRegression), imports, 0
                     )
                     Distributed.remotecall_eval(Main, procs, module_expression)
-                    for (index, source) in pairs(operator_sources)
-                        expression = quote
-                            module_ = getproperty(
-                                Main, $(QuoteNode(module_symbol))
-                            )
-                            Base.include_string(
+                    setup_expression = quote
+                        module_ = getproperty(
+                            Main, $(QuoteNode(module_symbol))
+                        )
+                        for name in names(Main; all=true, imported=true)
+                            isdefined(Main, name) || continue
+                            value = getproperty(Main, name)
+                            value isa Module || continue
+                            isdefined(module_, name) && continue
+                            Core.eval(
                                 module_,
-                                $source,
-                                $("PySR TypeSpec operator $index"),
+                                Expr(
+                                    :const,
+                                    Expr(:(=), name, QuoteNode(value)),
+                                ),
                             )
                         end
-                        Distributed.remotecall_eval(Main, procs, expression)
                     end
-                    for (index, source) in pairs(objective_sources)
-                        expression = quote
-                            module_ = getproperty(
-                                Main, $(QuoteNode(module_symbol))
-                            )
-                            Base.include_string(
-                                module_,
-                                $source,
-                                $("PySR TypeSpec objective $index"),
-                            )
+                    Distributed.remotecall_eval(Main, procs, setup_expression)
+                    for (kind, sources) in (
+                        ("operator", operator_sources),
+                        ("objective", objective_sources),
+                        ("option", option_sources),
+                    )
+                        for (index, source) in pairs(sources)
+                            expression = quote
+                                module_ = getproperty(
+                                    Main, $(QuoteNode(module_symbol))
+                                )
+                                Base.include_string(
+                                    module_,
+                                    $source,
+                                    $("PySR TypeSpec $kind $index"),
+                                )
+                            end
+                            Distributed.remotecall_eval(Main, procs, expression)
                         end
-                        Distributed.remotecall_eval(Main, procs, expression)
                     end
                     if template_source !== nothing
                         expression = quote
@@ -774,11 +1014,18 @@ def wrap_type_spec_addprocs_function(
                                 worker_spec.structure.combine
                             )
                             if worker_function_name != target_function_name
-                                Base.include_string(
+                                Core.eval(
                                     module_,
-                                    "$(target_function_name)(args...) = " *
-                                    "$(worker_function_name)(args...)",
-                                    "PySR TypeSpec template alias",
+                                    Expr(
+                                        :const,
+                                        Expr(
+                                            :(=),
+                                            target_function_name,
+                                            QuoteNode(
+                                                worker_spec.structure.combine
+                                            ),
+                                        ),
+                                    ),
                                 )
                             end
                         end
@@ -797,6 +1044,7 @@ def wrap_type_spec_addprocs_function(
         module_symbol,
         operators,
         objectives,
+        options,
         template,
         template_name,
         imports,

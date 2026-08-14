@@ -316,7 +316,83 @@ model.predict(X, -1)
 
 to make predictions with the most accurate expression.
 
-## 9. Dimensional constraints
+## 9. Custom objectives
+
+Use `loss_function` when scoring needs the expression tree, symbolic
+manipulation, or auxiliary data from the dataset. Use
+`loss_function_expression` when it needs the complete expression object rather
+than its underlying tree. Both accept Julia source defining one of these
+signatures:
+
+```julia
+objective(tree_or_expression, dataset, options)
+objective(tree_or_expression, dataset, options, idx=nothing)
+```
+
+With automatic batching, a three-argument objective receives a dataset already
+restricted to the active batch. A four-argument objective receives the full
+dataset and the selected row indices. This makes sample-aligned auxiliary data
+available without copying it into every batch.
+
+The following batching-aware mean squared error is equivalent to the default
+objective for an unweighted scalar dataset:
+
+```python
+objective = """
+function mse_objective(tree, dataset::Dataset{T,L}, options, idx=nothing)::L where {T,L}
+    X = idx === nothing ? dataset.X : dataset.X[:, idx]
+    y = idx === nothing ? dataset.y : dataset.y[idx]
+    prediction, complete = eval_tree_array(tree, X, options)
+    complete || return L(Inf)
+    return sum(abs2, prediction .- y) / length(y)
+end
+"""
+
+model = PySRRegressor(
+    loss_function=objective,
+    binary_operators=["+", "-", "*", "/"],
+)
+```
+
+Always check the completion flag returned by `eval_tree_array`; an incomplete
+evaluation must receive an infinite or suitably large loss. Return the
+dataset's loss type `L`, which remains real even when the data type `T` is
+complex.
+
+A full objective can also reinterpret the tree. This example treats the two
+children of every binary root as a rational function $P(X)/Q(X)$:
+
+```python
+objective = """
+function rational_objective(tree, dataset::Dataset{T,L}, options, idx=nothing)::L where {T,L}
+    tree.degree == 2 || return L(Inf)
+    X = idx === nothing ? dataset.X : dataset.X[:, idx]
+    y = idx === nothing ? dataset.y : dataset.y[idx]
+
+    numerator = SymbolicRegression.InterfaceDynamicExpressionsModule.DE.get_child(tree, 1)
+    denominator = SymbolicRegression.InterfaceDynamicExpressionsModule.DE.get_child(tree, 2)
+    p, p_complete = eval_tree_array(numerator, X, options)
+    q, q_complete = eval_tree_array(denominator, X, options)
+    p_complete && q_complete || return L(Inf)
+
+    prediction = p ./ q
+    return sum(abs2, prediction .- y) / length(y)
+end
+"""
+
+model = PySRRegressor(
+    loss_function=objective,
+    binary_operators=["+", "-"],
+)
+```
+
+The root operator is deliberately ignored in this objective. The equation
+table therefore prints the stored tree rather than the interpreted rational
+function, and automatic prediction or symbolic export cannot reproduce that
+reinterpretation. Keep the objective source and apply the same transformation
+when evaluating the selected equation.
+
+## 10. Dimensional constraints
 
 One other feature we can exploit is dimensional analysis.
 Say that we know the physical units of each feature and output,
@@ -408,7 +484,7 @@ Note that this expression has a large dynamic range so may be difficult to find.
 Note that you can also search for exclusively dimensionless constants by settings
 `dimensionless_constants_only` to `true`.
 
-## 10. Expression Specifications
+## 11. Expression Specifications
 
 Expression specifications let you define a structured equation while retaining
 normal prediction and export behavior. Use `TemplateExpressionSpec` when the
@@ -648,7 +724,7 @@ print(f"f1 at (1,2,3): {f1_result[0]}")  # Should be ~4.0 for x2^2
 print(f"shared at (1,2,3): {shared_result[0]}")  # Should be ~2.718 for exp(1)
 ```
 
-## 11. Using TensorBoard for Logging
+## 12. Using TensorBoard for Logging
 
 You can use TensorBoard to visualize the search progress, as well as
 record hyperparameters and final metrics (like `min_loss` and `pareto_volume` - the latter of which
@@ -683,7 +759,7 @@ You can then view the logs with:
 tensorboard --logdir logs/
 ```
 
-## 12. Using differential operators
+## 13. Using differential operators
 
 As part of the `TemplateExpressionSpec` described above,
 you can also use differential operators within the template.
@@ -723,7 +799,7 @@ If everything works, you should find something that simplifies to $\frac{\sqrt{x
 
 Here, we write out a full function in Julia.
 
-## 13. Custom value types
+## 14. Custom value types
 
 After working with custom operators, losses, and expression specifications,
 `TypeSpec` lets you change the value type used throughout a search.
@@ -732,26 +808,38 @@ The template example above coordinates several scalar-valued expression trees.
 With `TypeSpec`, vectors or tensors flow through each expression, constant, and
 operator.
 
-Each specification creates a fingerprinted private Julia module. PySR evaluates
-the preamble, generated type, operators, and losses in that module, then imports
-the chosen type into `Main` for the ordinary search and template paths. These
-definitions are replayed on multiprocessing workers and before deserializing a
-checkpoint. Put every required Julia definition in the preamble or use a
-package-qualified name. `complexity_mapping` uses the ordinary Julia evaluation
-path after the chosen type is imported into `Main`.
+Each specification creates one fingerprinted private Julia module per process.
+PySR evaluates the preamble, generated type, operators, losses, templates, and
+Julia-valued options in that module, then imports the chosen type into `Main`
+for ordinary search paths. Definitions are replayed on multiprocessing workers
+and before deserializing a checkpoint. Put every required Julia definition in
+the preamble, refer to existing `Main` definitions as `Main.name`, or use a
+package-qualified name.
 
-TypeSpec supports `ExpressionSpec`, both `TemplateExpressionSpec` constructor
-forms, prediction, checkpoint reload, and serial, multithreaded, or
-multiprocessing search. It does not support guesses, weights, units, denoising,
-feature selection, resampling, multi-output targets, turbo or bumper
-evaluation, autodiff backends, template-level parameters, other expression
-specifications, or SymPy, JAX, Torch, and LaTeX export. Restoring a TypeSpec
-model requires its `checkpoint.pkl`; a hall-of-fame CSV is insufficient.
+Models with the same `TypeSpec` share this module. PySR reuses an identical
+definition source without evaluating it again. If a successful fit defines the
+same Julia function name from different source, PySR warns and the latest
+definition becomes visible to older models. Restoring a checkpoint refuses to
+replace a conflicting active definition.
 
-Use `elementwise_loss`, `loss_function`, or `loss_function_expression` as with
-other PySR searches. A full objective must declare its concrete return type
-through `TypeSpec(loss_type="Float64")`; an elementwise loss has its return type
-inferred from its Julia method.
+TypeSpec supports `ExpressionSpec`, the explicit keyword form of
+`TemplateExpressionSpec`, and custom `AbstractExpressionSpec` implementations
+that declare `supports_type_spec = True`. Prediction, checkpoint reload, and
+serial, multithreaded, or multiprocessing search are supported. TypeSpec does
+not support guesses, weights, units, denoising, feature selection, resampling,
+multi-output targets, turbo or bumper evaluation, autodiff backends,
+template-level parameters, or SymPy, JAX, Torch, and LaTeX export. Restoring a
+TypeSpec model requires its `checkpoint.pkl`; a hall-of-fame CSV is
+insufficient.
+
+A TypeSpec search requires exactly one of `elementwise_loss`,
+`loss_function`, or `loss_function_expression`. Full objectives use the same
+`(tree, dataset, options, idx=nothing)` and
+`(expression, dataset, options, idx=nothing)` signatures described above,
+including batching-aware dispatch. Set a concrete return type such as
+`TypeSpec(loss_type="Float64")` for a full objective. PySR infers an
+elementwise loss's return type from its Julia method, so do not set `loss_type`
+for one.
 
 Operators must be type-stable. PySR checks each method with `Base.promote_op`
 and requires Julia to infer the chosen TypeSpec type as its return type. Add an
@@ -1056,7 +1144,7 @@ each displayed constant contains the fitted matrix or vector payload.
 
 </details>
 
-## 14. Additional features
+## 15. Additional features
 
 For the many other features available in PySR, please
 read the [Options section](options.md).

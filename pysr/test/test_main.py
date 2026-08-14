@@ -846,7 +846,9 @@ class TestPipeline(unittest.TestCase):
         # Create model with template that includes the missing sin operator
         model = PySRRegressor(
             expression_spec=TemplateExpressionSpec(
-                ["f"], "sin_of_f((; f), (x, y)) = sin(f(x, y))"
+                combine="sin(f(x, y))",
+                expressions=["f"],
+                variable_names=["x", "y"],
             ),
             binary_operators=["+", "-", "*", "/"],
             unary_operators=[],  # No sin operator!
@@ -911,7 +913,7 @@ class TestPipeline(unittest.TestCase):
         model = PySRRegressor(
             **self.default_test_kwargs,
             expression_spec=TemplateExpressionSpec(
-                "p[class] * x1^2 + f(x2)",
+                combine="p[class] * x1^2 + f(x2)",
                 expressions=["f"],
                 parameters={"p": 3},
                 variable_names=["x1", "x2", "class"],
@@ -2350,6 +2352,7 @@ class TestDimensionalConstraints(unittest.TestCase):
                 y,
                 X_units,
                 y_units,
+                supports_sympy=False,
             )
         invalid_units = [
             (np.ones((10, 2)), np.ones(10), ["m/s", "s", "s^2"], None),
@@ -2365,6 +2368,7 @@ class TestDimensionalConstraints(unittest.TestCase):
                     y,
                     X_units,
                     y_units,
+                    supports_sympy=False,
                 )
 
     def test_unit_propagation(self):
@@ -2446,17 +2450,6 @@ class TestDimensionalConstraints(unittest.TestCase):
 
 
 class TestTemplateExpressionSpec(unittest.TestCase):
-    def test_num_features_symbol_keys(self):
-        # ponytail: one check — dict keys must reach Julia as Symbols
-        spec = TemplateExpressionSpec(
-            ["f", "g"],
-            "combine(fs, vars) = fs.f(vars[1], vars[2]) + fs.g(vars[3])",
-            {"f": 2, "g": 1},
-        )
-        options = spec.julia_expression_options()
-        names = jl.seval("x -> propertynames(x.structure.num_features)")(options)
-        self.assertEqual(names, (jl.Symbol("f"), jl.Symbol("g")))
-
     def _check_macro_str(self, spec, expected_str):
         self.assertEqual(
             spec._template_macro_str().strip(), dedent(expected_str).strip()
