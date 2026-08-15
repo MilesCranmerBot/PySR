@@ -292,23 +292,17 @@ class TestTypeSpecs(unittest.TestCase):
         jl.seval(f"global {flag} = Ref(true)")
         definition = compile_type_spec_runtime(
             string_spec(name=type_name),
-            {
-                1: [
-                    f"""
-                    begin
-                        Main.{flag}[] && error("retry source failure")
-                        {operator_name}(x::{type_name})::{type_name} = x
-                    end
-                    """
-                ]
-            },
-            elementwise_loss=(
-                f"retry_loss(x::{type_name}, y::{type_name})::Float64 = 0.0"
-            ),
+            {1: [f"{operator_name}(x::{type_name})::{type_name} = x"]},
+            elementwise_loss=f"(x::{type_name}, y::{type_name}) -> 0.0",
             loss_function=None,
             loss_function_expression=None,
             complexity_mapping=None,
-            early_stop_condition=None,
+            early_stop_condition=f"""
+                begin
+                    Main.{flag}[] && error("retry source failure")
+                    (loss, complexity) -> false
+                end
+                """,
         )
 
         with self.assertRaisesRegex(JuliaError, "retry source failure"):
@@ -317,6 +311,7 @@ class TestTypeSpecs(unittest.TestCase):
         jl.seval(f"{flag}[] = false")
         runtime = load_type_spec_runtime(definition)
         self.assertEqual(runtime.operator_names, {1: (operator_name,)})
+        self.assertIsNotNone(runtime.early_stop_condition)
 
     def test_equivalent_runtime_definition_is_evaluated_once(self):
         suffix = uuid.uuid4().hex

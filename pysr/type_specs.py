@@ -83,10 +83,10 @@ class TypeSpec:
         Julia callable with signature ``value -> AbstractString`` used to print
         constants in equations.
     preamble : str, optional
-        Julia source evaluated once before the generated type definition. Keep
-        it self-contained apart from SymbolicRegression and packages listed in
-        :class:`PySRRegressor` ``worker_imports`` so checkpoints and workers can
-        recreate it.
+        Julia source evaluated once before the generated type definition. Types
+        and functions it defines are visible to the hooks and to operator and
+        objective sources; imports are not, so any source needing a package
+        beyond SymbolicRegression must import it itself.
     loss_type : str, optional
         Concrete Julia ``AbstractFloat`` type returned by a custom full
         objective. Elementwise loss return types are inferred.
@@ -263,12 +263,8 @@ def _runtime_install_source(
                 needs_install = !isdefined(existing, :_definition_values)
             end
             if needs_install
-                if isdefined(parent, module_name)
-                    module_ = Base.invokelatest(getproperty, parent, module_name)
-                else
-                    Core.eval(parent, Expr(:module, true, module_name, Expr(:block)))
-                    module_ = Base.invokelatest(getproperty, parent, module_name)
-                end
+                Core.eval(parent, Expr(:module, true, module_name, Expr(:block)))
+                module_ = Base.invokelatest(getproperty, parent, module_name)
                 Core.eval(module_, :(using SymbolicRegression))
                 for name in getproperty(parent, :_PYSR_PARENT_BINDING_NAMES)
                     isdefined(module_, name) && continue
@@ -289,23 +285,14 @@ def _runtime_install_source(
                 ]
                 values = Any[]
                 for (index, source) in enumerate(sources)
-                    value = Base.include_string(
-                        module_,
-                        source,
-                        "PySR TypeSpec configuration $index",
-                    )
-                    Core.eval(
-                        module_,
-                        Expr(
-                            :const,
-                            Expr(
-                                :(=),
-                                Symbol("_pysr_def_", index - 1),
-                                QuoteNode(value),
-                            ),
+                    push!(
+                        values,
+                        Base.include_string(
+                            module_,
+                            source,
+                            "PySR TypeSpec configuration $index",
                         ),
                     )
-                    push!(values, value)
                 end
                 selector_source = {selector}
                 if selector_source !== nothing
@@ -314,19 +301,7 @@ def _runtime_install_source(
                         selector_source,
                         "PySR TypeSpec expression function selector",
                     )
-                    selected_value = Base.invokelatest(selector_value, values[end])
-                    Core.eval(
-                        module_,
-                        Expr(
-                            :const,
-                            Expr(
-                                :(=),
-                                :_pysr_expression_function,
-                                QuoteNode(selected_value),
-                            ),
-                        ),
-                    )
-                    push!(values, selected_value)
+                    push!(values, Base.invokelatest(selector_value, values[end]))
                 end
                 Core.eval(
                     module_,
