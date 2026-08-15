@@ -1305,14 +1305,16 @@ def manually_create_model(equations, feature_names=None):
                     Path(output_directory)
                     / run_id
                     / f"hall_of_fame_output{i+1}.csv.bak"
-                )
+                ),
+                index=False,
             )
     else:
         model.nout_ = 1
         model.selection_mask_ = None
         model.feature_names_in_ = np.array(feature_names, dtype=object)
         equations["complexity loss equation".split(" ")].to_csv(
-            str(Path(output_directory) / run_id / "hall_of_fame.csv.bak")
+            str(Path(output_directory) / run_id / "hall_of_fame.csv.bak"),
+            index=False,
         )
 
     model.refresh()
