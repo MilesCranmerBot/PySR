@@ -112,7 +112,7 @@ class TestTypeSpecs(unittest.TestCase):
 
     def test_equations_with_quoted_constants_are_read(self):
         equations = _parse_equation_file(
-            'Complexity,Loss,Equation\n'
+            "Complexity,Loss,Equation\n"
             '1,0.0,""a""\n'
             '3,0.0,"f = "a"; p = ["a", "b"]"\n'
         )
