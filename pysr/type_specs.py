@@ -14,7 +14,9 @@ import pandas as pd
 from juliacall import JuliaError  # type: ignore
 
 from .julia_helpers import jl_array
-from .julia_import import AnyValue, jl
+from .julia_import import AnyValue, SymbolicRegression, jl
+
+_TYPE_MODULE_INSTALLED = "_PYSR_TYPE_SPEC_INSTALLED"
 
 
 def object_array_1d(values: Any) -> np.ndarray:
@@ -245,12 +247,20 @@ def _runtime_install_source(
     source_literals = ",\n".join(f"            {_quoted(source)}" for source in sources)
     selector = _optional_source(expression_spec_function_selector)
     return _block(f"""
-        if !isdefined(Main, Symbol({_quoted(type_definition.module_name)}))
-            Base.include_string(
-                Main,
-                {_quoted(type_definition.source)},
-                {_quoted("PySR." + type_definition.module_name)},
-            )
+        let type_module_name = Symbol({_quoted(type_definition.module_name)})
+            installed =
+                isdefined(Main, type_module_name) &&
+                isdefined(
+                    Base.invokelatest(getproperty, Main, type_module_name),
+                    Symbol({_quoted(_TYPE_MODULE_INSTALLED)}),
+                )
+            if !installed
+                Base.include_string(
+                    Main,
+                    {_quoted(type_definition.source)},
+                    {_quoted("PySR." + type_definition.module_name)},
+                )
+            end
         end
         let
             parent = getproperty(
@@ -686,6 +696,7 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
             );
             by=String,
         ))
+        const {_TYPE_MODULE_INSTALLED} = true
         end
         import .{module_name}: {spec.name}
         """) + "\n"
@@ -718,14 +729,18 @@ def load_type_spec_runtime(
         else None
     )
     needs_install = not bool(jl.isdefined(jl.Main, module_symbol))
-    if not needs_install and runtime_module_symbol is not None:
+    if not needs_install:
         module = jl.getproperty(jl.Main, module_symbol)
-        needs_install = not bool(jl.isdefined(module, runtime_module_symbol))
-        if not needs_install:
-            configuration_module = jl.getproperty(module, runtime_module_symbol)
-            needs_install = not bool(
-                jl.isdefined(configuration_module, jl.Symbol("_definition_values"))
-            )
+        needs_install = not bool(
+            jl.isdefined(module, jl.Symbol(_TYPE_MODULE_INSTALLED))
+        )
+        if not needs_install and runtime_module_symbol is not None:
+            needs_install = not bool(jl.isdefined(module, runtime_module_symbol))
+            if not needs_install:
+                configuration_module = jl.getproperty(module, runtime_module_symbol)
+                needs_install = not bool(
+                    jl.isdefined(configuration_module, jl.Symbol("_definition_values"))
+                )
     if needs_install:
         jl.Base.include_string(jl.Main, install_source, filename)
     module = jl.getproperty(jl.Main, module_symbol)
@@ -1142,7 +1157,14 @@ class CallableJuliaExpression:
             object_array_2d(X),
             transpose=True,
         )
-        raw_output = self.expression(jl_X, *args)
+        raw_output, completed = SymbolicRegression.eval_tree_array(
+            self.expression, jl_X, *args
+        )
+        if not bool(completed):
+            raise ValueError(
+                "The expression could not be evaluated over the given input: an "
+                "operator returned a value that the spec's `is_valid` rejected."
+            )
         return type_spec_to_python_array(self.runtime, raw_output)
 
 

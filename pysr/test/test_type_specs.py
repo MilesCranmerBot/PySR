@@ -15,6 +15,7 @@ from juliacall import JuliaError  # type: ignore
 from pysr import PySRRegressor, TemplateExpressionSpec, TypeSpec, jl
 from pysr.expression_specs import AbstractExpressionSpec, ExpressionSpec
 from pysr.type_specs import (
+    CallableJuliaExpression,
     compile_type_spec,
     compile_type_spec_runtime,
     load_type_spec_runtime,
@@ -312,6 +313,35 @@ class TestTypeSpecs(unittest.TestCase):
         runtime = load_type_spec_runtime(definition)
         self.assertEqual(runtime.operator_names, {1: (operator_name,)})
         self.assertIsNotNone(runtime.early_stop_condition)
+
+    def test_failed_type_install_can_retry_same_definition(self):
+        suffix = uuid.uuid4().hex
+        flag = f"_pysr_retry_type_install_{suffix}"
+        type_name = f"RetryTypeValue_{suffix}"
+        operator_name = f"retry_type_identity_{suffix}"
+        jl.seval(f"global {flag} = Ref(true)")
+        definition = compile_type_spec_runtime(
+            string_spec(
+                name=type_name,
+                preamble=f'Main.{flag}[] && error("retry type failure")',
+            ),
+            {1: [f"{operator_name}(x::{type_name})::{type_name} = x"]},
+            elementwise_loss=f"(x::{type_name}, y::{type_name}) -> 0.0",
+            loss_function=None,
+            loss_function_expression=None,
+            complexity_mapping=None,
+            early_stop_condition=None,
+        )
+
+        with self.assertRaisesRegex(JuliaError, "retry type failure"):
+            load_type_spec_runtime(definition)
+
+        jl.seval(f"{flag}[] = false")
+        runtime = load_type_spec_runtime(definition)
+        self.assertEqual(runtime.operator_names, {1: (operator_name,)})
+        self.assertTrue(
+            bool(jl.isdefined(runtime.module, jl.Symbol(type_name))),
+        )
 
     def test_equivalent_runtime_definition_is_evaluated_once(self):
         suffix = uuid.uuid4().hex
@@ -1049,6 +1079,37 @@ print(json.dumps({{
         model.fit(X, y)
 
         self.assertEqual(model.predict(X).tolist(), pairs)
+
+    def test_invalid_expression_evaluation_reports_the_rejected_value(self):
+        type_name = "InvalidEvaluationValue"
+        spec = TypeSpec(
+            type_name,
+            fields={"data": "Float64"},
+            sample=f"rng -> {type_name}(1.0)",
+            scalar_constants="value -> (value.data,)",
+            with_scalar_constants=f"(value, constants) -> {type_name}(constants[1])",
+        )
+        definition = compile_type_spec_runtime(
+            spec,
+            {1: [f"invalid_operator(x::{type_name})::{type_name} = {type_name}(Inf)"]},
+            elementwise_loss="(prediction, target) -> 0.0",
+            loss_function=None,
+            loss_function_expression=None,
+            complexity_mapping=None,
+            early_stop_condition=None,
+        )
+        runtime = load_type_spec_runtime(definition)
+        expression = jl.seval("""
+            (value_type, operator) -> begin
+                operators = OperatorEnum(1 => (operator,))
+                node = Node{value_type}(op=1, l=Node{value_type}(feature=1))
+                Expression(node; operators, variable_names=["x1"])
+            end
+            """)(runtime.value_type, runtime.operator_functions[1][0])
+        X = object_array_2d([[1.0], [2.0]])
+
+        with self.assertRaisesRegex(ValueError, "`is_valid` rejected"):
+            CallableJuliaExpression(expression, runtime)(X)
 
     def test_type_spec_variable_name_count_is_validated(self):
         X, y = string_data()
