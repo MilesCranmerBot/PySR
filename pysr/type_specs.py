@@ -177,7 +177,7 @@ class _TypeSpecRuntimeDefinition:
 
 
 @dataclass(frozen=True)
-class TypeSpecRuntime:
+class _TypeSpecRuntime:
     definition: _TypeSpecDefinition | _TypeSpecRuntimeDefinition
     module: AnyValue
     value_type: AnyValue
@@ -698,7 +698,7 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
 
 def load_type_spec_runtime(
     definition: _TypeSpecDefinition | _TypeSpecRuntimeDefinition,
-) -> TypeSpecRuntime:
+) -> _TypeSpecRuntime:
     """Load deterministic TypeSpec modules and return their Julia objects."""
     type_definition = (
         definition.type_spec
@@ -732,7 +732,7 @@ def load_type_spec_runtime(
     value_type = jl.getproperty(module, jl.Symbol(type_definition.spec.name))
 
     if isinstance(definition, _TypeSpecDefinition):
-        runtime = TypeSpecRuntime(
+        runtime = _TypeSpecRuntime(
             definition=definition,
             module=module,
             value_type=value_type,
@@ -779,7 +779,7 @@ def load_type_spec_runtime(
         optional_values = [
             next(values) if source is not None else None for source in optional_sources
         ]
-        runtime = TypeSpecRuntime(
+        runtime = _TypeSpecRuntime(
             definition=definition,
             module=module,
             value_type=value_type,
@@ -993,7 +993,7 @@ def _type_spec_validator() -> AnyValue:
         """)
 
 
-def validate_type_spec_runtime(runtime: TypeSpecRuntime) -> None:
+def validate_type_spec_runtime(runtime: _TypeSpecRuntime) -> None:
     """Invoke TypeSpec hooks once before searching a new configuration."""
     try:
         sampled = _type_spec_validator()(
@@ -1063,7 +1063,7 @@ def _type_spec_loss_validator() -> AnyValue:
 
 
 def validate_type_spec_options(
-    runtime: TypeSpecRuntime,
+    runtime: _TypeSpecRuntime,
     operators: dict[int, tuple[AnyValue, ...]],
     elementwise_loss: AnyValue | None,
     *,
@@ -1100,7 +1100,7 @@ def validate_type_spec_options(
 
 
 def type_spec_to_julia_array(
-    runtime: TypeSpecRuntime, values: Any, *, transpose: bool = False
+    runtime: _TypeSpecRuntime, values: Any, *, transpose: bool = False
 ) -> AnyValue:
     """Convert logical Python values to an array of the generated Julia type."""
     array = (
@@ -1119,7 +1119,7 @@ def type_spec_to_julia_array(
         raise ValueError(str(jl.sprint(jl.showerror, error.args[0]))) from error
 
 
-def type_spec_to_python_array(runtime: TypeSpecRuntime, values: Any) -> np.ndarray:
+def type_spec_to_python_array(runtime: _TypeSpecRuntime, values: Any) -> np.ndarray:
     """Unwrap generated values into their logical one-field or tuple payloads."""
     field_names = tuple(runtime.spec.fields)
     output = np.empty(len(values), dtype=object)
@@ -1132,7 +1132,7 @@ def type_spec_to_python_array(runtime: TypeSpecRuntime, values: Any) -> np.ndarr
 
 
 class CallableJuliaExpression:
-    def __init__(self, expression: AnyValue, runtime: TypeSpecRuntime):
+    def __init__(self, expression: AnyValue, runtime: _TypeSpecRuntime):
         self.expression = expression
         self.runtime = runtime
 
@@ -1147,7 +1147,7 @@ class CallableJuliaExpression:
 
 
 def create_type_spec_exports(
-    runtime: TypeSpecRuntime,
+    runtime: _TypeSpecRuntime,
     equations: pd.DataFrame,
     search_output: tuple[AnyValue, AnyValue],
     output_index: int | None,

@@ -58,7 +58,7 @@ from .mutations import (
 from .plugins import AbstractPlugin
 from .type_specs import (
     TypeSpec,
-    TypeSpecRuntime,
+    _TypeSpecRuntime,
     _TypeSpecRuntimeDefinition,
     compile_type_spec_runtime_for_model,
     create_type_spec_addprocs_function,
@@ -1803,7 +1803,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         *,
         for_fit: bool = False,
         operators: dict[int, list[str]] | None = None,
-    ) -> TypeSpecRuntime:
+    ) -> _TypeSpecRuntime:
         if not for_fit:
             check_is_fitted(self, attributes=["_type_spec_runtime_definition_"])
             return load_type_spec_runtime(self._type_spec_runtime_definition_)
@@ -1830,7 +1830,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
     def _julia_expression_spec(
         self,
-        type_spec_runtime: TypeSpecRuntime | None = None,
+        type_spec_runtime: _TypeSpecRuntime | None = None,
     ) -> AnyValue:
         if type_spec_runtime is not None:
             return type_spec_runtime.expression_spec
@@ -2239,7 +2239,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         runtime_params: _DynamicallySetParams,
         weights: ndarray | None,
         seed: int,
-        type_spec_runtime: TypeSpecRuntime | None,
+        type_spec_runtime: _TypeSpecRuntime | None,
         parallelism: Literal["serial", "multithreading", "multiprocessing"],
         numprocs: int | None,
     ):
@@ -2261,7 +2261,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             for that particular element of y.
         seed : int
             Random seed for julia backend process.
-        type_spec_runtime : TypeSpecRuntime | None
+        type_spec_runtime : _TypeSpecRuntime | None
             Loaded TypeSpec runtime, or `None` for numeric searches.
         parallelism : {"serial", "multithreading", "multiprocessing"}
             Effective Julia backend execution mode.
@@ -3196,7 +3196,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self,
         search_output=None,
         *,
-        type_spec_runtime: TypeSpecRuntime | None = None,
+        type_spec_runtime: _TypeSpecRuntime | None = None,
     ) -> pd.DataFrame | list[pd.DataFrame]:
         """Get the equations from a hall of fame file or search output.
 
