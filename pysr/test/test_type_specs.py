@@ -25,7 +25,6 @@ from pysr.type_specs import (
     validate_type_spec_options,
     validate_type_spec_runtime,
 )
-from pysr.utils import _parse_equation_file
 
 
 def string_spec(**overrides):
@@ -109,19 +108,6 @@ class TestTypeSpecs(unittest.TestCase):
             model._type_spec_runtime_definition_.module_name.startswith("_PySRConfig_")
         )
         self.assertIn("lambda_format", model.equations_.columns)
-
-    def test_equations_with_quoted_constants_are_read(self):
-        equations = _parse_equation_file(
-            "Complexity,Loss,Equation\n"
-            '1,0.0,""a""\n'
-            '3,0.0,"f = "a"; p = ["a", "b"]"\n'
-        )
-
-        self.assertEqual(list(equations["complexity"]), [1, 3])
-        self.assertEqual(list(equations["loss"]), [0.0, 0.0])
-        self.assertEqual(
-            list(equations["equation"]), ['"a"', 'f = "a"; p = ["a", "b"]']
-        )
 
     def test_named_type_is_imported_into_main(self):
         suffix = uuid.uuid4().hex

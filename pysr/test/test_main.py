@@ -1401,6 +1401,30 @@ class TestFeatureSelection(unittest.TestCase):
 class TestMiscellaneous(unittest.TestCase):
     """Test miscellaneous functions."""
 
+    def test_equations_with_quoted_constants_are_read(self):
+        """Equations holding string constants arrive with doubled quotes."""
+        output_directory = tempfile.mkdtemp()
+        run_id = "quoted"
+        os.makedirs(Path(output_directory) / run_id)
+        equation = 'f = "a"; p = ["a", "b"]'
+        with open(
+            Path(output_directory) / run_id / "hall_of_fame.csv", "w", encoding="utf-8"
+        ) as f:
+            f.write("Complexity,Loss,Equation\n")
+            f.write('1,0.0,"""a"""\n')
+            f.write('3,0.0,"f = ""a""; p = [""a"", ""b""]"\n')
+
+        model = PySRRegressor()
+        model.nout_ = 1
+        model.output_directory_ = output_directory
+        model.run_id_ = run_id
+
+        equations = model._read_equation_file()[0]
+
+        self.assertEqual(list(equations["complexity"]), [1, 3])
+        self.assertEqual(list(equations["loss"]), [0.0, 0.0])
+        self.assertEqual(list(equations["equation"]), ['"a"', equation])
+
     def test_pickle_inv_sympy_expression(self):
         """Test that sympy expressions with the inv operator can be pickled and unpickled correctly."""
         expr_str = "inv(x0) + x1"
