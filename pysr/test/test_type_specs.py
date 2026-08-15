@@ -1215,6 +1215,43 @@ print(json.dumps({{
         self.assertEqual(model._type_spec_runtime_definition_.fingerprint, fingerprint)
         np.testing.assert_array_equal(model.predict(X), y)
 
+    def test_template_type_spec_parameters_are_mutated(self):
+        type_name = "MutatedParameterValue"
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.full(len(X), "b", dtype=object)
+        model = tiny_model(
+            string_spec(
+                name=type_name,
+                sample=f'rng -> {type_name}("a")',
+                mutate=f'(rng, value, temperature) -> {type_name}("b")',
+            ),
+            expression_spec=TemplateExpressionSpec(
+                combine="choose_parameter(p[1], f(x))",
+                expressions=["f"],
+                variable_names=["x"],
+                parameters={"p": 1},
+            ),
+            operators={
+                1: [f"identity_{type_name}(x::{type_name}) = x"],
+                2: [
+                    f"""
+                    choose_parameter(a::{type_name}, b::{type_name}) = a
+                    choose_parameter(a::{type_name}, b::ValidVector) =
+                        ValidVector(map(_ -> a, b.x), b.valid)
+                    """
+                ],
+            },
+            niterations=10,
+            ncycles_per_iteration=10,
+            populations=2,
+            population_size=20,
+        )
+
+        model.fit(X, y)
+
+        np.testing.assert_array_equal(model.predict(X), y)
+        self.assertEqual(model.get_best()["loss"], 0.0)
+
     def test_numeric_path_remains_independent(self):
         X = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
         y = X[:, 0]

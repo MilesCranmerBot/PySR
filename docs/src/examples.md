@@ -833,6 +833,12 @@ evaluation, autodiff backends, or SymPy, JAX, Torch, and LaTeX export. Restoring
 a TypeSpec model requires its `checkpoint.pkl`; a hall-of-fame CSV is
 insufficient.
 
+A `TemplateExpressionSpec` may declare `parameters`; each parameter holds values
+of the TypeSpec type. `init` creates them and `mutate` changes them, so a spec
+without `scalar_constants` still learns parameters through mutation. A spec that
+defines `scalar_constants` and `with_scalar_constants` also has its parameters
+tuned by continuous constant optimization.
+
 A TypeSpec search requires exactly one of `elementwise_loss`,
 `loss_function`, or `loss_function_expression`. Full objectives use the same
 `(tree, dataset, options, idx=nothing)` and
