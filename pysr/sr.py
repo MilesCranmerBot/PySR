@@ -1576,17 +1576,12 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.__dict__.update(state)
         equations = self.__dict__.get("equations_")
         if equations is not None:
-            equation_tables = (
-                equations if isinstance(equations, list) else [equations]
-            )
+            equation_tables = equations if isinstance(equations, list) else [equations]
             if (
-                (
-                    self._has_fitted_type_spec()
-                    or isinstance(self.expression_spec_, TemplateExpressionSpec)
-                )
-                and any(
-                    "lambda_format" not in table.columns for table in equation_tables
-                )
+                self._has_fitted_type_spec()
+                or isinstance(self.expression_spec_, TemplateExpressionSpec)
+            ) and any(
+                "lambda_format" not in table.columns for table in equation_tables
             ):
                 self.refresh()
 
