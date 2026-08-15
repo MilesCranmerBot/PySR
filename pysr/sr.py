@@ -13,7 +13,6 @@ import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from functools import wraps
-from io import StringIO
 from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Literal, Tuple, Union, cast
@@ -74,6 +73,7 @@ from .type_specs import (
 from .utils import (
     ArrayLike,
     PathLike,
+    _parse_equation_file,
     _preprocess_julia_floats,
     _safe_check_feature_names_in,
     _subscriptify,
@@ -3163,8 +3163,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                     with open(cur_filename, "r", encoding="utf-8") as f:
                         buf = f.read()
                     buf = _preprocess_julia_floats(buf)
-                    df = self._postprocess_dataframe(pd.read_csv(StringIO(buf)))
-                    all_outputs.append(df)
+                    all_outputs.append(_parse_equation_file(buf))
             else:
                 filename = str(self.get_equation_file()) + ".bak"
                 if not os.path.exists(filename):
@@ -3172,7 +3171,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 with open(filename, "r", encoding="utf-8") as f:
                     buf = f.read()
                 buf = _preprocess_julia_floats(buf)
-                all_outputs = [self._postprocess_dataframe(pd.read_csv(StringIO(buf)))]
+                all_outputs = [_parse_equation_file(buf)]
 
         except FileNotFoundError:
             raise RuntimeError(
@@ -3180,17 +3179,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 "before a single iteration completed."
             )
         return all_outputs
-
-    def _postprocess_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.rename(
-            columns={
-                "Complexity": "complexity",
-                "Loss": "loss",
-                "Equation": "equation",
-            },
-        )
-
-        return df
 
     def get_hof(
         self,

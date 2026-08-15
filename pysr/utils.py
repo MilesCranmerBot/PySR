@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, TypeVar, Union
 
+import pandas as pd
 from numpy import ndarray
 from sklearn.utils.validation import _check_feature_names_in  # type: ignore
 
@@ -43,6 +44,20 @@ def _preprocess_julia_floats(s: str) -> str:
         s = _apply_regexp_im_sci(s)
         s = _apply_regexp_sci(s)
     return s
+
+
+def _parse_equation_file(buf: str) -> pd.DataFrame:
+    """Parse a hall of fame file.
+
+    The equation column is quoted but its contents are not escaped, so it is
+    read as everything past the second comma rather than as a CSV field.
+    """
+    rows = []
+    for line in buf.strip().split("\n")[1:]:
+        complexity, loss, equation = line.split(",", 2)
+        equation = equation.strip().removeprefix('"').removesuffix('"')
+        rows.append((int(complexity), float(loss), equation))
+    return pd.DataFrame(rows, columns=["complexity", "loss", "equation"])
 
 
 def _safe_check_feature_names_in(self, variable_names, generate_names=True):
