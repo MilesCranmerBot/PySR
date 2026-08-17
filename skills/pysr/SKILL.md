@@ -107,7 +107,7 @@ Plain search is the default. Escalate to `TemplateExpressionSpec` when the user 
 from pysr import PySRRegressor, TemplateExpressionSpec
 
 spec = TemplateExpressionSpec(
-    "sin(f(x1, x2)) + g(x3)^2",
+    combine="sin(f(x1, x2)) + g(x3)^2",
     expressions=["f", "g"],
     variable_names=["x1", "x2", "x3"],
 )
@@ -119,7 +119,7 @@ With per-category parameters (pass the category as a column of X; Julia indexing
 
 ```python
 spec = TemplateExpressionSpec(
-    "p[class] * f(x1, x2) + q[class]",
+    combine="p[class] * f(x1, x2) + q[class]",
     expressions=["f"],
     variable_names=["x1", "x2", "class"],
     parameters={"p": 3, "q": 3},   # 3 categories
@@ -295,4 +295,4 @@ Deprecated API you may know or find in old examples; write the current form inst
 | `loss=` | `elementwise_loss` |
 | `equation_file=` | `output_directory=` + `run_id=` |
 | `npop`, `ncyclesperiteration`, camelCase args | `population_size`, `ncycles_per_iteration`, snake_case |
-| `TemplateExpressionSpec(function_symbols=..., combine=lambda ...)` | combine string + `expressions=`, `variable_names=` |
+| positional `TemplateExpressionSpec` or `function_symbols=...` | explicit `combine=`, `expressions=`, and `variable_names=` keywords |
