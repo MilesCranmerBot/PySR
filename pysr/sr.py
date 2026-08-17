@@ -36,7 +36,11 @@ from .export_latex import (
     with_preamble,
 )
 from .export_sympy import assert_valid_sympy_symbol
-from .expression_specs import AbstractExpressionSpec, ExpressionSpec
+from .expression_specs import (
+    AbstractExpressionSpec,
+    ExpressionSpec,
+    TemplateExpressionSpec,
+)
 from .feature_selection import run_feature_selection
 from .julia_extensions import load_required_packages
 from .julia_helpers import (
@@ -1430,11 +1434,19 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
             if "equations_" not in model.__dict__ or model.equations_ is None:
                 model.refresh()
+            else:
+                model._restore_julia_backed_columns()
 
-            if model.expression_spec is not None and not model._has_fitted_type_spec():
+            if (
+                not isinstance(
+                    model.expression_spec_, (ExpressionSpec, TemplateExpressionSpec)
+                )
+                and not model._has_fitted_type_spec()
+            ):
                 warnings.warn(
-                    "Loading model from checkpoint file with a non-default expression spec "
-                    "is not fully supported as it relies on dynamic objects. This may result in unexpected behavior.",
+                    "Loading a checkpoint with a custom expression spec is not fully "
+                    "supported, as it relies on dynamic Julia objects. This may result "
+                    "in unexpected behavior.",
                 )
 
             return model
@@ -1582,9 +1594,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             pickled_state["output_torch_format"] = False
             pickled_state["output_jax_format"] = False
             unpicklable_columns = ["jax_format", "torch_format"]
-            if self._has_fitted_type_spec():
+            if self._has_julia_backed_equations():
                 # Live Julia objects cannot be unpickled in a fresh process
-                # before the TypeSpec definitions exist; these columns are
+                # before their Julia definitions exist; these columns are
                 # rebuilt from `julia_state_` via `refresh()`.
                 unpicklable_columns += ["julia_expression", "lambda_format"]
             if self.nout_ == 1:
@@ -1651,8 +1663,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         stream = getattr(self, "julia_options_stream_", None)
         if stream is None:
             return None
-        if self._has_fitted_type_spec():
-            self._load_type_spec_runtime()
+        self._define_julia_expression_types()
         return jl_deserialize(stream)
 
     @property
@@ -1661,8 +1672,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         stream = getattr(self, "julia_state_stream_", None)
         if stream is None:
             return None
-        if self._has_fitted_type_spec():
-            self._load_type_spec_runtime()
+        self._define_julia_expression_types()
         return cast(
             Union[Tuple[VectorValue, AnyValue], None],
             jl_deserialize(stream),
@@ -1690,6 +1700,31 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             getattr(self.expression_spec_, f"supports_{format}")
         )
 
+    def _has_julia_backed_equations(self) -> bool:
+        """Whether `equations_` holds live Julia objects that cannot be pickled."""
+        return self._has_fitted_type_spec() or isinstance(
+            self.expression_spec_, TemplateExpressionSpec
+        )
+
+    def _define_julia_expression_types(self) -> None:
+        """Define the Julia types needed to deserialize `julia_state_stream_`."""
+        if self._has_fitted_type_spec():
+            self._load_type_spec_runtime()
+        elif isinstance(self.expression_spec_, TemplateExpressionSpec):
+            self.expression_spec_.julia_expression_spec()
+
+    def _restore_julia_backed_columns(self) -> None:
+        """Rebuild the Julia-backed equation columns dropped by pickling."""
+        if not self._has_julia_backed_equations():
+            return
+        equations = getattr(self, "equations_", None)
+        frames = equations if isinstance(equations, list) else [equations]
+        if any(
+            isinstance(frame, pd.DataFrame) and "lambda_format" not in frame.columns
+            for frame in frames
+        ):
+            self.refresh()
+
     def get_best(
         self, index: int | list[int] | None = None
     ) -> pd.Series | list[pd.Series]:
@@ -1715,6 +1750,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             Raised when an invalid model selection strategy is provided.
         """
         check_is_fitted(self, attributes=["equations_"])
+        self._restore_julia_backed_columns()
 
         if index is not None:
             if isinstance(self.equations_, list):
@@ -2940,13 +2976,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             self, attributes=["selection_mask_", "feature_names_in_", "nout_"]
         )
         has_type_spec = self._has_fitted_type_spec()
-        if (
-            has_type_spec
-            and isinstance(self.equations_, pd.DataFrame)
-            and "lambda_format" not in self.equations_.columns
-        ):
-            # Unpickling strips the Julia-backed columns; rebuild them.
-            self.refresh()
         best_equation = self.get_best(index=index)
 
         if has_type_spec:

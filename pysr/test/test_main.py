@@ -1,8 +1,11 @@
 import functools
 import importlib
+import json
 import os
 import pickle as pkl
 import platform
+import subprocess
+import sys
 import tempfile
 import traceback
 import unittest
@@ -895,6 +898,52 @@ class TestPipeline(unittest.TestCase):
             model.pytorch()
         with self.assertRaises(ValueError):
             model.latex_table()
+
+    def test_template_expressions_reload_in_fresh_process(self):
+        X = self.rstate.uniform(-1, 1, (30, 2))
+        y = np.sin(X[:, 0] + X[:, 1])
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor(
+                expression_spec=TemplateExpressionSpec(
+                    combine="sin(f(x, y))",
+                    expressions=["f"],
+                    variable_names=["x", "y"],
+                ),
+                binary_operators=["+", "-", "*"],
+                unary_operators=[],
+                maxsize=10,
+                **{
+                    **self.default_test_kwargs,
+                    "temp_equation_file": False,
+                },
+                output_directory=directory,
+                run_id="template-checkpoint",
+            )
+            model.fit(X, y)
+            expected = model.predict(X)
+            run_directory = Path(directory) / "template-checkpoint"
+            code = f"""
+import json
+import numpy as np
+from pysr import PySRRegressor
+model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
+X = np.array({X.tolist()!r})
+print(json.dumps({{
+    "columns": list(model.equations_.columns),
+    "prediction": model.predict(X).tolist(),
+}}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn("lambda_format", payload["columns"])
+        np.testing.assert_allclose(payload["prediction"], expected, atol=1e-10)
 
     def test_template_expression_with_parameters_multiout(self):
         # Create random data

@@ -375,6 +375,18 @@ class TestTypeSpecs(unittest.TestCase):
             )
         )
 
+    def test_restored_model_rebuilds_callable_columns(self):
+        X, y = string_data()
+        model = tiny_model(string_spec(name="RestoredColumnValue"))
+        model.fit(X, y)
+
+        restored = pickle.loads(pickle.dumps(model))
+        self.assertNotIn("lambda_format", restored.equations_.columns)
+
+        best = restored.get_best()
+        self.assertIn("lambda_format", restored.equations_.columns)
+        np.testing.assert_array_equal(best["lambda_format"](X), model.predict(X))
+
     def test_failed_warm_start_restores_fitted_metadata_and_checkpoint(self):
         X, y = string_data()
         with tempfile.TemporaryDirectory() as directory:
