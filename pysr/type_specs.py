@@ -53,7 +53,7 @@ def object_array_2d(values: Any) -> np.ndarray:
 
 @dataclass
 class TypeSpec:
-    """Declarative definition of a custom symbolic-regression value type.
+    """Definition of a custom value type for symbolic regression.
 
     Parameters
     ----------
@@ -63,27 +63,35 @@ class TypeSpec:
     fields : dict[str, str]
         Ordered mapping from field names to Julia field types.
     sample : str
-        Julia callable with signature ``rng -> value``.
+        Julia callable with signature ``rng -> (...)::{name}``.
     scalar_constants : str, optional
-        Julia callable with signature ``value -> scalar_constants``. Provide
+        Julia callable with signature ``value::{name} -> (...)::Vector{Float64}``. Provide
         together with ``with_scalar_constants`` to enable continuous constant
         optimization.
     with_scalar_constants : str, optional
-        Julia callable with signature ``(value, scalar_constants) -> value``.
+        Julia callable with signature ``(value::{name}, scalar_constants::Vector{Float64}) -> (...)::{name}``.
     init : str, optional
-        Julia callable with signature ``() -> value``. The default samples a
-        value using a deterministic local random-number generator.
+        Julia callable with signature ``() -> value::{name}``. The default repurposes `sample`
+        using a deterministic local random-number generator.
     mutate : str, optional
-        Julia callable with signature ``(rng, value, temperature) -> value``.
-        When scalar constants are configured, the default mutates one scalar
-        using SymbolicRegression.jl's constant mutation.
+        Julia callable with signature ``(rng, value::{name}, temperature::Float64) -> value::{name}``.
+        Use this to mutate a value of the type.
+        The `temperature` (from simulated annealing) is between 0 and 1. High temperatures
+        generally should be used for more aggressive mutations, and low temperatures for
+        more conservative mutations.
+        The default mutation repurposes `scalar_constants` and `with_scalar_constants`
+        to mutate the set with SymbolicRegression.jl's default constant mutation,
+        and put it back into a new value.
     is_valid : str, optional
-        Julia callable with signature ``value -> Bool``. The default checks that
-        every scalar constant is finite, or accepts every value for a
+        Julia callable with signature ``value::{name} -> (...)::Bool``.
+        Use this to check if your type is in a valid state. For example, if your type
+        has been processed in a way that invalidates it (like a NaN, but specific to your type),
+        you may use this function to check for that. This will be used to quit evaluation early.
+        The default checks that every scalar constant is finite, or accepts every value for a
         non-optimizable type.
     string : str, optional
-        Julia callable with signature ``value -> AbstractString`` used to print
-        constants in equations.
+        Julia callable with signature ``value::{name} -> (...)::AbstractString`` used to print
+        values.
     preamble : str, optional
         Julia source evaluated once before the generated type definition. Types
         and functions it defines are visible to the hooks and to operator and
