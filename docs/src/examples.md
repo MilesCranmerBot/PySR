@@ -331,8 +331,8 @@ objective(tree_or_expression, dataset, options, idx=nothing)
 
 With automatic batching, a three-argument objective receives a dataset already
 restricted to the active batch. A four-argument objective receives the full
-dataset and the selected row indices. This makes sample-aligned auxiliary data
-available without copying it into every batch.
+dataset and the selected row indices. This can be useful when needing to do
+custom batching operations.
 
 The following batching-aware mean squared error is equivalent to the default
 objective for an unweighted scalar dataset:
