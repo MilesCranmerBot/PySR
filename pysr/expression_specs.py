@@ -171,6 +171,7 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         Dictionary mapping parameter names to their lengths. For example, {"p1": 2, "p2": 1}
         means p1 is a vector of length 2 and p2 is a vector of length 1. These parameters
         will be optimized during the search.
+
     Examples
     --------
     ```python
