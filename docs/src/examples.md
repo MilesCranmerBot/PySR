@@ -356,7 +356,7 @@ model = PySRRegressor(
 
 Always check the completion flag returned by `eval_tree_array`; an incomplete
 evaluation must receive an infinite or suitably large loss. Return the
-dataset's loss type `L`, which remains real even when the data type `T` is
+dataset's loss type `L`, which needs to be real even when the data type `T` is
 complex.
 
 A full objective can also reinterpret the tree. This example treats the two
@@ -801,56 +801,19 @@ Here, we write out a full function in Julia.
 
 ## 14. Custom value types
 
-`TypeSpec` changes the value type used throughout a search. Vectors, tensors,
-strings, or structured values can flow through each expression, constant, and
-operator.
+`TypeSpec` lets you specify a custom type for values flowing through your expressions.
+Vectors, tensors, strings, structs, or anything else,
+can be defined with a `TypeSpec` and enable PySR to search for expressions
+that are compatible with that type.
 
-Each `TypeSpec` creates a deterministic Julia module for the generated value
-type and imports that type into `Main` for SymbolicRegression.jl integration.
-Every complete runtime configuration creates a second fingerprinted module
-nested inside the type module. That configuration module contains the
-operators, loss, complexity mapping, early-stop condition, and `ExpressionSpec`
-used by the search. Exact source-equivalent configurations reuse the same
-modules; different sources remain isolated even when they define the same
-function names.
+Searches with a `type_spec=TypeSpec(...)` specified requires a few additional arguments
+to be set:
 
-The fitted estimator stores the complete runtime definition. Checkpoint loading
-recreates both modules before Julia deserializes the saved options and search
-state, so prediction works in a fresh process without replaying mutable global
-definitions.
-TypeSpec source must be self-contained apart from SymbolicRegression.jl. Julia
-packages used by a preamble, operator, objective, or expression specification
-must be imported explicitly in that source and listed in `worker_imports` for
-multiprocessing. Ad hoc references to bindings in `Main` are unsupported
-because checkpoints and workers cannot recreate them.
+1. There are various hooks that must be defined as part of the type spec. These tell PySR how to sample and mutate your type, and also how to unpack it into a vector of constants (for optimization).
+2. You must define a custom loss function that can handle your type and produce a real-valued loss. This can be done with `elementwise_loss`, `loss_function`, or `loss_function_expression`. (You can declare the return type as, e.g., `loss_type=Float64` in your type spec, or this will be inferred automatically).
+3. You must define custom operators that accept and return your type. PySR will perform a check that the operators are type-stable, and will raise an error if they are not. Add an explicit return annotation such as `::Vec2` when Julia cannot infer it.
 
-TypeSpec supports the default `ExpressionSpec`, `TemplateExpressionSpec`, and
-custom expression specifications that implement the TypeSpec source hooks. It
-supports prediction, checkpoint reload, and serial, multithreaded, or
-multiprocessing search. TypeSpec does not support guesses, weights, units,
-denoising, feature selection, resampling, multi-output targets, turbo or bumper
-evaluation, autodiff backends, or SymPy, JAX, Torch, and LaTeX export. Restoring
-a TypeSpec model requires its `checkpoint.pkl`; a hall-of-fame CSV is
-insufficient.
-
-A `TemplateExpressionSpec` may declare `parameters`; each parameter holds values
-of the TypeSpec type. `init` creates them and `mutate` changes them, so a spec
-without `scalar_constants` still learns parameters through mutation. A spec that
-defines `scalar_constants` and `with_scalar_constants` also has its parameters
-tuned by continuous constant optimization.
-
-A TypeSpec search requires exactly one of `elementwise_loss`,
-`loss_function`, or `loss_function_expression`. Full objectives use the same
-`(tree, dataset, options, idx=nothing)` and
-`(expression, dataset, options, idx=nothing)` signatures described above,
-including batching-aware dispatch. Set a concrete return type such as
-`TypeSpec(loss_type="Float64")` for a full objective. PySR infers an
-elementwise loss's return type from its Julia method, so do not set `loss_type`
-for one.
-
-Operators must be type-stable. PySR checks each method with `Base.promote_op`
-and requires Julia to infer the chosen TypeSpec type as its return type. Add an
-explicit return annotation such as `::Vec2` when Julia cannot infer it.
+We will look at some examples below.
 
 ### Vector-valued expression trees
 
@@ -861,7 +824,7 @@ y = \operatorname{rotate90}(x_1) + 2x_2 +
 \begin{bmatrix}0.5 \\ -1.0\end{bmatrix}.
 $$
 
-Each cell of `X` and `y` contains one vector:
+Each cell of `X` and `y` contains one vector. We are not treating this as a higher-dimensional array, but rather as a normal 2D/1D array with vectors _as values_.
 
 ```python
 import numpy as np
@@ -878,9 +841,9 @@ offset = np.array([0.5, -1.0])
 y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
 ```
 
-PySR wraps each vector in a private Julia `Vec2` type. `scalar_constants`
-extracts the continuous values optimized by BFGS, and
-`with_scalar_constants` rebuilds the constant after optimization. PySR derives
+PySR will each vector in a private Julia `Vec2` type that we define below.
+`scalar_constants` extracts the continuous values from this type (to be optimized by BFGS),
+and `with_scalar_constants` rebuilds the constant after optimization. PySR derives
 initialization, mutation, validation, counting, packing, and unpacking from
 this pair:
 
@@ -894,29 +857,37 @@ type_spec = TypeSpec(
         "(value, scalar_constants) -> Vec2(scalar_constants)"
     ),
 )
+```
 
+This is the minimal set of hooks needed. There are a few others that you could optionally define, necessary to get faster speeds, such as `init` and `mutate` (and if we want to customize the printing, `string`). PySR will try to derive these automatically from the provided `sample` hook, but it will not be as fast.
+
+In Julia, this would give us a type definition of
+
+```julia
+struct Vec2
+    data::Vector{Float64}
+end
+```
+
+Once you have defined your type, you need to define the operators that accept and return this type. For example, we can define a `rotate90` operator that rotates a vector by 90 degrees, and a `double` operator that doubles the vector. We also define an `add_vectors` operator that adds two vectors together:
+
+```python
+operators = {
+    1: [
+        "rotate90(a::Vec2) = Vec2([-a.data[2], a.data[1]])",
+        "double(a::Vec2) = Vec2(2a.data)",
+    ],
+    2: ["add_vectors(a::Vec2, b::Vec2) = Vec2(a.data + b.data)"],
+}
+```
+
+```python
 model = PySRRegressor(
     type_spec=type_spec,
-    operators={
-        1: [
-            """
-            function rotate90(a::Vec2)
-                return Vec2([-a.data[2], a.data[1]])
-            end
-            """,
-            "double(a::Vec2) = Vec2(2a.data)",
-        ],
-        2: ["add_vectors(a::Vec2, b::Vec2) = Vec2(a.data + b.data)"],
-    },
-    elementwise_loss="""
-    function vector_loss(a::Vec2, b::Vec2)::Float64
-        return sum(abs2, a.data - b.data)
-    end
-    """,
+    elementwise_loss="vector_loss(a::Vec2, b::Vec2) = sum(abs2, a.data - b.data)",
     niterations=40,
     populations=4,
     maxsize=10,
-    progress=False,
 )
 
 model.fit(X, y)
@@ -958,9 +929,7 @@ type_spec = TypeSpec(
     fields={"data": "String"},
     sample='rng -> StringValue(rand(rng, ("", "-", "_")))',
     mutate="""
-    function mutate_string(rng, value, temperature)
-        return StringValue(rand(rng, ("", "-", "_")))
-    end
+    mutate_string(rng, value, temperature) = StringValue(rand(rng, ("", "-", "_")))
     """,
 )
 
@@ -972,17 +941,11 @@ model = PySRRegressor(
             "string_uppercase(x::StringValue) = StringValue(uppercase(x.data))",
         ],
         2: [
-            """
-            function string_concat(a::StringValue, b::StringValue)
-                return StringValue(a.data * b.data)
-            end
-            """
+            "string_concat(a::StringValue, b::StringValue) = StringValue(a.data * b.data)"
         ],
     },
     elementwise_loss="""
-    function string_loss(a::StringValue, b::StringValue)::Float64
-        return Float64(Base.editdistance(a.data, b.data))
-    end
+    string_loss(a::StringValue, b::StringValue) = Float64(Base.editdistance(a.data, b.data))
     """,
     niterations=40,
 )
