@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,8 +22,11 @@ from pysr.type_specs import (
     load_type_spec_runtime,
     object_array_1d,
     object_array_2d,
+    prepare_type_spec_fit_data,
+    prepare_type_spec_prediction_data,
     type_spec_to_julia_array,
     type_spec_to_python_array,
+    validate_type_spec_configuration,
     validate_type_spec_options,
     validate_type_spec_runtime,
 )
@@ -1354,6 +1358,168 @@ print(json.dumps({{
             ValueError, "CustomExpressionSpec does not support TypeSpec"
         ):
             model.fit(X, y)
+
+    def test_rejects_invalid_specs(self):
+        cases = [
+            (dict(name="not an id"), "not an identifier"),
+            (dict(fields={}), "non-empty ordered mapping"),
+            (dict(fields={"not an id": "String"}), "is not an identifier"),
+            (dict(fields={"data": " "}), "requires a Julia type"),
+            (dict(sample=" "), "must contain Julia source"),
+            (dict(scalar_constants="value -> [1.0]"), "must be provided together"),
+            (dict(mutate=None), "requires an explicit `mutate`"),
+            (dict(string=" "), "cannot be empty"),
+        ]
+        for overrides, message in cases:
+            with self.subTest(**overrides):
+                with self.assertRaisesRegex(ValueError, message):
+                    string_spec(**overrides)
+
+    def test_rejects_invalid_configurations(self):
+        no_loss = dict(
+            elementwise_loss=None, loss_function=None, loss_function_expression=None
+        )
+        operators = {1: ["x -> x"]}
+        cases = [
+            (string_spec(), operators, no_loss, "exactly one of"),
+            (
+                string_spec(loss_type="Float64"),
+                operators,
+                {**no_loss, "elementwise_loss": "(p, t) -> 0.0"},
+                "return type is inferred",
+            ),
+            (
+                string_spec(),
+                operators,
+                {**no_loss, "loss_function": "f(tree, dataset, options) = 0.0"},
+                "explicit `loss_type`",
+            ),
+            (string_spec(), None, no_loss, "requires explicit"),
+            (string_spec(), {0: ["x -> x"]}, no_loss, "positive integers"),
+            (string_spec(), {1: []}, no_loss, "cannot be empty"),
+            (string_spec(), {1: [" "]}, no_loss, "must contain Julia source"),
+        ]
+        for spec, operator_table, losses, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_type_spec_configuration(spec, operator_table, **losses)
+
+    def test_fit_data_validation(self):
+        X = np.array([["a"], ["b"]], dtype=object)
+        y = X[:, 0].copy()
+
+        def prepare(
+            model=None,
+            X=X,
+            y=y,
+            Xresampled=None,
+            weights=None,
+            variable_names=None,
+            X_units=None,
+            y_units=None,
+        ):
+            return prepare_type_spec_fit_data(
+                model or PySRRegressor(),
+                X,
+                y,
+                Xresampled,
+                weights,
+                variable_names,
+                None,
+                X_units,
+                y_units,
+            )
+
+        with self.assertRaisesRegex(NotImplementedError, "denoising"):
+            prepare(model=PySRRegressor(denoise=True))
+        with self.assertRaisesRegex(ValueError, "2D array"):
+            prepare(X=np.empty((1, 1, 1), dtype=object))
+        with self.assertRaisesRegex(NotImplementedError, "one output"):
+            prepare(y=np.empty((2, 2), dtype=object))
+        with self.assertRaisesRegex(ValueError, "inconsistent numbers of samples"):
+            prepare(y=y[:1])
+        with self.assertRaisesRegex(ValueError, "at least one sample"):
+            prepare(X=np.empty((0, 1), dtype=object), y=np.empty(0, dtype=object))
+        with self.assertRaisesRegex(NotImplementedError, "weights"):
+            prepare(weights=np.ones(2))
+        with self.assertRaisesRegex(NotImplementedError, "units"):
+            prepare(X_units=["m"])
+        with self.assertWarnsRegex(UserWarning, "reset to `None`"):
+            prepare(X=pd.DataFrame({"a": ["a", "b"]}), variable_names=["a"])
+        model = PySRRegressor()
+        with self.assertWarnsRegex(UserWarning, "Spaces"):
+            prepare(model=model, y=y.reshape(-1, 1), variable_names=["a b"])
+        self.assertEqual(list(model.feature_names_in_), ["a_b"])
+
+    def test_prediction_data_validation(self):
+        model = PySRRegressor()
+        model.n_features_in_ = 1
+        model.selection_mask_ = None
+        model.feature_names_in_ = np.array(["a_b"])
+        with self.assertRaisesRegex(ValueError, "2D array"):
+            prepare_type_spec_prediction_data(model, np.empty((1, 1, 1), dtype=object))
+        with self.assertRaisesRegex(ValueError, "different number of features"):
+            prepare_type_spec_prediction_data(
+                model, np.array([["a", "b"]], dtype=object)
+            )
+        with self.assertRaisesRegex(ValueError, "missing features"):
+            prepare_type_spec_prediction_data(model, pd.DataFrame({"z": ["a"]}))
+        with self.assertWarnsRegex(UserWarning, "Spaces"):
+            out = prepare_type_spec_prediction_data(model, pd.DataFrame({"a b": ["a"]}))
+        self.assertEqual(out.shape, (1, 1))
+
+        model.n_features_in_ = 2
+        model.selection_mask_ = np.array([True, False])
+        out = prepare_type_spec_prediction_data(
+            model, np.array([["a", "b"]], dtype=object)
+        )
+        np.testing.assert_array_equal(out, np.array([["a"]], dtype=object))
+
+    def test_julia_array_conversion_errors(self):
+        runtime = load_type_spec_runtime(
+            compile_type_spec(string_spec(name="ConversionErrorValue"))
+        )
+        with self.assertRaisesRegex(ValueError, "1D or 2D"):
+            type_spec_to_julia_array(runtime, np.empty((1, 1, 1), dtype=object))
+        with self.assertRaises(ValueError):
+            type_spec_to_julia_array(runtime, np.array([1.0, 2.0]))
+
+    def test_runtime_load_rejects_inconsistent_definition_values(self):
+        definition = compile_type_spec_runtime(
+            string_spec(name="InconsistentLoadValue"),
+            {1: ["x -> x"]},
+            elementwise_loss="(prediction, target) -> 0.0",
+            loss_function=None,
+            loss_function_expression=None,
+            complexity_mapping=None,
+            early_stop_condition=None,
+        )
+        load_type_spec_runtime(definition)
+        with patch("pysr.type_specs._runtime_sources", return_value=["x -> x"] * 99):
+            with self.assertRaisesRegex(RuntimeError, "inconsistent"):
+                load_type_spec_runtime(definition)
+
+    def test_fitted_model_guards(self):
+        X, y = string_data()
+        spec = string_spec(name="GuardedValue")
+        model = tiny_model(spec)
+        model.fit(X, y)
+
+        with self.assertRaises(NotImplementedError):
+            model.score(X, y)
+        with self.assertRaises(ValueError):
+            model.predict(np.array([[1.0]]))
+
+        model.set_params(warm_start=True, type_spec=None)
+        with self.assertRaisesRegex(ValueError, "Cannot warm-start"):
+            model.fit(X, y)
+
+        model.set_params(warm_start=False, type_spec=spec)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with self.assertRaisesRegex(NotImplementedError, "weights"):
+                model.fit(X, y, weights=np.ones(len(y)))
+        self.assertFalse(hasattr(model, "_type_spec_runtime_definition_"))
 
 
 if __name__ == "__main__":

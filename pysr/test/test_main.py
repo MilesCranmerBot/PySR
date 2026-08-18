@@ -945,6 +945,9 @@ print(json.dumps({{
         self.assertIn("lambda_format", payload["columns"])
         np.testing.assert_allclose(payload["prediction"], expected, atol=1e-10)
 
+        loaded = pkl.loads(pkl.dumps(model))
+        self.assertIsNotNone(loaded.julia_state_)
+
     def test_template_expression_with_parameters_multiout(self):
         # Create random data
         X_continuous = self.rstate.uniform(-1, 1, (100, 2))
@@ -1449,6 +1452,26 @@ class TestFeatureSelection(unittest.TestCase):
 
 class TestMiscellaneous(unittest.TestCase):
     """Test miscellaneous functions."""
+
+    def test_unfitted_julia_streams_are_none(self):
+        model = PySRRegressor()
+        self.assertIsNone(model.julia_options_)
+        self.assertIsNone(model.julia_state_)
+
+    def test_inline_operator_must_be_a_function(self):
+        from pysr.sr import _maybe_create_inline_operators
+
+        with self.assertRaisesRegex(ValueError, "must evaluate to a Julia function"):
+            _maybe_create_inline_operators({1: ["identity(1)"]}, None, False)
+
+    def test_variable_names_must_match_feature_count(self):
+        # sklearn's own length check fires first during `fit`; exercise the
+        # backstop in `_check_assertions` directly.
+        from pysr.sr import _check_assertions
+
+        X = np.random.randn(10, 2)
+        with self.assertRaisesRegex(ValueError, "one name per feature"):
+            _check_assertions(X, True, ["a"], None, None, X[:, 0], None, None, False)
 
     def test_equations_with_quoted_constants_are_read(self):
         """Equations holding string constants arrive with doubled quotes."""
