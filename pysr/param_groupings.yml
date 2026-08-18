@@ -4,6 +4,7 @@
     - unary_operators
     - operators
     - expression_spec
+    - type_spec
     - maxsize
     - maxdepth
   - Setting the Search Size:

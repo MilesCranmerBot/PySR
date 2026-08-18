@@ -57,6 +57,7 @@ from .plugins import (
     SimulatedAnnealingPlugin,
 )
 from .sr import PySRRegressor
+from .type_specs import TypeSpec
 
 try:
     __version__ = version("pysr")
@@ -78,6 +79,7 @@ __all__ = [
     "TemplateExpressionSpec",
     "AbstractLoggerSpec",
     "TensorBoardLoggerSpec",
+    "TypeSpec",
     "AbstractMutation",
     "ConstantMutation",
     "OperatorMutation",

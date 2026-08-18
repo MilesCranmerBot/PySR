@@ -1,12 +1,16 @@
 import functools
 import importlib
+import json
 import os
 import pickle as pkl
 import platform
+import subprocess
+import sys
 import tempfile
 import traceback
 import unittest
 import warnings
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from textwrap import dedent
 from unittest import mock
@@ -36,6 +40,7 @@ from pysr.feature_selection import _handle_feature_selection, run_feature_select
 from pysr.julia_helpers import _load_cluster_manager, init_julia
 from pysr.sr import (
     _check_assertions,
+    _create_julia_operators_and_loss_functions,
     _process_constraints,
     _suggest_keywords,
     _validate_elementwise_loss,
@@ -50,6 +55,7 @@ from .params import (
     DEFAULT_POPULATIONS,
     skip_if_beartype,
 )
+from .test_type_specs import TestTypeSpecs
 
 # Disables local saving:
 os.environ["SYMBOLIC_REGRESSION_IS_TESTING"] = os.environ.get(
@@ -349,6 +355,17 @@ class TestPipeline(unittest.TestCase):
 
     def test_validation_helpers_skip_nonfunction(self):
         _validate_elementwise_loss(jl.seval("1.0"), has_weights=False)
+
+    def test_elementwise_loss_accepts_lossfunctions_object(self):
+        _, custom_loss, _, _ = _create_julia_operators_and_loss_functions(
+            operators={2: ["+", "-", "/", "*"]},
+            extra_sympy_mappings=None,
+            supports_sympy=True,
+            elementwise_loss="LPDistLoss{3}()",
+            loss_function=None,
+            loss_function_expression=None,
+        )
+        self.assertTrue(jl.applicable(custom_loss, 1.0, 1.0))
 
     def test_validate_export_mappings_typechecks(self):
         with self.assertRaises(ValueError):
@@ -833,7 +850,9 @@ class TestPipeline(unittest.TestCase):
         # Create model with template that includes the missing sin operator
         model = PySRRegressor(
             expression_spec=TemplateExpressionSpec(
-                ["f"], "sin_of_f((; f), (x, y)) = sin(f(x, y))"
+                combine="sin(f(x, y))",
+                expressions=["f"],
+                variable_names=["x", "y"],
             ),
             binary_operators=["+", "-", "*", "/"],
             unary_operators=[],  # No sin operator!
@@ -880,6 +899,55 @@ class TestPipeline(unittest.TestCase):
         with self.assertRaises(ValueError):
             model.latex_table()
 
+    def test_template_expressions_reload_in_fresh_process(self):
+        X = self.rstate.uniform(-1, 1, (30, 2))
+        y = np.sin(X[:, 0] + X[:, 1])
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor(
+                expression_spec=TemplateExpressionSpec(
+                    combine="sin(f(x, y))",
+                    expressions=["f"],
+                    variable_names=["x", "y"],
+                ),
+                binary_operators=["+", "-", "*"],
+                unary_operators=[],
+                maxsize=10,
+                **{
+                    **self.default_test_kwargs,
+                    "temp_equation_file": False,
+                },
+                output_directory=directory,
+                run_id="template-checkpoint",
+            )
+            model.fit(X, y)
+            expected = model.predict(X)
+            run_directory = Path(directory) / "template-checkpoint"
+            code = f"""
+import json
+import numpy as np
+from pysr import PySRRegressor
+model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
+X = np.array({X.tolist()!r})
+print(json.dumps({{
+    "columns": list(model.equations_.columns),
+    "prediction": model.predict(X).tolist(),
+}}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn("lambda_format", payload["columns"])
+        np.testing.assert_allclose(payload["prediction"], expected, atol=1e-10)
+
+        loaded = pkl.loads(pkl.dumps(model))
+        self.assertIsNotNone(loaded.julia_state_)
+
     def test_template_expression_with_parameters_multiout(self):
         # Create random data
         X_continuous = self.rstate.uniform(-1, 1, (100, 2))
@@ -898,7 +966,7 @@ class TestPipeline(unittest.TestCase):
         model = PySRRegressor(
             **self.default_test_kwargs,
             expression_spec=TemplateExpressionSpec(
-                "p[class] * x1^2 + f(x2)",
+                combine="p[class] * x1^2 + f(x2)",
                 expressions=["f"],
                 parameters={"p": 3},
                 variable_names=["x1", "x2", "class"],
@@ -1289,14 +1357,16 @@ def manually_create_model(equations, feature_names=None):
                     Path(output_directory)
                     / run_id
                     / f"hall_of_fame_output{i+1}.csv.bak"
-                )
+                ),
+                index=False,
             )
     else:
         model.nout_ = 1
         model.selection_mask_ = None
         model.feature_names_in_ = np.array(feature_names, dtype=object)
         equations["complexity loss equation".split(" ")].to_csv(
-            str(Path(output_directory) / run_id / "hall_of_fame.csv.bak")
+            str(Path(output_directory) / run_id / "hall_of_fame.csv.bak"),
+            index=False,
         )
 
     model.refresh()
@@ -1383,6 +1453,50 @@ class TestFeatureSelection(unittest.TestCase):
 class TestMiscellaneous(unittest.TestCase):
     """Test miscellaneous functions."""
 
+    def test_unfitted_julia_streams_are_none(self):
+        model = PySRRegressor()
+        self.assertIsNone(model.julia_options_)
+        self.assertIsNone(model.julia_state_)
+
+    def test_inline_operator_must_be_a_function(self):
+        from pysr.sr import _maybe_create_inline_operators
+
+        with self.assertRaisesRegex(ValueError, "must evaluate to a Julia function"):
+            _maybe_create_inline_operators({1: ["identity(1)"]}, None, False)
+
+    def test_variable_names_must_match_feature_count(self):
+        # sklearn's own length check fires first during `fit`; exercise the
+        # backstop in `_check_assertions` directly.
+        from pysr.sr import _check_assertions
+
+        X = np.random.randn(10, 2)
+        with self.assertRaisesRegex(ValueError, "one name per feature"):
+            _check_assertions(X, True, ["a"], None, None, X[:, 0], None, None, False)
+
+    def test_equations_with_quoted_constants_are_read(self):
+        """Equations holding string constants arrive with doubled quotes."""
+        output_directory = tempfile.mkdtemp()
+        run_id = "quoted"
+        os.makedirs(Path(output_directory) / run_id)
+        equation = 'f = "a"; p = ["a", "b"]'
+        with open(
+            Path(output_directory) / run_id / "hall_of_fame.csv", "w", encoding="utf-8"
+        ) as f:
+            f.write("Complexity,Loss,Equation\n")
+            f.write('1,0.0,"""a"""\n')
+            f.write('3,0.0,"f = ""a""; p = [""a"", ""b""]"\n')
+
+        model = PySRRegressor()
+        model.nout_ = 1
+        model.output_directory_ = output_directory
+        model.run_id_ = run_id
+
+        equations = model._read_equation_file()[0]
+
+        self.assertEqual(list(equations["complexity"]), [1, 3])
+        self.assertEqual(list(equations["loss"]), [0.0, 0.0])
+        self.assertEqual(list(equations["equation"]), ['"a"', equation])
+
     def test_pickle_inv_sympy_expression(self):
         """Test that sympy expressions with the inv operator can be pickled and unpickled correctly."""
         expr_str = "inv(x0) + x1"
@@ -1466,14 +1580,23 @@ class TestMiscellaneous(unittest.TestCase):
 
     def test_checkpoint_schema(self):
         state = PySRRegressor().__getstate__()
-        self.assertEqual(state["_checkpoint_schema_version"], 2)
+        self.assertEqual(state["_checkpoint_schema_version"], 3)
 
-        for schema_version in (None, 1, 3):
+        schema_two_state = state.copy()
+        schema_two_state.pop("type_spec")
+        schema_two_model = PySRRegressor.__new__(PySRRegressor)
+        schema_two_model.__setstate__(schema_two_state)
+        self.assertIsNone(schema_two_model.type_spec)
+
+        missing_schema_state = state.copy()
+        missing_schema_state.pop("_checkpoint_schema_version")
+        missing_schema_model = PySRRegressor.__new__(PySRRegressor)
+        with self.assertRaisesRegex(ValueError, "Unsupported PySR checkpoint schema"):
+            missing_schema_model.__setstate__(missing_schema_state)
+
+        for schema_version in (1, 2, 4):
             incompatible_state = state.copy()
-            if schema_version is None:
-                incompatible_state.pop("_checkpoint_schema_version")
-            else:
-                incompatible_state["_checkpoint_schema_version"] = schema_version
+            incompatible_state["_checkpoint_schema_version"] = schema_version
 
             model = PySRRegressor.__new__(PySRRegressor)
             with self.assertRaisesRegex(
@@ -2337,6 +2460,7 @@ class TestDimensionalConstraints(unittest.TestCase):
                 y,
                 X_units,
                 y_units,
+                supports_sympy=False,
             )
         invalid_units = [
             (np.ones((10, 2)), np.ones(10), ["m/s", "s", "s^2"], None),
@@ -2352,6 +2476,7 @@ class TestDimensionalConstraints(unittest.TestCase):
                     y,
                     X_units,
                     y_units,
+                    supports_sympy=False,
                 )
 
     def test_unit_propagation(self):
@@ -2433,20 +2558,18 @@ class TestDimensionalConstraints(unittest.TestCase):
 
 
 class TestTemplateExpressionSpec(unittest.TestCase):
-    def test_num_features_symbol_keys(self):
-        # ponytail: one check — dict keys must reach Julia as Symbols
-        spec = TemplateExpressionSpec(
-            ["f", "g"],
-            "combine(fs, vars) = fs.f(vars[1], vars[2]) + fs.g(vars[3])",
-            {"f": 2, "g": 1},
-        )
-        options = spec.julia_expression_options()
-        names = jl.seval("x -> propertynames(x.structure.num_features)")(options)
-        self.assertEqual(names, (jl.Symbol("f"), jl.Symbol("g")))
-
     def _check_macro_str(self, spec, expected_str):
         self.assertEqual(
             spec._template_macro_str().strip(), dedent(expected_str).strip()
+        )
+
+    def test_is_dataclass(self):
+        spec = TemplateExpressionSpec("f(x)", ["f"], ["x"])
+
+        self.assertTrue(is_dataclass(spec))
+        self.assertEqual(
+            [field.name for field in fields(spec)],
+            ["combine", "expressions", "variable_names", "parameters"],
         )
 
     def test_single_expression_no_params_single_variable(self):
@@ -2569,6 +2692,7 @@ def runtests(just_tests=False):
         TestLaTeXTable,
         TestDimensionalConstraints,
         TestGuesses,
+        TestTypeSpecs,
     ]
     if just_tests:
         return test_cases

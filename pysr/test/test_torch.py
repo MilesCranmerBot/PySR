@@ -51,7 +51,7 @@ class TestTorch(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         model.refresh(run_directory=str(Path(model.output_directory_) / model.run_id_))
@@ -85,7 +85,7 @@ class TestTorch(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         model.refresh(run_directory=str(Path(model.output_directory_) / model.run_id_))
@@ -138,7 +138,7 @@ class TestTorch(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         MyCustomOperator = sympy.Function("mycustomoperator")
