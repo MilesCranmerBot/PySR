@@ -42,7 +42,7 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.sha }}
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: 3.10.8
       - name: Install building tools
@@ -54,6 +54,7 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
+          attestations: false
           verbose: true
       - name: Publish distribution 📦 to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
