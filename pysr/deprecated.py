@@ -24,6 +24,34 @@ def init_julia(*args, **kwargs):
     return jl
 
 
+def ParametricExpressionSpec(*args, **kwargs):
+    del args, kwargs
+    raise NotImplementedError("""
+`ParametricExpressionSpec` was removed in PySR v2. Use
+`TemplateExpressionSpec.parameters`, append the category to `X`, and index
+parameters from the template. For example:
+
+    import numpy as np
+    from pysr import PySRRegressor, TemplateExpressionSpec
+
+    n_categories = len(np.unique(category))
+    spec = TemplateExpressionSpec(
+        combine="f(x1, x2, p1[category], p2[category])",
+        expressions=["f"],
+        variable_names=["x1", "x2", "category"],
+        parameters={"p1": n_categories, "p2": n_categories},
+    )
+
+    # Julia indexing starts at 1. Add one if Python categories start at 0.
+    X_with_category = np.column_stack([X, category + 1])
+    model = PySRRegressor(expression_spec=spec)
+    model.fit(X_with_category, y)
+
+Migration guide:
+https://ai.damtp.cam.ac.uk/pysr/migration/#parametric-expressions
+""".strip())
+
+
 def pysr(X, y, weights=None, **kwargs):  # pragma: no cover
     from .sr import PySRRegressor
 

@@ -23,7 +23,15 @@ from .julia_import import jl, SymbolicRegression  # isort:skip
 from importlib.metadata import PackageNotFoundError, version
 
 from . import sklearn_monkeypatch
-from .deprecated import best, best_callable, best_row, best_tex, install, pysr
+from .deprecated import (
+    ParametricExpressionSpec,
+    best,
+    best_callable,
+    best_row,
+    best_tex,
+    install,
+    pysr,
+)
 from .export_jax import sympy2jax
 from .export_torch import sympy2torch
 from .expression_specs import (
@@ -77,6 +85,7 @@ __all__ = [
     "AbstractExpressionSpec",
     "ExpressionSpec",
     "TemplateExpressionSpec",
+    "ParametricExpressionSpec",
     "AbstractLoggerSpec",
     "TensorBoardLoggerSpec",
     "TypeSpec",
