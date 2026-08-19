@@ -458,10 +458,10 @@ def _warn_if_slow_custom_loss(
         f"squared-error loss ({default_time:.3g} s per pass), measured on the "
         "same data in the same Julia process. A loss this slow will likely "
         "dominate the total search time. Common causes include: excessive "
-        "memory allocation inside the loss; calls back into Python from Julia "
-        "(e.g., via PythonCall); and type instability (you can check this "
-        "with `@code_warntype` on your loss). If this slowdown is expected, "
-        "you can disable this check with `PySRRegressor(..., check_loss_speed=False)`."
+        "memory allocation inside the loss; and type instability (you can "
+        "check this with `@code_warntype` on your loss). If this slowdown is "
+        "expected, you can disable this check with "
+        "`PySRRegressor(..., check_loss_speed=False)`."
     )
 
 
