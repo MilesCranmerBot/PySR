@@ -33,8 +33,8 @@ features:
     details: "Customize everything: operators, loss functions, complexity, input types, optimizer, and more."
 
   - icon: 🐍
-    title: Familiar Python API
-    details: A scikit-learn interface, with results exported to SymPy, PyTorch, or JAX.
+    title: Python Native
+    details: Built for Python with Julia backend for maximum performance and ease of use.
 ---
 
 If you find PySR useful, please cite the paper [arXiv:2305.01582](https://arxiv.org/abs/2305.01582).
