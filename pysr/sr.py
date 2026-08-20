@@ -1634,14 +1634,26 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         This should only be used internally by PySRRegressor.
         """
-        # Save model state:
+        checkpoint_path = self.get_pkl_filename()
+        previous_show_pickle_warnings = getattr(self, "show_pickle_warnings_", True)
+        # Same directory as the destination, so `os.replace` stays atomic and a
+        # failed pickle cannot truncate an existing checkpoint:
+        temporary_path = checkpoint_path.with_name(checkpoint_path.name + ".tmp")
         self.show_pickle_warnings_ = False
-        with open(self.get_pkl_filename(), "wb") as f:
+        try:
+            with open(temporary_path, "wb") as checkpoint_file:
+                try:
+                    pkl.dump(self, checkpoint_file)
+                except Exception as e:
+                    pysr_logger.debug(f"Error checkpointing model: {e}")
+                    return
+            os.replace(temporary_path, checkpoint_path)
+        finally:
+            self.show_pickle_warnings_ = previous_show_pickle_warnings
             try:
-                pkl.dump(self, f)
+                temporary_path.unlink(missing_ok=True)
             except Exception as e:
-                pysr_logger.debug(f"Error checkpointing model: {e}")
-        self.show_pickle_warnings_ = True
+                pysr_logger.debug(f"Error cleaning up temporary checkpoint file: {e}")
 
     def get_pkl_filename(self) -> Path:
         path = Path(self.output_directory_) / self.run_id_ / "checkpoint.pkl"
