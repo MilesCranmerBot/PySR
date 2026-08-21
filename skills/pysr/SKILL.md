@@ -1,6 +1,6 @@
 ---
 name: pysr
-description: Use when fitting equations to data with PySR or SymbolicRegression.jl, when a user wants an interpretable formula, symbolic model, scaling law, or empirical relation discovered from numeric data, or when debugging a PySR search that is slow, stuck, or giving poor equations.
+description: Use when fitting equations to data with PySR or SymbolicRegression.jl, when a user wants an interpretable formula, symbolic model, scaling law, or empirical relation discovered from numeric data, when discovering a governing equation or PDE from spatiotemporal field data, or when debugging a PySR search that is slow, stuck, or giving poor equations.
 ---
 
 # Using PySR Effectively
@@ -92,6 +92,39 @@ end"""
 - Tens of features: raise `maxsize`, provide more rows (with `batching=True` if large), and let the search select features itself; it is reasonably good at this. An equation forced to contain all of 30+ features would need `maxsize` well above 100.
 - More than ~50 features: the primary fix is smarter features or structure. Engineer aggregate features from domain knowledge, or use a template expression over a sensible decomposition. For structured data (fields, images, sequences, graphs), a naive one-column-per-pixel tabular encoding is usually the wrong move; build physically meaningful features, or train a neural network with the right inductive bias and symbolically distill its components (see arXiv:2006.11287). If there is no smarter representation available, `select_k_features=k` (gradient-boosting pre-selection) is the fallback.
 - If the search omits a variable the user expected: PySR only optimizes accuracy and simplicity, so omission means the variable did not reduce loss enough to pay for its complexity. Forcing inclusion requires a custom loss that penalizes its absence.
+
+## PDE discovery (spatiotemporal data)
+
+To discover a PDE from data `u(x, t)` (or several fields, more dimensions), turn it into a normal regression problem: every grid point is one sample, the columns are each field plus its spatial derivatives, and the target is the time derivative. PySR then finds `u_t = f(u, u_x, u_xx, ...)`, and unlike a fixed library of candidate terms it discovers nonlinear combinations like `u*u_x` on its own.
+
+1. Spatial derivatives: use spectral differentiation if the grid is periodic and the data is clean (it is exact for band-limited data); otherwise Savitzky-Golay (`scipy.signal.savgol_filter`, window about twice the smallest feature you care about, polyorder 3). Plain finite differences only on clean data.
+2. Target: central differences of the snapshots. If snapshots are far apart or noisy in time, fit the one-step change `U[1:] - U[:-1]` against features from `U[:-1]` instead. This is the same equation up to a constant, but the target error then scales with the noise level rather than the noise divided by the sampling interval.
+3. `complexity_of_variables=[1, 2, 3, ...]` (one entry per feature: 1 + derivative order) is a cheap way to bias the search toward low-order terms.
+4. Operators: start with `["+", "-", "*"]`; add `/` or unaries only when the domain motivates them.
+5. If you know the units, pass them: `fit(..., X_units=["m/s", "s^-1", "m^-1*s^-1"], y_units="m*s^-2")` prunes impossible terms.
+6. Read the whole Pareto front for the elbow, not just the lowest-loss row.
+
+Controlled test: recovering `u_t = -u*u_x + 0.1*u_xx` from a 128x41 grid, ~2 minute searches:
+
+| Setup | Result |
+|---|---|
+| Clean data, any differentiation | Correct structure on the front |
+| Clean data, spectral derivatives + units | Coefficients exact to 3-4 decimals |
+| 1% noise, np.gradient features | No correct expression anywhere on the front |
+| 1% noise, Savitzky-Golay features | Exact structure; coefficients ~13% low |
+| 5% noise, Savitzky-Golay features | Exact structure recovered |
+| 1% noise, spectral derivatives | Fails badly; never differentiate noisy data spectrally |
+
+The noise shrinks all fitted coefficients in a similar way, so ratios of coefficients (say, an effective diffusivity) are much more reliable than absolute values. To get accurate coefficients, refit the discovered structure with least squares on the best derivatives available, then validate by simulating the PDE forward from a held-out initial condition.
+
+Other pitfalls:
+
+- Trim the stencil margins of non-periodic grids; derivatives near boundaries are unreliable.
+- Nondimensionalize if terms span orders of magnitude.
+- Multiple trajectories: stack all samples into one fit, and hold out whole trajectories for validation.
+- Heavy noise: pointwise fitting bottoms out. The next step up in robustness is a weak form: pre-integrate each feature against smooth localized test functions over random subdomains, and fit those samples instead (integration replaces differentiation).
+
+If you are used to sparse regression over a fixed candidate library: the feature matrix here plays that role, the sparsity threshold sweep becomes reading down the Pareto front, and products like `u*u_x` do not need to be enumerated because the search builds them itself. Thresholded refitting maps to picking the elbow row and refitting its structure linearly.
 
 ## Template expressions: use when structure is known
 

@@ -1079,7 +1079,114 @@ each displayed constant contains the fitted matrix or vector payload.
 
 </details>
 
-## 15. Additional features
+## 15. Discovering a PDE
+
+Suppose we have data in the form of a field `u(x, t)`: measurements of
+some quantity on a grid of positions, repeated over time. We can
+discover the PDE `u_t = f(u, u_x, u_xx, ...)` by turning this into a
+normal regression problem: every grid point is one sample, the input
+features are the field and its spatial derivatives, and the target is
+the time derivative.
+
+Let's simulate the viscous Burgers equation,
+`u_t = -u*u_x + 0.1*u_xx`, on a periodic domain
+(in practice you would use measured data instead):
+
+<details>
+<summary>Data generation code</summary>
+
+```python
+import numpy as np
+
+L, nx, nu = 2 * np.pi, 128, 0.1
+x = np.linspace(0.0, L, nx, endpoint=False)
+dx = L / nx
+k = 2 * np.pi * np.fft.rfftfreq(nx, d=dx)
+
+def d_dx(u, order=1):
+    return np.real(np.fft.irfft((1j * k) ** order * np.fft.rfft(u), n=nx))
+
+def rhs(u):
+    return -u * d_dx(u) + nu * d_dx(u, order=2)
+
+u = -np.sin(x)
+snapshots = [u.copy()]
+dt = 1e-3
+for i in range(1, 4001):
+    k1 = rhs(u)
+    k2 = rhs(u + 0.5 * dt * k1)
+    k3 = rhs(u + 0.5 * dt * k2)
+    k4 = rhs(u + dt * k3)
+    u = u + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+    if i % 100 == 0:
+        snapshots.append(u.copy())
+
+U = np.array(snapshots)   # shape (41, 128)
+t = np.arange(U.shape[0]) * 0.1
+```
+
+</details>
+
+Now we build the feature matrix and target. The spatial derivatives are
+computed with a Savitzky-Golay filter, which smooths the data while
+differentiating it; the time derivative is a finite difference:
+
+```python
+from scipy.signal import savgol_filter
+
+ux = savgol_filter(U, 21, 3, deriv=1, delta=dx, axis=-1)
+uxx = savgol_filter(U, 21, 3, deriv=2, delta=dx, axis=-1)
+ut = np.gradient(U, t, axis=0)
+
+X = np.stack([U, ux, uxx], axis=-1).reshape(-1, 3)
+y = ut.reshape(-1)
+```
+
+Now let's fit. The `complexity_of_variables` list makes higher
+derivatives cost more, which biases the search toward low-order terms:
+
+```python
+model = PySRRegressor(
+    binary_operators=["+", "-", "*"],
+    complexity_of_variables=[1, 2, 3],
+    maxsize=20,
+    niterations=100,
+)
+model.fit(X, y, variable_names=["u", "u_x", "u_xx"])
+print(model)
+```
+
+If all goes well, you should see an equation like `0.1 * u_xx - u * u_x`
+on the Pareto front at low complexity, which is the PDE we put in!
+
+We also stress-tested this exact setup with noise added (Burgers,
+128x41 grid, 2-3 minute searches per fit):
+
+- On clean data, any differentiation method works. With spectral
+  derivatives the coefficients come out exact to 3-4 decimals.
+- With 1% Gaussian noise, `np.gradient` features fail completely: no
+  expression on the front has the right structure, and spectral
+  derivatives fail even harder. The Savitzky-Golay features above still
+  recover `0.087*u_xx - u*u_x`, i.e., the right terms with coefficients
+  about 13% too small. Even at 5% noise the structure survives.
+- The noise shrinks all coefficients in a similar way, so *ratios* of
+  coefficients (here, the effective diffusivity) are much more reliable
+  than absolute values. To get accurate coefficients, refit the
+  discovered structure with least squares, or simulate it forward from
+  a held-out initial condition.
+
+One thing to watch: if your snapshots are far apart in time, or the data
+is noisy, then `ut` is where most of the regression error comes from
+(its error grows as the noise divided by the sampling interval). In that
+case you can fit the change over one interval instead,
+`y = (U[1:] - U[:-1]).reshape(-1)` with features built from `U[:-1]`.
+This is the same equation up to a constant factor, which the fitted
+constants absorb.
+
+Finally, if you know the physical units, pass them to `fit` with
+`X_units=["m/s", "s^-1", "m^-1*s^-1"]` and `y_units="m*s^-2"`.
+
+## 16. Additional features
 
 For the many other features available in PySR, please
 read the [Options section](options.md).
