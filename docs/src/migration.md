@@ -204,7 +204,4 @@ These constructor arguments are accepted but ignored with a warning:
 
 ## Environment changes
 
-- The `juliacall` requirement changed from `>=0.9.24,<0.9.36` to
-  `>=0.9.28,<0.9.29`. Let your Python package manager resolve that narrower
-  range when installing v2.
 - The minimum versions remain Python 3.9 and Julia 1.10.
