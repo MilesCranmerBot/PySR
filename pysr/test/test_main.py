@@ -1604,6 +1604,78 @@ class TestMiscellaneous(unittest.TestCase):
             ):
                 model.__setstate__(incompatible_state)
 
+    def test_checkpoint_dump_failure_preserves_existing_file(self):
+        def fail_after_partial_write(_, checkpoint_file):
+            checkpoint_file.write(b"partial")
+            raise TypeError("cannot pickle")
+
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "failed-checkpoint"
+            model.show_pickle_warnings_ = False
+            checkpoint = model.get_pkl_filename()
+            checkpoint.write_bytes(b"previous checkpoint")
+
+            with mock.patch("pysr.sr.pkl.dump", side_effect=fail_after_partial_write):
+                model._checkpoint()
+
+            self.assertEqual(checkpoint.read_bytes(), b"previous checkpoint")
+            self.assertFalse(model.show_pickle_warnings_)
+            self.assertEqual(list(checkpoint.parent.glob("*.tmp")), [])
+
+    def test_checkpoint_dump_failure_leaves_no_file(self):
+        def fail_after_partial_write(_, checkpoint_file):
+            checkpoint_file.write(b"partial")
+            raise TypeError("cannot pickle")
+
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "failed-checkpoint"
+            checkpoint = model.get_pkl_filename()
+
+            with mock.patch("pysr.sr.pkl.dump", side_effect=fail_after_partial_write):
+                model._checkpoint()
+
+            self.assertFalse(checkpoint.exists())
+            self.assertTrue(model.show_pickle_warnings_)
+            self.assertEqual(list(checkpoint.parent.glob("*.tmp")), [])
+
+    def test_checkpoint_cleanup_failure_restores_warnings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "failed-cleanup"
+            model.show_pickle_warnings_ = True
+            checkpoint = model.get_pkl_filename()
+
+            with mock.patch(
+                "pathlib.Path.unlink", side_effect=OSError("cannot unlink")
+            ):
+                model._checkpoint()
+
+            self.assertTrue(checkpoint.exists())
+            self.assertTrue(model.show_pickle_warnings_)
+
+    def test_checkpoint_propagates_publication_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "unpublishable-checkpoint"
+            model.show_pickle_warnings_ = True
+            checkpoint = model.get_pkl_filename()
+
+            with mock.patch(
+                "pysr.sr.os.replace", side_effect=OSError("read-only directory")
+            ):
+                with self.assertRaises(OSError):
+                    model._checkpoint()
+
+            self.assertFalse(checkpoint.exists())
+            self.assertEqual(list(checkpoint.parent.glob("*.tmp")), [])
+            self.assertTrue(model.show_pickle_warnings_)
+
     def test_scikit_learn_compatibility(self):
         """Test PySRRegressor compatibility with scikit-learn."""
         model = PySRRegressor(
