@@ -1158,34 +1158,12 @@ print(model)
 
 If all goes well, you should see an equation like `0.1 * u_xx - u * u_x`
 on the Pareto front at low complexity, which is the PDE we put in!
-
-We also stress-tested this exact setup with noise added (Burgers,
-128x41 grid, 2-3 minute searches per fit):
-
-- On clean data, any differentiation method works. With spectral
-  derivatives the coefficients come out exact to 3-4 decimals.
-- With 1% Gaussian noise, `np.gradient` features fail completely: no
-  expression on the front has the right structure, and spectral
-  derivatives fail even harder. The Savitzky-Golay features above still
-  recover `0.087*u_xx - u*u_x`, i.e., the right terms with coefficients
-  about 13% too small. Even at 5% noise the structure survives.
-- The noise shrinks fitted coefficients through errors-in-variables,
-  generally by different amounts per term. In our test the effective
-  diffusivity stayed within about 13% of the truth even at 5% noise,
-  but wider smoothing windows distorted it, so don't count on ratios
-  in general. Least-squares refitting does not remove this bias by
-  itself; simulate the discovered PDE forward from a held-out initial
-  condition before trusting the constants.
-
-One thing to watch: if your snapshots are far apart in time, or the data
-is noisy, then `ut` is where most of the regression error comes from
-(its error grows as the noise divided by the sampling interval). The
-fixes are smoothing along the time axis before differencing, or finer
-snapshot spacing. You can also fit the change over one interval instead,
-`y = (U[1:] - U[:-1]).reshape(-1)` with features built from `U[:-1]`,
-but only when the interval is short enough that one step approximately
-follows the PDE; for long intervals you would fit the finite-time
-behavior rather than the PDE itself.
+This setup also survives noise well: at 1% Gaussian noise,
+finite-difference features fail completely, but the Savitzky-Golay
+features above still recover the right terms (coefficients ~13% low),
+and even at 5% noise the structure survives. Before trusting the
+constants, simulate the discovered PDE forward from a held-out initial
+condition.
 
 Finally, if you know the physical units, pass them to `fit` with
 `X_units=["m/s", "s^-1", "m^-1*s^-1"]` and `y_units="m*s^-2"`.
