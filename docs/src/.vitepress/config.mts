@@ -110,7 +110,6 @@ export default defineConfig({
         items: [
           { text: 'Introduction', link: '/' },
           { text: 'Examples', link: '/examples' },
-          { text: 'Migrating from v1', link: '/migration' },
         ]
       },
       {
@@ -134,6 +133,7 @@ export default defineConfig({
           { text: 'Tuning', link: '/tuning' },
           { text: 'Slurm', link: '/slurm' },
           { text: 'Backend', link: '/backend' },
+          { text: 'Migrating from v1', link: '/migration' },
         ]
       }
     ],

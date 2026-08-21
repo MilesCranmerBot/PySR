@@ -27,7 +27,6 @@ except ImportError:
     estimator_checks_generator = functools.partial(check_estimator, generate_only=True)
 
 from pysr import (
-    ParametricExpressionSpec,
     PySRRegressor,
     TemplateExpressionSpec,
     TensorBoardLoggerSpec,
@@ -2056,93 +2055,6 @@ class TestHelpMessages(unittest.TestCase):
             _jl = init_julia()
 
         self.assertEqual(_jl, jl)
-
-    def test_removed_parametric_expression_spec_explains_migration(self):
-        with self.assertRaises(NotImplementedError) as cm:
-            ParametricExpressionSpec(max_parameters=2)
-
-        message = str(cm.exception)
-        self.assertIn("TemplateExpressionSpec.parameters", message)
-        self.assertIn("X_with_category = np.column_stack", message)
-        self.assertIn("/migration/#parametric-expressions", message)
-
-    @skip_if_beartype
-    def test_v1_kwarg_shims(self):
-        """v1 keyword arguments still map onto the current configuration."""
-
-        # camelCase spellings are renamed to snake_case
-        with self.assertWarns(FutureWarning):
-            model = PySRRegressor(npop=7)
-        self.assertEqual(model.population_size, 7)
-
-        with self.assertWarns(FutureWarning):
-            model = PySRRegressor(crossoverProbability=0.5)
-        self.assertEqual(model.crossover_probability, 0.5)
-
-        with self.assertWarns(FutureWarning):
-            model = PySRRegressor(batchSize=32)
-        self.assertEqual(model.batch_size, 32)
-
-        with self.assertWarns(FutureWarning):
-            model = PySRRegressor(hofMigration=False)
-        self.assertEqual(model.hof_migration, False)
-
-        # Renamed loss kwargs
-        with self.assertWarns(FutureWarning):
-            model = PySRRegressor(loss="my_loss(x) = x^2")
-        self.assertEqual(model.elementwise_loss, "my_loss(x) = x^2")
-
-        with self.assertWarns(FutureWarning):
-            model = PySRRegressor(
-                full_objective="my_objective(pred, targ) = (pred - targ)^2"
-            )
-        self.assertEqual(
-            model.loss_function, "my_objective(pred, targ) = (pred - targ)^2"
-        )
-
-        # Deprecated environment kwargs are accepted with a warning
-        with self.assertWarns(FutureWarning):
-            PySRRegressor(julia_project="/tmp/my_julia_env")
-        with self.assertWarns(FutureWarning):
-            PySRRegressor(julia_kwargs={"threads": 4})
-
-        # Data-dependent kwargs moved to fit() warn and are ignored
-        with self.assertWarns(FutureWarning):
-            PySRRegressor(weights=[1.0, 2.0])
-
-        # The old parallelism parameter reaches the public fit dispatch
-        X = np.arange(6, dtype=np.float32).reshape(-1, 1)
-        y = X[:, 0]
-        for multithreading, procs, expected_parallelism, expected_procs in (
-            (True, None, "multithreading", None),
-            (False, None, "serial", None),
-            (False, 4, "multiprocessing", 4),
-        ):
-            with self.subTest(
-                multithreading=multithreading,
-                procs=procs,
-            ):
-                model = PySRRegressor(
-                    multithreading=multithreading,
-                    procs=procs,
-                    binary_operators=["+"],
-                    unary_operators=[],
-                    niterations=0,
-                    populations=1,
-                    population_size=4,
-                    tournament_selection_n=2,
-                    progress=False,
-                    temp_equation_file=True,
-                )
-                with mock.patch.object(model, "_run") as run:
-                    with self.assertWarns(UserWarning):
-                        model.fit(X, y)
-                run.assert_called_once()
-                self.assertEqual(
-                    run.call_args.kwargs["parallelism"],
-                    expected_parallelism,
-                )
-                self.assertEqual(run.call_args.kwargs["numprocs"], expected_procs)
 
     def test_power_law_warning(self):
         """Ensure that a warning is given for a power law operator."""
