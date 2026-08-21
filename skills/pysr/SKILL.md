@@ -1,6 +1,6 @@
 ---
 name: pysr
-description: Use when fitting equations to data with PySR or SymbolicRegression.jl, when a user wants an interpretable formula, symbolic model, scaling law, or empirical relation discovered from numeric data, when discovering a governing equation or PDE from spatiotemporal field data, or when debugging a PySR search that is slow, stuck, or giving poor equations.
+description: Use when fitting equations to data with PySR or SymbolicRegression.jl, when a user wants an interpretable formula, symbolic model, scaling law, or empirical relation discovered from numeric data, or when debugging a PySR search that is slow, stuck, or giving poor equations.
 ---
 
 # Using PySR Effectively
