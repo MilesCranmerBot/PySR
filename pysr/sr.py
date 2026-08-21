@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import logging
 import os
 import pickle as pkl
@@ -2717,16 +2718,27 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         if (
             os.name == "posix"
             and threading.current_thread() is threading.main_thread()
-            and jl.seval("isdefined(SymbolicRegression, :stop_fd)")
+            and jl.seval("isdefined(SymbolicRegression, :stop_fd_trigger)")
         ):
             stop_read_fd, stop_write_fd = os.pipe()
             os.set_blocking(stop_write_fd, False)
+            # `signal.signal` below replaces the native SIGINT disposition
+            # (installed by JuliaCall, not visible to `signal.getsignal`), so
+            # snapshot it via sigaction to reinstate it afterwards.
+            libc = ctypes.CDLL(None)
+            saved_sigaction = (ctypes.c_char * 512)()
+            libc.sigaction(int(signal.SIGINT), None, saved_sigaction)
             restore_sigint = signal.getsignal(signal.SIGINT)
             signal.signal(signal.SIGINT, lambda *_: None)
             prev_wakeup_fd = signal.set_wakeup_fd(stop_write_fd)
             jl.seval(f"""
+                # Julia's signal listener thread can win the race for a
+                # process-directed SIGINT even while CPython's handler is
+                # installed; keep a listener-caught SIGINT from killing the
+                # process. Restored in the `finally` below.
                 Base.exit_on_sigint(false)
                 SymbolicRegression.stop_requested[] = false
+                SymbolicRegression.stop_fd_trigger[] = UInt8({int(signal.SIGINT)})
                 SymbolicRegression.stop_fd[] = Cint({stop_read_fd})
                 """)
         try:
@@ -2768,9 +2780,11 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if restore_sigint is not None:
                 signal.set_wakeup_fd(prev_wakeup_fd)
                 signal.signal(signal.SIGINT, restore_sigint)
+                libc.sigaction(int(signal.SIGINT), saved_sigaction, None)
                 jl.seval(
                     "SymbolicRegression.stop_fd[] = Cint(-1);"
-                    " SymbolicRegression.stop_requested[] = false"
+                    " SymbolicRegression.stop_requested[] = false;"
+                    " Base.exit_on_sigint(true)"
                 )
                 os.close(stop_write_fd)
                 os.close(stop_read_fd)
