@@ -2768,7 +2768,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             if restore_sigint is not None:
                 signal.set_wakeup_fd(prev_wakeup_fd)
                 signal.signal(signal.SIGINT, restore_sigint)
-                jl.seval("SymbolicRegression.stop_fd[] = Cint(-1)")
+                jl.seval(
+                    "SymbolicRegression.stop_fd[] = Cint(-1);"
+                    " SymbolicRegression.stop_requested[] = false"
+                )
                 os.close(stop_write_fd)
                 os.close(stop_read_fd)
         if self.logger_spec is not None:
