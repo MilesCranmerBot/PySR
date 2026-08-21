@@ -7,8 +7,10 @@ import logging
 import os
 import pickle as pkl
 import re
+import signal
 import sys
 import tempfile
+import threading
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -2710,40 +2712,71 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
         else:
             addprocs_function = cluster_manager
-        out = SymbolicRegression.equation_search(
-            jl_X,
-            jl_y,
-            weights=jl_weights,
-            niterations=int(self.niterations),
-            variable_names=jl_array([str(v) for v in self.feature_names_in_]),
-            display_variable_names=jl_array(
-                [str(v) for v in self.display_feature_names_in_]
-            ),
-            y_variable_names=jl_y_variable_names,
-            X_units=jl_array(self.X_units_),
-            y_units=(
-                jl_array(self.y_units_)
-                if isinstance(self.y_units_, list)
-                else self.y_units_
-            ),
-            options=options,
-            guesses=jl_guesses,
-            numprocs=numprocs,
-            parallelism=parallelism,
-            saved_state=saved_state,
-            return_state=True,
-            run_id=self.run_id_,
-            addprocs_function=addprocs_function,
-            heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
-            worker_timeout=self.worker_timeout,
-            worker_imports=jl_worker_imports,
-            progress=runtime_params.progress
-            and self.verbosity > 0
-            and len(y.shape) == 1,
-            verbosity=int(self.verbosity),
-            logger=logger,
-            **({"loss_type": loss_type} if loss_type is not None else {}),
-        )
+        # Take ownership of SIGINT so that an interrupt (e.g., Jupyter's
+        # "Interrupt" button) stops the search gracefully via
+        # `SymbolicRegression.stop_fd`, rather than being delivered
+        # asynchronously into the Julia runtime, which can corrupt its task
+        # locks or kill the process. The wakeup fd is written by Python's C
+        # signal handler the moment SIGINT arrives, even while this thread is
+        # blocked inside Julia; the search loop polls that pipe and stops at
+        # the next cycle boundary, returning the equations found so far.
+        # Backends without `stop_fd` keep the old (unsafe) behavior.
+        restore_sigint = None
+        if (
+            os.name == "posix"
+            and threading.current_thread() is threading.main_thread()
+            and jl.seval("isdefined(SymbolicRegression, :stop_fd)")
+        ):
+            stop_read_fd, stop_write_fd = os.pipe()
+            os.set_blocking(stop_write_fd, False)
+            restore_sigint = signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGINT, lambda *_: None)
+            signal.set_wakeup_fd(stop_write_fd)
+            jl.seval(f"""
+                SymbolicRegression.stop_requested[] = false
+                SymbolicRegression.stop_fd[] = Cint({stop_read_fd})
+                """)
+        try:
+            out = SymbolicRegression.equation_search(
+                jl_X,
+                jl_y,
+                weights=jl_weights,
+                niterations=int(self.niterations),
+                variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                display_variable_names=jl_array(
+                    [str(v) for v in self.display_feature_names_in_]
+                ),
+                y_variable_names=jl_y_variable_names,
+                X_units=jl_array(self.X_units_),
+                y_units=(
+                    jl_array(self.y_units_)
+                    if isinstance(self.y_units_, list)
+                    else self.y_units_
+                ),
+                options=options,
+                guesses=jl_guesses,
+                numprocs=numprocs,
+                parallelism=parallelism,
+                saved_state=saved_state,
+                return_state=True,
+                run_id=self.run_id_,
+                addprocs_function=addprocs_function,
+                heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                worker_timeout=self.worker_timeout,
+                worker_imports=jl_worker_imports,
+                progress=runtime_params.progress
+                and self.verbosity > 0
+                and len(y.shape) == 1,
+                verbosity=int(self.verbosity),
+                logger=logger,
+                **({"loss_type": loss_type} if loss_type is not None else {}),
+            )
+        finally:
+            if restore_sigint is not None:
+                signal.set_wakeup_fd(-1)
+                signal.signal(signal.SIGINT, restore_sigint)
+                os.close(stop_write_fd)
+                os.close(stop_read_fd)
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
             if not self.warm_start:
