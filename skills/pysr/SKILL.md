@@ -98,7 +98,7 @@ end"""
 To discover a PDE from data `u(x, t)` (or several fields, more dimensions), turn it into a normal regression problem: every grid point is one sample, the columns are each field plus its spatial derivatives, and the target is the time derivative. PySR then finds `u_t = f(u, u_x, u_xx, ...)`, and unlike a fixed library of candidate terms it discovers nonlinear combinations like `u*u_x` on its own.
 
 1. Spatial derivatives: use spectral differentiation if the grid is periodic and the data is clean (it is exact for band-limited data); otherwise Savitzky-Golay (`scipy.signal.savgol_filter`, window about twice the smallest feature you care about, polyorder 3). Plain finite differences only on clean data.
-2. Target: central differences of the snapshots. If snapshots are far apart or noisy in time, fit the one-step change `U[1:] - U[:-1]` against features from `U[:-1]` instead. This is the same equation up to a constant, but the target error then scales with the noise level rather than the noise divided by the sampling interval.
+2. Target: central differences of the snapshots. If `u_t` is dominated by noise from coarse or noisy sampling in time, smooth along the time axis before differencing (e.g., Savitzky-Golay), or use finer snapshot spacing. You can also fit the one-step change `U[1:] - U[:-1]` directly (same equation up to a constant), but keep the intervals short enough that one step approximately follows the PDE; for long intervals you are fitting the finite-time flow map, not the PDE.
 3. `complexity_of_variables=[1, 2, 3, ...]` (one entry per feature: 1 + derivative order) is a cheap way to bias the search toward low-order terms.
 4. Operators: start with `["+", "-", "*"]`; add `/` or unaries only when the domain motivates them.
 5. If you know the units, pass them: `fit(..., X_units=["m/s", "s^-1", "m^-1*s^-1"], y_units="m*s^-2")` prunes impossible terms.
@@ -115,7 +115,7 @@ Controlled test: recovering `u_t = -u*u_x + 0.1*u_xx` from a 128x41 grid, ~2 min
 | 5% noise, Savitzky-Golay features | Exact structure recovered |
 | 1% noise, spectral derivatives | Fails badly; never differentiate noisy data spectrally |
 
-The noise shrinks all fitted coefficients in a similar way, so ratios of coefficients (say, an effective diffusivity) are much more reliable than absolute values. To get accurate coefficients, refit the discovered structure with least squares on the best derivatives available, then validate by simulating the PDE forward from a held-out initial condition.
+Noise shrinks fitted coefficients through errors-in-variables, generally by different amounts per term: in our test the effective diffusivity (a coefficient ratio) stayed within about 13% of the truth up to 5% noise with moderate smoothing, but wider smoothing windows distorted it badly. Least-squares refitting on the same derivative estimates does not remove this bias; treat recovered constants as approximate until validated by simulating the PDE forward from a held-out initial condition, or refit against cleaner derivative estimates.
 
 Other pitfalls:
 
