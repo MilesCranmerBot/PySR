@@ -95,12 +95,12 @@ end"""
 
 ## PDE discovery (spatiotemporal data)
 
-To discover `u_t = f(u, u_x, u_xx, ...)` from field data `u(x, t)`, turn it into normal regression: every grid point is one sample; columns are each field plus its spatial derivatives; the target is the time derivative. Unlike a fixed candidate library, PySR finds products like `u*u_x` itself.
+To discover `u_t = f(u, u_x, u_xx, ...)` from field data `u(x, t)`, turn it into normal regression: every grid point is one sample, the columns are the field and its spatial derivatives, and the target is the time derivative. Unlike a fixed candidate library, PySR finds products like `u*u_x` itself.
 
-- Spatial derivatives: spectral if the grid is periodic and clean; otherwise Savitzky-Golay (`savgol_filter`, polyorder 3). Plain finite differences only on clean data; never differentiate noisy data spectrally.
-- Target: central differences of snapshots; smooth in time or use finer spacing if noisy. Trim boundary margins on non-periodic grids.
-- `complexity_of_variables=[1, 2, 3, ...]` (1 + derivative order per feature) biases toward low-order terms; units via `X_units`/`y_units` prune impossible terms.
-- Read the Pareto front elbow. Constants are approximate under noise: validate by simulating the PDE forward from a held-out initial condition.
+- Spatial derivatives: spectral differentiation on periodic clean grids; otherwise Savitzky-Golay, e.g. `savgol_filter(U, 21, 3, deriv=1, delta=dx, axis=-1)`. Plain finite differences are only safe on clean data, and spectral derivatives amplify noise catastrophically.
+- Target: central differences of the snapshots. If snapshots are sparse or noisy in time, smooth along the time axis first or sample more finely. Trim stencil margins on non-periodic grids.
+- Worth trying: `complexity_of_variables=[1, 2, 3, ...]`, one entry per feature in column order, so `u` costs 1, `u_x` costs 2, `u_xx` costs 3; this biases the front toward low-order terms. Units (`X_units=["m/s", "s^-1", ...]`) similarly prune dimensionally impossible terms.
+- Read the whole Pareto front for the elbow, not just the best loss. Fitted constants are approximate under noise; validate by simulating the discovered PDE forward from a held-out initial condition.
 
 ## Template expressions: use when structure is known
 
