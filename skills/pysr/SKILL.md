@@ -93,6 +93,15 @@ end"""
 - More than ~50 features: the primary fix is smarter features or structure. Engineer aggregate features from domain knowledge, or use a template expression over a sensible decomposition. For structured data (fields, images, sequences, graphs), a naive one-column-per-pixel tabular encoding is usually the wrong move; build physically meaningful features, or train a neural network with the right inductive bias and symbolically distill its components (see arXiv:2006.11287). If there is no smarter representation available, `select_k_features=k` (gradient-boosting pre-selection) is the fallback.
 - If the search omits a variable the user expected: PySR only optimizes accuracy and simplicity, so omission means the variable did not reduce loss enough to pay for its complexity. Forcing inclusion requires a custom loss that penalizes its absence.
 
+## PDE discovery (spatiotemporal data)
+
+To discover `u_t = f(u, u_x, u_xx, ...)` from field data `u(x, t)`, turn it into normal regression: every grid point is one sample, the columns are the field and its spatial derivatives, and the target is the time derivative. Unlike a fixed candidate library, PySR finds products like `u*u_x` itself.
+
+- Spatial derivatives: spectral differentiation on periodic clean grids; otherwise Savitzky-Golay, e.g. `savgol_filter(U, 21, 3, deriv=1, delta=dx, axis=-1)`. Plain finite differences are only safe on clean data, and spectral derivatives amplify noise catastrophically.
+- Target: central differences of the snapshots. If snapshots are sparse or noisy in time, smooth along the time axis first or sample more finely. Trim stencil margins on non-periodic grids.
+- Worth trying: `complexity_of_variables=[1, 2, 3, ...]`, one entry per feature in column order, so `u` costs 1, `u_x` costs 2, `u_xx` costs 3; this biases the front toward low-order terms. Units (`X_units=["m/s", "s^-1", ...]`) similarly prune dimensionally impossible terms.
+- Read the whole Pareto front for the elbow, not just the best loss. Fitted constants are approximate under noise; validate by simulating the discovered PDE forward from a held-out initial condition.
+
 ## Template expressions: use when structure is known
 
 Plain search is the default. Escalate to `TemplateExpressionSpec` when the user knows structure that a free-form tree search would have to rediscover (or would violate). Users very often under-use this feature; suggest it whenever you see:
