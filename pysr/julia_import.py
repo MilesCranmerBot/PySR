@@ -58,9 +58,7 @@ from juliacall import Main as jl  # type: ignore
 
 jl = cast(ModuleType, jl)
 
-# Ensure Ctrl-C (e.g., Jupyter's "Interrupt" button) raises `InterruptException`
-# inside running Julia code, rather than terminating the process. Embedded Julia
-# otherwise defaults to exiting on SIGINT.
+# Make Ctrl-C raise InterruptException instead of killing the process.
 jl.seval("Base.exit_on_sigint(false)")
 
 jl_version = (jl.VERSION.major, jl.VERSION.minor, jl.VERSION.patch)

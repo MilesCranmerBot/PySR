@@ -2712,15 +2712,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
         else:
             addprocs_function = cluster_manager
-        # Take ownership of SIGINT so that an interrupt (e.g., Jupyter's
-        # "Interrupt" button) stops the search gracefully via
-        # `SymbolicRegression.stop_fd`, rather than being delivered
-        # asynchronously into the Julia runtime, which can corrupt its task
-        # locks or kill the process. The wakeup fd is written by Python's C
-        # signal handler the moment SIGINT arrives, even while this thread is
-        # blocked inside Julia; the search loop polls that pipe and stops at
-        # the next cycle boundary, returning the equations found so far.
-        # Backends without `stop_fd` keep the old (unsafe) behavior.
+        # Convert SIGINT into a cooperative stop (see SymbolicRegression.stop_fd).
         restore_sigint = None
         if (
             os.name == "posix"
@@ -2731,7 +2723,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             os.set_blocking(stop_write_fd, False)
             restore_sigint = signal.getsignal(signal.SIGINT)
             signal.signal(signal.SIGINT, lambda *_: None)
-            signal.set_wakeup_fd(stop_write_fd)
+            prev_wakeup_fd = signal.set_wakeup_fd(stop_write_fd)
             jl.seval(f"""
                 SymbolicRegression.stop_requested[] = false
                 SymbolicRegression.stop_fd[] = Cint({stop_read_fd})
@@ -2773,7 +2765,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
         finally:
             if restore_sigint is not None:
-                signal.set_wakeup_fd(-1)
+                signal.set_wakeup_fd(prev_wakeup_fd)
                 signal.signal(signal.SIGINT, restore_sigint)
                 os.close(stop_write_fd)
                 os.close(stop_read_fd)
