@@ -722,6 +722,8 @@ print(json.dumps({{
                 expression_spec=identity_template(),
                 parallelism=parallelism,
                 procs=2 if parallelism == "multiprocessing" else None,
+                niterations=100,
+                early_stop_condition=1e-8,
             )
 
             with self.subTest(parallelism=parallelism):
