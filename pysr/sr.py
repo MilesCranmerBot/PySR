@@ -2803,6 +2803,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
         finally:
             if restore_sigint is not None:
+                assert prev_wakeup_fd is not None
                 signal.set_wakeup_fd(prev_wakeup_fd)
                 signal.signal(signal.SIGINT, restore_sigint)
                 libc.sigaction(int(signal.SIGINT), saved_sigaction, None)
