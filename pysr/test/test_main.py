@@ -2630,18 +2630,6 @@ class TestDimensionalConstraints(unittest.TestCase):
 
 
 class TestTemplateExpressionSpec(unittest.TestCase):
-    def test_reload_raises_clear_error(self):
-        model = PySRRegressor(
-            expression_spec=TemplateExpressionSpec(
-                combine="f(x)", expressions=["f"], variable_names=["x"]
-            )
-        )
-        model.equations_ = pd.DataFrame({"loss": [0.0]})
-        model.feature_names_in_ = np.array(["x"])
-        model.nout_ = 1
-        with self.assertRaisesRegex(NotImplementedError, "not yet supported"):
-            pkl.loads(pkl.dumps(model))
-
     def test_num_features_symbol_keys(self):
         spec = TemplateExpressionSpec(
             combine="f(x1, x2) + g(x3)",

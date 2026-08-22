@@ -1628,15 +1628,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 f"expected {_CHECKPOINT_SCHEMA_VERSION}, found {schema_version!r}."
             )
         self.__dict__.update(state)
-        if (
-            "equations_" in state
-            and state["equations_"] is not None
-            and isinstance(self.expression_spec, TemplateExpressionSpec)
-        ):
-            raise NotImplementedError(
-                "Reloading fitted TemplateExpressionSpec models is not yet supported. "
-                "Please refit the model in the current session."
-            )
 
     def _checkpoint(self):
         """Save the model's current state to a checkpoint file.
