@@ -245,7 +245,7 @@ The default loss is mean-square error, and weighted mean-square error.
 One can pass an arbitrary Julia string to define a custom loss, using,
 e.g., `elementwise_loss="myloss(x, y) = abs(x - y)^1.5"`. For more details,
 see the
-[Losses](https://milescranmer.github.io/SymbolicRegression.jl/dev/losses/)
+[Losses](https://astroautomata.github.io/SymbolicRegression.jl/dev/losses)
 page for SymbolicRegression.jl.
 
 Here are some additional examples:

@@ -3,7 +3,8 @@ name: Linux
 on:
   push:
     branches:
-      - '**'
+      - master
+      - 'release-*'
     paths:
       - '**'
     tags:
@@ -11,9 +12,14 @@ on:
   pull_request:
     branches:
       - 'master'
+      - 'release-*'
     paths:
       - '**'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
@@ -54,12 +60,12 @@ jobs:
         with:
           version: ${{ matrix.julia-version }}
       - name: "Cache Julia"
-        uses: julia-actions/cache@v2
+        uses: julia-actions/cache@v3
         with:
           cache-name: ${{ matrix.os }}-test-${{ matrix.julia-version }}-${{ matrix.python-version }}
           cache-packages: false
       - name: "Set up Python"
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -84,7 +90,7 @@ jobs:
       - name: "Build coverage report"
         run: coverage xml
       - name: "Upload results to Codecov"
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: astroautomata/PySR
@@ -102,7 +108,7 @@ jobs:
             julia-version: '1.10'
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
       - name: "Install PySR"
         run: |
             python -m pip install --upgrade pip
@@ -125,14 +131,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: "Cache conda"
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         env:
           CACHE_NUMBER: 0
         with:
           path: ~/conda_pkgs_dir
           key: ${{ runner.os }}-conda-${{ env.CACHE_NUMBER }}-${{ hashFiles('environment.yml') }}
       - name: "Set up Conda"
-        uses: conda-incubator/setup-miniconda@v3
+        uses: conda-incubator/setup-miniconda@v4
         with:
           miniforge-variant: Miniforge3
           miniforge-version: latest
@@ -140,8 +146,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           activate-environment: pysr-test
           environment-file: environment.yml
+      - name: "Set up Julia"
+        uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
       - name: "Cache Julia"
-        uses: julia-actions/cache@v2
+        uses: julia-actions/cache@v3
         with:
           cache-name: ${{ matrix.os }}-conda-${{ matrix.python-version }}
           cache-packages: false
@@ -168,7 +178,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: "Set up Python"
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -198,7 +208,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: "Set up Python"
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -227,7 +237,7 @@ jobs:
         with:
           version: ${{ matrix.julia-version }}
       - name: "Set up Python"
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -251,7 +261,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -282,10 +292,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: "Set up Python"
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
-          cache: pip
       - name: "Install validator deps"
         run: |
           python -m pip install --upgrade pip

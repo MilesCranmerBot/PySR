@@ -318,118 +318,79 @@ to make predictions with the most accurate expression.
 
 ## 9. Custom objectives
 
-You can also pass a custom objectives as a snippet of Julia code,
-which might include symbolic manipulations or custom functional forms.
-These do not even need to be differentiable! First, let's look at the
-default objective used (a simplified version, without weights
-and with mean square error), so that you can see how to write your own:
+Use `loss_function` when scoring needs the expression tree, symbolic
+manipulation, or auxiliary data from the dataset. Use
+`loss_function_expression` when it needs the complete expression object rather
+than its underlying tree. Both accept Julia source defining one of these
+signatures:
 
 ```julia
-function default_objective(tree, dataset::Dataset{T,L}, options)::L where {T,L}
-    (prediction, completion) = eval_tree_array(tree, dataset.X, options)
-    if !completion
-        return L(Inf)
-    end
-
-    diffs = prediction .- dataset.y
-
-    return sum(diffs .^ 2) / length(diffs)
-end
+objective(tree_or_expression, dataset, options)
+objective(tree_or_expression, dataset, options, idx=nothing)
 ```
 
-Here, the `where {T,L}` syntax defines the function for arbitrary types `T` and `L`.
-If you have `precision=32` (default) and pass in regular floating point data,
-then both `T` and `L` will be equal to `Float32`. If you pass in complex data,
-then `T` will be `ComplexF32` and `L` will be `Float32` (since we need to return
-a real number from the loss function). But, you don't need to worry about this, just
-make sure to return a scalar number of type `L`.
+With automatic batching, a three-argument objective receives a dataset already
+restricted to the active batch. A four-argument objective receives the full
+dataset and the selected row indices. This can be useful when needing to do
+custom batching operations.
 
-The `tree` argument is the current expression being evaluated. You can read
-about the `tree` fields [here](https://ai.damtp.cam.ac.uk/symbolicregression/stable/types/).
-
-For example, let's fix a symbolic form of an expression,
-as a rational function. i.e., $P(X)/Q(X)$ for polynomials $P$ and $Q$.
+The following batching-aware mean squared error is equivalent to the default
+objective for an unweighted scalar dataset:
 
 ```python
 objective = """
-function my_custom_objective(tree, dataset::Dataset{T,L}, options) where {T,L}
-    # Require root node to be binary, so we can split it,
-    # otherwise return a large loss:
-    tree.degree != 2 && return L(Inf)
-
-    P = tree.l
-    Q = tree.r
-
-    # Evaluate numerator:
-    P_prediction, flag = eval_tree_array(P, dataset.X, options)
-    !flag && return L(Inf)
-
-    # Evaluate denominator:
-    Q_prediction, flag = eval_tree_array(Q, dataset.X, options)
-    !flag && return L(Inf)
-
-    # Impose functional form:
-    prediction = P_prediction ./ Q_prediction
-
-    diffs = prediction .- dataset.y
-
-    return sum(diffs .^ 2) / length(diffs)
+function mse_objective(tree, dataset::Dataset{T,L}, options, idx=nothing)::L where {T,L}
+    X = idx === nothing ? dataset.X : dataset.X[:, idx]
+    y = idx === nothing ? dataset.y : dataset.y[idx]
+    prediction, complete = eval_tree_array(tree, X, options)
+    complete || return L(Inf)
+    return sum(abs2, prediction .- y) / length(y)
 end
 """
 
 model = PySRRegressor(
-    niterations=100,
-    binary_operators=["*", "+", "-"],
     loss_function=objective,
+    binary_operators=["+", "-", "*", "/"],
 )
 ```
 
-> **Warning**: When using a custom objective like this that performs symbolic
-> manipulations, many functionalities of PySR will not work, such as `.sympy()`,
-> `.predict()`, etc. This is because the SymPy parsing does not know about
-> how you are manipulating the expression, so you will need to do this yourself.
+Always check the completion flag returned by `eval_tree_array`; an incomplete
+evaluation must receive an infinite or suitably large loss. Return the
+dataset's loss type `L`, which needs to be real even when the data type `T` is
+complex.
 
-Note how we did not pass `/` as a binary operator; it will just be implicit
-in the functional form.
-
-Let's generate an equation of the form $\frac{x_0^2 x_1 - 2}{x_2^2 + 1}$:
+A full objective can also reinterpret the tree. This example treats the two
+children of every binary root as a rational function $P(X)/Q(X)$:
 
 ```python
-X = np.random.randn(1000, 3)
-y = (X[:, 0]**2 * X[:, 1] - 2) / (X[:, 2]**2 + 1)
+objective = """
+function rational_objective(tree, dataset::Dataset{T,L}, options, idx=nothing)::L where {T,L}
+    tree.degree == 2 || return L(Inf)
+    X = idx === nothing ? dataset.X : dataset.X[:, idx]
+    y = idx === nothing ? dataset.y : dataset.y[idx]
+
+    numerator = SymbolicRegression.InterfaceDynamicExpressionsModule.DE.get_child(tree, 1)
+    denominator = SymbolicRegression.InterfaceDynamicExpressionsModule.DE.get_child(tree, 2)
+    p, p_complete = eval_tree_array(numerator, X, options)
+    q, q_complete = eval_tree_array(denominator, X, options)
+    p_complete && q_complete || return L(Inf)
+
+    prediction = p ./ q
+    return sum(abs2, prediction .- y) / length(y)
+end
+"""
+
+model = PySRRegressor(
+    loss_function=objective,
+    binary_operators=["+", "-"],
+)
 ```
 
-Finally, let's fit:
-
-```python
-model.fit(X, y)
-```
-
-> Note that the printed equation is not the same as the evaluated equation,
-> because the printing functionality does not know about the functional form.
-
-We can get the string format with:
-
-```python
-model.get_best().equation
-```
-
-(or, you could use `model.equations_.iloc[-1].equation`)
-
-For me, this equation was:
-
-```text
-(((2.3554819 + -0.3554746) - (x1 * (x0 * x0))) - (-1.0000019 - (x2 * x2)))
-```
-
-looking at the bracket structure of the equation, we can see that the outermost
-bracket is split at the `-` operator (note that we ignore the root operator in
-the evaluation, as we simply evaluated each argument and divided the result) into
-`((2.3554819 + -0.3554746) - (x1 * (x0 * x0)))` and
-`(-1.0000019 - (x2 * x2))`, meaning that our discovered equation is
-equal to:
-$\frac{x_0^2 x_1 - 2.0000073}{x_2^2 + 1.0000019}$, which
-is nearly the same as the true equation!
+The root operator is deliberately ignored in this objective. The equation
+table therefore prints the stored tree rather than the interpreted rational
+function, and automatic prediction or symbolic export cannot reproduce that
+reinterpretation. Keep the objective source and apply the same transformation
+when evaluating the selected equation.
 
 ## 10. Dimensional constraints
 
@@ -463,7 +424,7 @@ that looks at the error in log-space:
 
 ```python
 elementwise_loss = """function loss_fnc(prediction, target)
-    scatter_loss = abs(log((abs(prediction)+1e-20) / (abs(target)+1e-20)))
+    scatter_loss = abs(log((abs(prediction)+1f-20) / (abs(target)+1f-20)))
     sign_loss = 10 * (sign(prediction) - sign(target))^2
     return scatter_loss + sign_loss
 end
@@ -525,7 +486,9 @@ Note that you can also search for exclusively dimensionless constants by setting
 
 ## 11. Expression Specifications
 
-PySR 1.0 introduces powerful expression specifications that allow you to define structured equations. Here are two examples:
+Expression specifications let you define a structured equation while retaining
+normal prediction and export behavior. Use `TemplateExpressionSpec` when the
+outer form is known and one or more inner expressions must be learned.
 
 ### Template Expressions
 
@@ -611,7 +574,7 @@ corresponding to the index we defined in `variable_names`.
 
 ```python
 category_p_one = category + 1
-X_with_category = np.column_stack([X, category])
+X_with_category = np.column_stack([X, category_p_one])
 ```
 
 Now, we can fit our model:
@@ -634,48 +597,13 @@ See [Expression Specifications](/api/#expression-specifications) for more detail
 You can use this approach for more complex cases,
 where you have multiple expressions in the template and parameters that vary by category.
 
+### Learning multiple outputs jointly
 
-## 12. Using TensorBoard for Logging
-
-You can use TensorBoard to visualize the search progress, as well as
-record hyperparameters and final metrics (like `min_loss` and `pareto_volume` - the latter of which
-is a performance measure of the entire Pareto front).
-
-```python
-import numpy as np
-from pysr import PySRRegressor, TensorBoardLoggerSpec
-
-rstate = np.random.RandomState(42)
-
-# Uniform dist between -3 and 3:
-X = rstate.uniform(-3, 3, (1000, 2))
-y = np.exp(X[:, 0]) + X[:, 1]
-
-# Create a logger that writes to "logs/run*":
-logger_spec = TensorBoardLoggerSpec(
-    log_dir="logs/run",
-    log_interval=10,  # Log every 10 iterations
-)
-
-model = PySRRegressor(
-    binary_operators=["+", "*", "-", "/"],
-    logger_spec=logger_spec,
-)
-model.fit(X, y)
-```
-
-You can then view the logs with:
-
-```bash
-tensorboard --logdir logs/
-```
-
-## 13. Vector-valued expressions
-
-You can use `TemplateExpressionSpec` to find expressions for vector-valued data,
-where each component might share a common structure.
-The trick is to put each vector element into your feature matrix `X`,
-and then use a template expression to define the relationships.
+You can use `TemplateExpressionSpec` to learn several scalar expressions jointly
+and compare their combined predictions with a vector target. This is useful when
+the outputs share a known outer structure. Each learned expression still operates
+on scalar values; the template combines their predictions and computes a scalar
+residual.
 
 For example, say we have 3-dimensional vectors where each component
 follows a pattern with a shared term. Say the true model is:
@@ -796,7 +724,42 @@ print(f"f1 at (1,2,3): {f1_result[0]}")  # Should be ~4.0 for x2^2
 print(f"shared at (1,2,3): {shared_result[0]}")  # Should be ~2.718 for exp(1)
 ```
 
-## 14. Using differential operators
+## 12. Using TensorBoard for Logging
+
+You can use TensorBoard to visualize the search progress, as well as
+record hyperparameters and final metrics (like `min_loss` and `pareto_volume` - the latter of which
+is a performance measure of the entire Pareto front).
+
+```python
+import numpy as np
+from pysr import PySRRegressor, TensorBoardLoggerSpec
+
+rstate = np.random.RandomState(42)
+
+# Uniform dist between -3 and 3:
+X = rstate.uniform(-3, 3, (1000, 2))
+y = np.exp(X[:, 0]) + X[:, 1]
+
+# Create a logger that writes to "logs/run*":
+logger_spec = TensorBoardLoggerSpec(
+    log_dir="logs/run",
+    log_interval=10,  # Log every 10 iterations
+)
+
+model = PySRRegressor(
+    binary_operators=["+", "*", "-", "/"],
+    logger_spec=logger_spec,
+)
+model.fit(X, y)
+```
+
+You can then view the logs with:
+
+```bash
+tensorboard --logdir logs/
+```
+
+## 13. Using differential operators
 
 As part of the `TemplateExpressionSpec` described above,
 you can also use differential operators within the template.
@@ -836,7 +799,376 @@ If everything works, you should find something that simplifies to $\frac{\sqrt{x
 
 Here, we write out a full function in Julia.
 
-## 15. Additional features
+## 14. Custom value types
+
+`TypeSpec` lets you specify a custom type for values flowing through your expressions.
+Vectors, tensors, strings, structs, or anything else,
+can be defined with a `TypeSpec` and enable PySR to search for expressions
+that are compatible with that type.
+
+Searches with a `type_spec=TypeSpec(...)` specified requires a few additional arguments
+to be set:
+
+1. There are various hooks that must be defined as part of the type spec. These tell PySR how to sample and mutate your type, and also how to unpack it into a vector of constants (for optimization).
+2. You must define a custom loss function that can handle your type and produce a real-valued loss. This can be done with `elementwise_loss`, `loss_function`, or `loss_function_expression`. (You can declare the return type as, e.g., `loss_type=Float64` in your type spec, or this will be inferred automatically).
+3. You must define custom operators that accept and return your type. PySR will perform a check that the operators are type-stable, and will raise an error if they are not. Add an explicit return annotation such as `::Vec2` when Julia cannot infer it.
+
+We will look at some examples below.
+
+### Vector-valued expression trees
+
+This example searches for a program over two-dimensional vectors:
+
+$$
+y = \operatorname{rotate90}(x_1) + 2x_2 +
+\begin{bmatrix}0.5 \\ -1.0\end{bmatrix}.
+$$
+
+Each cell of `X` and `y` contains one vector. We are not treating this as a higher-dimensional array, but rather as a normal 2D/1D array with vectors _as values_.
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec
+
+rng = np.random.default_rng(0)
+x1 = [rng.normal(size=2) for _ in range(128)]
+x2 = [rng.normal(size=2) for _ in range(128)]
+X = pd.DataFrame({"x1": x1, "x2": x2})
+y = np.empty(128, dtype=object)
+offset = np.array([0.5, -1.0])
+y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
+```
+
+PySR will each vector in a private Julia `Vec2` type that we define below.
+`scalar_constants` extracts the continuous values from this type (to be optimized by BFGS),
+and `with_scalar_constants` rebuilds the constant after optimization. PySR derives
+initialization, mutation, validation, counting, packing, and unpacking from
+this pair:
+
+```python
+type_spec = TypeSpec(
+    "Vec2",
+    fields={"data": "Vector{Float64}"},
+    sample="rng -> Vec2(randn(rng, 2))",
+    scalar_constants="value -> value.data",
+    with_scalar_constants=(
+        "(value, scalar_constants) -> Vec2(scalar_constants)"
+    ),
+)
+```
+
+This is the minimal set of hooks needed. There are a few others that you could optionally define, necessary to get faster speeds, such as `init` and `mutate` (and if we want to customize the printing, `string`). PySR will try to derive these automatically from the provided `sample` hook, but it will not be as fast.
+
+In Julia, this would give us a type definition of
+
+```julia
+struct Vec2
+    data::Vector{Float64}
+end
+```
+
+Once you have defined your type, you need to define the operators that accept and return this type. For example, we can define a `rotate90` operator that rotates a vector by 90 degrees, and a `double` operator that doubles the vector. We also define an `add_vectors` operator that adds two vectors together:
+
+```python
+operators = {
+    1: [
+        "rotate90(a::Vec2) = Vec2([-a.data[2], a.data[1]])",
+        "double(a::Vec2) = Vec2(2a.data)",
+    ],
+    2: ["add_vectors(a::Vec2, b::Vec2) = Vec2(a.data + b.data)"],
+}
+```
+
+```python
+model = PySRRegressor(
+    type_spec=type_spec,
+    elementwise_loss="vector_loss(a::Vec2, b::Vec2) = sum(abs2, a.data - b.data)",
+    niterations=40,
+    populations=4,
+    maxsize=10,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+The target can be represented as
+`add_vectors(add_vectors(rotate90(x1), double(x2)), [0.5, -1.0])`, including a
+learned vector-valued constant. PySR searches over both the program structure
+and the two components of that constant.
+
+
+<details>
+<summary>String-valued expressions and discrete constants</summary>
+
+Strings demonstrate a value type whose constants are evolved discretely rather
+than optimized with BFGS. This search learns to join two transformed strings
+with a sampled separator:
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec
+
+X = pd.DataFrame(
+    {
+        "first": ["Py", "symbolic", "hello", "left"],
+        "second": ["SR", "regression", "world", "right"],
+    }
+)
+y = np.array(
+    [f"{a.lower()}-{b.upper()}" for a, b in X.itertuples(index=False)],
+    dtype=object,
+)
+
+type_spec = TypeSpec(
+    "StringValue",
+    fields={"data": "String"},
+    sample='rng -> StringValue(rand(rng, ("", "-", "_")))',
+    mutate="""
+    mutate_string(rng, value, temperature) = StringValue(rand(rng, ("", "-", "_")))
+    """,
+)
+
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={
+        1: [
+            "string_lowercase(x::StringValue) = StringValue(lowercase(x.data))",
+            "string_uppercase(x::StringValue) = StringValue(uppercase(x.data))",
+        ],
+        2: [
+            "string_concat(a::StringValue, b::StringValue) = StringValue(a.data * b.data)"
+        ],
+    },
+    elementwise_loss="""
+    string_loss(a::StringValue, b::StringValue) = Float64(Base.editdistance(a.data, b.data))
+    """,
+    niterations=40,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+Because this type has no scalar-constant hook pair, PySR does not run BFGS on
+its constants. The explicit `mutate` hook resamples separators during
+evolution.
+
+</details>
+
+<details>
+<summary>Advanced: recovering a neural network with tensor constants</summary>
+
+`TypeSpec` can place scalar, vector, and matrix constants in one Julia value
+type. The scalar-constant hooks flatten each constant for BFGS and rebuild its
+original shape.
+
+Here we recover a two-layer neural network
+
+$$ y = W_2\operatorname{relu}(W_1x + b_1) + b_2 $$
+
+from vector-valued data. Safe operators return an invalid value for shape
+mismatches, so arbitrary expressions from the search cannot throw dimension
+errors:
+
+```python
+import numpy as np
+import pandas as pd
+
+from pysr import PySRRegressor, TypeSpec
+
+preamble = """
+const NNPayload = Union{Float64, Vector{Float64}, Matrix{Float64}}
+
+safe_matmul(a::Matrix{Float64}, b::Vector{Float64}) =
+    size(a, 2) == length(b) ? a * b : NaN
+safe_matmul(::NNPayload, ::NNPayload) = NaN
+
+safe_add(a::Float64, b::Float64) = a + b
+safe_add(a::T, b::T) where {T<:Union{Vector{Float64}, Matrix{Float64}}} =
+    size(a) == size(b) ? a + b : NaN
+safe_add(::NNPayload, ::NNPayload) = NaN
+
+# Constants sample a random rank, generating only the payload that was chosen:
+function random_nn_payload(rng)
+    rank = rand(rng, 0:2)
+    rank == 0 ? randn(rng) : rank == 1 ? randn(rng, 2) : randn(rng, 2, 2)
+end
+"""
+
+type_spec = TypeSpec(
+    "NNValue",
+    fields={"data": "NNPayload"},
+    sample="rng -> NNValue(random_nn_payload(rng))",
+    # Mutations usually perturb every scalar in the payload, but occasionally
+    # resample a fresh rank:
+    mutate="""
+    (rng, value, temperature) -> if rand(rng) < 0.1
+        NNValue(random_nn_payload(rng))
+    else
+        NNValue(value.data .+ temperature .* randn(rng, size(value.data)...))
+    end
+    """,
+    scalar_constants="""
+    function scalar_constants(value)
+        return value.data isa Float64 ? [value.data] : vec(value.data)
+    end
+    """,
+    with_scalar_constants="""
+    function with_scalar_constants(value, scalar_constants)
+        data = value.data isa Float64 ? scalar_constants[1] :
+            reshape(collect(scalar_constants), size(value.data))
+        return NNValue(data)
+    end
+    """,
+    preamble=preamble,
+)
+```
+
+Generate training data from fixed $2\times2$ weights and two-element biases:
+
+```python
+rng = np.random.default_rng(0)
+x_values = rng.normal(size=(64, 2))
+W1 = np.array([[1.2, -0.7], [0.5, 1.1]])
+b1 = np.array([0.3, -0.2])
+W2 = np.array([[0.8, -1.0], [1.3, 0.4]])
+b2 = np.array([-0.4, 0.2])
+y_values = (W2 @ np.maximum(x_values @ W1.T + b1, 0).T).T + b2
+
+X = pd.DataFrame({"x": list(x_values)})
+y = pd.Series(list(y_values), dtype=object)
+```
+
+Search with matrix multiplication, elementwise ReLU, and addition. BFGS is the
+default constant optimizer:
+
+```python
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={
+        1: ["nn_relu(a) = NNValue(max.(a.data, 0.0))"],
+        2: [
+            "nn_matmul(a, b) = NNValue(safe_matmul(a.data, b.data))",
+            "nn_add(a, b) = NNValue(safe_add(a.data, b.data))",
+        ],
+    },
+    elementwise_loss="""
+    function nn_mse(a, b)::Float64
+        valid = a.data isa Vector && b.data isa Vector && size(a.data) == size(b.data)
+        return valid ? sum(abs2, a.data .- b.data) / length(a.data) : 1.0e6
+    end
+    """,
+    niterations=100,
+    populations=4,
+    maxsize=11,
+)
+
+model.fit(X, y)
+print(model.equations_)
+```
+
+The search recovers a two-layer form such as
+`nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. Both biases
+are absorbed into the fitted constants, through $b_1 = W_1c$ and $b_2 = W_2b$;
+each displayed constant contains the fitted matrix or vector payload.
+
+</details>
+
+## 15. Discovering a PDE
+
+Suppose we have data in the form of a field `u(x, t)`: measurements of
+some quantity on a grid of positions, repeated over time. We can
+discover the PDE `u_t = f(u, u_x, u_xx, ...)` by turning this into a
+normal regression problem: every grid point is one sample, the input
+features are the field and its spatial derivatives, and the target is
+the time derivative.
+
+Let's simulate the viscous Burgers equation,
+`u_t = -u*u_x + 0.1*u_xx`, on a periodic domain
+(in practice you would use measured data instead):
+
+<details>
+<summary>Data generation code</summary>
+
+```python
+import numpy as np
+
+L, nx, nu = 2 * np.pi, 128, 0.1
+x = np.linspace(0.0, L, nx, endpoint=False)
+dx = L / nx
+k = 2 * np.pi * np.fft.rfftfreq(nx, d=dx)
+
+def d_dx(u, order=1):
+    return np.real(np.fft.irfft((1j * k) ** order * np.fft.rfft(u), n=nx))
+
+def rhs(u):
+    return -u * d_dx(u) + nu * d_dx(u, order=2)
+
+u = -np.sin(x)
+snapshots = [u.copy()]
+dt = 1e-3
+for i in range(1, 4001):
+    k1 = rhs(u)
+    k2 = rhs(u + 0.5 * dt * k1)
+    k3 = rhs(u + 0.5 * dt * k2)
+    k4 = rhs(u + dt * k3)
+    u = u + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+    if i % 100 == 0:
+        snapshots.append(u.copy())
+
+U = np.array(snapshots)   # shape (41, 128)
+t = np.arange(U.shape[0]) * 0.1
+```
+
+</details>
+
+Now we build the feature matrix and target. The spatial derivatives are
+computed with a Savitzky-Golay filter, which smooths the data while
+differentiating it; the time derivative is a finite difference:
+
+```python
+from scipy.signal import savgol_filter
+
+ux = savgol_filter(U, 21, 3, deriv=1, delta=dx, axis=-1)
+uxx = savgol_filter(U, 21, 3, deriv=2, delta=dx, axis=-1)
+ut = np.gradient(U, t, axis=0)
+
+X = np.stack([U, ux, uxx], axis=-1).reshape(-1, 3)
+y = ut.reshape(-1)
+```
+
+Now let's fit. The `complexity_of_variables` list makes higher
+derivatives cost more, which biases the search toward low-order terms:
+
+```python
+model = PySRRegressor(
+    binary_operators=["+", "-", "*"],
+    complexity_of_variables=[1, 2, 3],
+    maxsize=20,
+    niterations=100,
+)
+model.fit(X, y, variable_names=["u", "u_x", "u_xx"])
+print(model)
+```
+
+If all goes well, you should see an equation like `0.1 * u_xx - u * u_x`
+on the Pareto front at low complexity, which is the PDE we put in!
+This setup also survives noise well: at 1% Gaussian noise,
+finite-difference features fail completely, but the Savitzky-Golay
+features above still recover the right terms (coefficients ~13% low),
+and even at 5% noise the structure survives. Before trusting the
+constants, simulate the discovered PDE forward from a held-out initial
+condition.
+
+Finally, if you know the physical units, pass them to `fit` with
+`X_units=["m/s", "s^-1", "m^-1*s^-1"]` and `y_units="m*s^-2"`.
+
+## 16. Additional features
 
 For the many other features available in PySR, please
 read the [Options section](options.md).

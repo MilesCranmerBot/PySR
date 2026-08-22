@@ -4,6 +4,7 @@
     - unary_operators
     - operators
     - expression_spec
+    - type_spec
     - maxsize
     - maxdepth
   - Setting the Search Size:
@@ -33,6 +34,10 @@
     - adaptive_parsimony_scaling
     - should_simplify
   - Mutations:
+    - default_mutations
+    - mutations
+    - default_plugins
+    - plugins
     - weight_add_node
     - weight_insert_node
     - weight_delete_node
@@ -45,6 +50,7 @@
     - weight_randomize
     - weight_simplify
     - weight_optimize
+    - weight_backsolve
     - crossover_probability
     - annealing
     - alpha

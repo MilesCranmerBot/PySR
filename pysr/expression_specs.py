@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import copy
-import textwrap
-import warnings
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from textwrap import dedent
-from typing import TYPE_CHECKING, Any, NewType, overload
+from typing import TYPE_CHECKING, Any, ClassVar, NewType
 
 import numpy as np
 import pandas as pd
@@ -13,7 +12,6 @@ import pandas as pd
 from .export import add_export_formats
 from .julia_helpers import jl_array
 from .julia_import import AnyValue, SymbolicRegression, jl
-from .utils import ArrayLike
 
 try:
     from typing import TypeAlias
@@ -42,15 +40,37 @@ class AbstractExpressionSpec(ABC):
     2. create_exports(), which will be used to create the exports of the equations, such as
         the executable format, the SymPy format, etc.
 
-    It may also optionally implement:
-
-    - supports_sympy, supports_torch, supports_jax, supports_latex: Whether this expression type supports the corresponding export format.
+    Implementations may also declare the export formats they support.
     """
 
     @abstractmethod
     def julia_expression_spec(self) -> AnyValue:
         """The expression specification"""
         pass  # pragma: no cover
+
+    def _julia_expression_spec_source(self, *, prototype: str | None) -> str | None:
+        """Return self-contained Julia source for a TypeSpec-compatible spec.
+
+        ``prototype`` is Julia source for one value of the generated type. PySR
+        evaluates the returned source once in the fingerprinted runtime module.
+        """
+        return None
+
+    def _julia_expression_spec_function_selector(self) -> str | None:
+        """Return Julia source selecting the callable nested in the spec.
+
+        PySR evaluates the source to a selector, invokes it with the expression
+        spec, and binds the result under a deterministic runtime-module name so
+        checkpoints and workers resolve the same callable identity.
+        """
+        return None
+
+    @property
+    def supports_type_spec(self) -> bool:
+        return False
+
+    def _validate_type_spec(self) -> None:
+        pass
 
     @abstractmethod
     def create_exports(
@@ -109,6 +129,10 @@ class ExpressionSpec(AbstractExpressionSpec):
         )
 
     @property
+    def supports_type_spec(self) -> bool:
+        return True
+
+    @property
     def supports_sympy(self):
         return True
 
@@ -125,6 +149,7 @@ class ExpressionSpec(AbstractExpressionSpec):
         return True
 
 
+@dataclass
 class TemplateExpressionSpec(AbstractExpressionSpec):
     """Spec for templated expressions.
 
@@ -177,129 +202,53 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
     the derivative of f with respect to its first argument, evaluated at x.
     """
 
-    _spec_cache: dict[tuple[str, ...], AnyValue] = {}
+    combine: str
+    expressions: list[str]
+    variable_names: list[str]
+    parameters: dict[str, int] | None = None
 
-    @overload
-    def __init__(
-        self,
-        function_symbols: list[str],
-        combine: str,
-        num_features: dict[str, int] | None = None,
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        combine: str,
-        *,
-        expressions: list[str],
-        variable_names: list[str],
-        parameters: dict[str, int] | None = None,
-    ) -> None: ...
-
-    def __init__(
-        self,
-        *args,
-        **kwargs,
-    ):
-        """Handle both formats with combine as explicit parameter"""
-        self._old_format = len(args) >= 2 or "function_symbols" in kwargs
-
-        if self._old_format:
-            self._load_old_format(*args, **kwargs)
-        else:
-            self._load_new_format(*args, **kwargs)
-
-    def _load_old_format(
-        self,
-        function_symbols: list[str],
-        combine: str,
-        num_features: dict[str, int] | None = None,
-    ):
-        self.function_symbols = function_symbols
-        self.combine = combine
-        self.num_features = num_features
-        # TODO: warn about old format after some versions
-
-    def _load_new_format(
-        self,
-        combine: str,
-        *,
-        expressions: list[str],
-        variable_names: list[str],
-        parameters: dict[str, int] | None = None,
-    ):
-        self.combine = combine
-        self.expressions = expressions
-        self.variable_names = variable_names
-        self.parameters = parameters
+    _spec_cache: ClassVar[dict[tuple[str, ...], AnyValue]] = {}
 
     def _get_cache_key(self):
-        if self._old_format:
-            return (
-                "old",
-                str(self.function_symbols),
-                self.combine,
-                str(self.num_features),
-            )
-        else:
-            return (
-                "new",
-                self.combine,
-                str(self.expressions),
-                str(self.variable_names),
-                str(self.parameters),
-            )
+        return (
+            str(self.combine),
+            str(self.expressions),
+            str(self.variable_names),
+            str(self.parameters),
+        )
 
     def julia_expression_spec(self):
         key = self._get_cache_key()
-        if key in self._spec_cache:
-            return self._spec_cache[key]
-
-        if self._old_format:
-            result = SymbolicRegression.TemplateExpressionSpec(
-                structure=self.julia_expression_options().structure
-            )
-        else:
-            result = self._call_template_macro()
-
-        self._spec_cache[key] = result
-        return result
+        if key not in self._spec_cache:
+            self._spec_cache[key] = self._call_template_macro()
+        return self._spec_cache[key]
 
     def _call_template_macro(self):
         return jl.seval(self._template_macro_str())
 
-    def _template_macro_str(self):
+    def _template_macro_str(self, *, prototype: str | None = None) -> str:
         template_inputs = [f"expressions=({', '.join(self.expressions) + ','})"]
         if self.parameters:
             template_inputs.append(
                 f"parameters=({', '.join([f'{p}={self.parameters[p]}' for p in self.parameters]) + ','})"
             )
+        if prototype is not None:
+            template_inputs.append(f"prototype={prototype}")
         return dedent(f"""
         @template_spec({', '.join(template_inputs) + ','}) do {', '.join(self.variable_names)}
             {self.combine}
         end
         """)
 
-    def julia_expression_options(self):
-        f_combine = jl.seval(self.combine)
-        creator = jl.seval("""
-        function _pysr_create_template_structure(
-            @nospecialize(function_symbols::AbstractVector),
-            @nospecialize(combine::Function),
-            @nospecialize(num_features::Union{Nothing,AbstractDict})
-        )
-            tuple_symbol = (map(Symbol, function_symbols)..., )
-            num_features = if num_features === nothing
-                nothing
-            else
-                NamedTuple(Symbol(k) => v for (k, v) in num_features)
-            end
-            structure = SymbolicRegression.TemplateStructure{tuple_symbol}(combine, num_features)
-            return (; structure)
-        end
-        """)
-        return creator(self.function_symbols, f_combine, self.num_features)
+    def _julia_expression_spec_source(self, *, prototype: str | None) -> str:
+        return self._template_macro_str(prototype=prototype)
+
+    def _julia_expression_spec_function_selector(self) -> str:
+        return "spec -> spec.structure.combine"
+
+    @property
+    def supports_type_spec(self) -> bool:
+        return True
 
     @property
     def evaluates_in_julia(self):
@@ -312,87 +261,6 @@ class TemplateExpressionSpec(AbstractExpressionSpec):
         search_output,
         i: int | None = None,
     ) -> pd.DataFrame:
-        # We try to load the raw julia state from a saved binary stream
-        # if not provided.
-        search_output = search_output or model.julia_state_
-        return _search_output_to_callable_expressions(equations, search_output, i)
-
-
-def parametric_expression_deprecation_warning(
-    max_parameters: int, variable_names: ArrayLike[str]
-):
-    function_name = "f"
-    var_names = list(variable_names)
-    message = dedent(f"""
-        ParametricExpressionSpec is deprecated. you should switch to TemplateExpressionSpec with explicit parameters indexed by category.
-
-        Since you have `max_parameters={max_parameters}` and `variable_names=[{", ".join(f'"{v}"' for v in var_names)}]`, you could migrate like this:
-
-            n_categories = len(np.unique(category))  # count the number of parameters required
-            expression_spec = TemplateExpressionSpec(
-                expressions=["{function_name}"],
-                variable_names=[{", ".join(f'"{v}"' for v in var_names + ["category"])}],
-                parameters={{{", ".join(f'"p{i+1}": n_categories' for i in range(max_parameters))}}},
-                combine="{function_name}({', '.join(var_names + [f'p{i+1}[category]' for i in range(max_parameters)])})",
-            )
-            X = np.column_stack([X, category])       # add the category column
-
-        Finally, do not pass `category` when calling .fit().
-    """).strip()
-    wrapped = "\n".join(textwrap.fill(line, 88) for line in message.splitlines())
-    warnings.warn(wrapped, FutureWarning, stacklevel=3)
-
-
-class ParametricExpressionSpec(AbstractExpressionSpec):
-    """Spec for parametric expressions that vary by category.
-
-    **This is deprecated in favor of the `TemplateExpressionSpec` class,
-    which now supports parameters indexed by category.**
-
-    This class allows you to specify expressions with parameters that vary across different
-    categories in your dataset. The expression structure remains the same, but parameters
-    are optimized separately for each category.
-
-    Parameters
-    ----------
-    max_parameters : int
-        Maximum number of parameters that can appear in the expression. Each parameter
-        will take on different values for each category in the data.
-
-    Examples
-    --------
-    For example, if we want to allow for a model with up to 2 parameters (each category
-    can have a different value for these parameters), we can use:
-
-    ```python
-    model = PySRRegressor(
-        expression_spec=ParametricExpressionSpec(max_parameters=2),
-        binary_operators=["+", "*"],
-        unary_operators=["sin"]
-    )
-    model.fit(X, y, category=category)
-    ```
-    """
-
-    def __init__(self, max_parameters: int):
-        self.max_parameters = max_parameters
-
-    def julia_expression_spec(self):
-        return SymbolicRegression.ParametricExpressionSpec(
-            max_parameters=self.max_parameters, warn=False
-        )
-
-    @property
-    def evaluates_in_julia(self):
-        return True
-
-    def create_exports(
-        self,
-        model: PySRRegressor,
-        equations: pd.DataFrame,
-        search_output,
-        i: int | None = None,
-    ):
         search_output = search_output or model.julia_state_
         return _search_output_to_callable_expressions(equations, search_output, i)
 
@@ -407,7 +275,9 @@ class CallableJuliaExpression:
 
 
 def _search_output_to_callable_expressions(
-    equations: pd.DataFrame, search_output, i: int | None
+    equations: pd.DataFrame,
+    search_output,
+    i: int | None,
 ) -> pd.DataFrame:
     equations = copy.deepcopy(equations)
     _, all_out_hof = search_output
