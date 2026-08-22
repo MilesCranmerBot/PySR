@@ -51,7 +51,7 @@ class TestTorch(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         model.refresh(run_directory=str(Path(model.output_directory_) / model.run_id_))
@@ -85,7 +85,7 @@ class TestTorch(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         model.refresh(run_directory=str(Path(model.output_directory_) / model.run_id_))
@@ -138,7 +138,7 @@ class TestTorch(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         MyCustomOperator = sympy.Function("mycustomoperator")
@@ -194,7 +194,7 @@ class TestTorch(unittest.TestCase):
 
     def test_constant_arguments(self):
         # Test that functions with constant arguments work correctly
-        # Regression test for https://github.com/MilesCranmer/PySR/issues/656
+        # Regression test for https://github.com/astroautomata/PySR/issues/656
         test_cases = [
             (pysr.export_sympy.pysr2sympy("sqrt(2)"), np.sqrt(2)),
             (sympy.exp(2), np.exp(2)),

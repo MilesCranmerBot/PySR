@@ -154,9 +154,10 @@ class TestSlurm(unittest.TestCase):
                     "#SBATCH --job-name=pysr-slurm-test",
                     "#SBATCH --partition=normal",
                     "#SBATCH --nodes=2",
-                    "#SBATCH --ntasks=4",
+                    "#SBATCH --ntasks-per-node=2",
                     "#SBATCH --time=40:00",
                     "set -euo pipefail",
+                    "export JULIA_DEBUG=SlurmClusterManager",
                     "python3 - <<'PY'",
                     "import numpy as np",
                     "from pysr import PySRRegressor",
@@ -164,11 +165,11 @@ class TestSlurm(unittest.TestCase):
                     "y = X[:, 0] + 1.0",
                     "model = PySRRegressor(",
                     "    niterations=3,",
-                    "    populations=3,",
+                    "    populations=4,",
                     "    progress=False,",
                     "    temp_equation_file=True,",
                     "    parallelism='multiprocessing',",
-                    "    procs=2,",
+                    "    procs=4,",
                     "    cluster_manager='slurm',",
                     "    verbosity=0,",
                     ")",
@@ -275,6 +276,15 @@ class TestSlurm(unittest.TestCase):
             env=self.compose_env,
         )
         self.assertEqual(output.returncode, 0, msg=output.stdout)
+        worker_hosts = re.findall(
+            r"Worker \d+ ready on host ([^,]+), port \d+", output.stdout
+        )
+        self.assertEqual(len(worker_hosts), 4, msg=output.stdout)
+        self.assertEqual(
+            sorted(worker_hosts.count(host) for host in set(worker_hosts)),
+            [2, 2],
+            msg=output.stdout,
+        )
         self.assertIn("PYSR_SLURM_OK", output.stdout)
 
 

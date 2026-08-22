@@ -23,12 +23,12 @@ jobs:
       # IMPORTANT: pull_request_target runs with elevated permissions.
       # We only checkout the base repo (trusted) and we never execute code from the PR.
       - name: Checkout base repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 

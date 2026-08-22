@@ -551,7 +551,7 @@ def main() -> None:
         base=docs_default_branch,
         title=f"Add paper images from PySR PR #{pr_number}",
         body=(
-            f"Automated upload of paper image(s) from MilesCranmer/PySR PR #{pr_number}.\n\n"
+            f"Automated upload of paper image(s) from astroautomata/PySR PR #{pr_number}.\n\n"
             f"Source head: {pr.head_repo}@{pr.head_sha}\n"
             f"Target dir: `{docs_images_dir}`\n"
         ),

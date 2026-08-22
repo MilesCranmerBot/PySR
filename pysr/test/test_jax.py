@@ -1,5 +1,7 @@
+import subprocess
+import sys
+import tempfile
 import unittest
-from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -49,7 +51,7 @@ class TestJAX(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         model.refresh(run_directory=str(Path(model.output_directory_) / model.run_id_))
@@ -77,7 +79,7 @@ class TestJAX(unittest.TestCase):
 
         for fname in ["hall_of_fame.csv.bak", "hall_of_fame.csv"]:
             equations["Complexity Loss Equation".split(" ")].to_csv(
-                Path(model.output_directory_) / model.run_id_ / fname
+                Path(model.output_directory_) / model.run_id_ / fname, index=False
             )
 
         model.refresh(run_directory=str(Path(model.output_directory_) / model.run_id_))
@@ -125,29 +127,49 @@ class TestJAX(unittest.TestCase):
             return 1 - (x**2) / 2 + (x**4) / 24 + (x**6) / 720
 
         sp_cos_approx = sympy.Function("cos_approx")
-
         y = X["k15"] ** 2 + 2 * cos_approx(X["k20"])
 
-        model = PySRRegressor(
-            progress=False,
-            unary_operators=["cos_approx(x) = 1 - x^2 / 2 + x^4 / 24 + x^6 / 720"],
-            select_k_features=3,
-            maxsize=10,
-            early_stop_condition=1e-5,
-            extra_sympy_mappings={"cos_approx": sp_cos_approx},
-            extra_jax_mappings={
-                sp_cos_approx: "(lambda x: 1 - x**2 / 2 + x**4 / 24 + x**6 / 720)"
-            },
-            random_state=0,
-            deterministic=True,
-            parallelism="serial",
-        )
-        np.random.seed(0)
-        model.fit(X.values, y.values)
-        f, parameters = model.jax().values()
-        jax_prediction = partial(f, parameters=parameters)
-        jax_output = jax_prediction(X.values)
-        np.testing.assert_almost_equal(y.values, jax_output, decimal=3)
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor(
+                progress=False,
+                unary_operators=["cos_approx(x) = 1 - x^2 / 2 + x^4 / 24 + x^6 / 720"],
+                select_k_features=3,
+                maxsize=10,
+                early_stop_condition=1e-5,
+                extra_sympy_mappings={"cos_approx": sp_cos_approx},
+                extra_jax_mappings={
+                    sp_cos_approx: "(lambda x: 1 - x**2 / 2 + x**4 / 24 + x**6 / 720)"
+                },
+                random_state=0,
+                deterministic=True,
+                parallelism="serial",
+                output_directory=directory,
+                run_id="custom-jax-checkpoint",
+                temp_equation_file=False,
+            )
+            np.random.seed(0)
+            model.fit(X.values, y.values)
+            self.assertTrue(model.show_pickle_warnings_)
+
+            input_path = Path(directory) / "input.npy"
+            output_path = Path(directory) / "output.npy"
+            np.save(input_path, X.values)
+            run_directory = Path(directory) / "custom-jax-checkpoint"
+            code = f"""
+import numpy as np
+from pysr import PySRRegressor
+model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
+f, parameters = model.jax().values()
+np.save({str(output_path)!r}, np.asarray(f(np.load({str(input_path)!r}), parameters)))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            np.testing.assert_almost_equal(y.values, np.load(output_path), decimal=3)
 
 
 def runtests(just_tests=False):

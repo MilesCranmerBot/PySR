@@ -1,5 +1,90 @@
 # Changelog
 
+## [2.0.0-beta.3](https://github.com/astroautomata/PySR/compare/v2.0.0-beta.2...v2.0.0-beta.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* preserve custom JAX mappings in checkpoints ([#1199](https://github.com/astroautomata/PySR/issues/1199)) ([0d78783](https://github.com/astroautomata/PySR/commit/0d78783b8aca3c3e42e8001397ee3a5a819dc6dd))
+
+
+### Dependencies
+
+* raise jax, ipython, ipykernel, and pytest-cov ceilings ([#1307](https://github.com/astroautomata/PySR/issues/1307)) ([3f37488](https://github.com/astroautomata/PySR/commit/3f37488da78d735df9bee37bf3a23bf01f98ee1c))
+* raise juliacall ceiling to 0.9.36 ([#1312](https://github.com/astroautomata/PySR/issues/1312)) ([494798e](https://github.com/astroautomata/PySR/commit/494798e76511aed9db1f57078c6ec8366c6e06fc))
+
+
+### Documentation
+
+* add PDE discovery example and skill guidance ([#1311](https://github.com/astroautomata/PySR/issues/1311)) ([459a720](https://github.com/astroautomata/PySR/commit/459a720bd72cb0bd02e96ba7b877460d4a2739c2))
+* add PySR v1 to v2 migration guide ([#1302](https://github.com/astroautomata/PySR/issues/1302)) ([b0bb321](https://github.com/astroautomata/PySR/commit/b0bb321451fc8a489c711a5a7c37bff03fbb50c9))
+* replace python feature card ([#1303](https://github.com/astroautomata/PySR/issues/1303)) ([b99a314](https://github.com/astroautomata/PySR/commit/b99a314da625d3bce5a9dc25e7618a8681a8ffc4))
+
+## [2.0.0-beta.2](https://github.com/astroautomata/PySR/compare/v2.0.0-beta.1...v2.0.0-beta.2) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* the deprecated positional and `function_symbols=...` forms of `TemplateExpressionSpec` are removed; pass explicit `combine=`, `expressions=`, and `variable_names=` keywords.
+* checkpoints written before this change (schema 2, from v2.0.0-beta.1 and earlier betas) fail to load with an explicit schema error rather than restoring incomplete state.
+
+### Features
+
+* accept sample_weight as an alias for weights in fit ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+* require keyword arguments for TemplateExpressionSpec ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+* support custom value types via TypeSpec ([#1280](https://github.com/astroautomata/PySR/issues/1280)) ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+
+
+### Bug Fixes
+
+* avoid duplicate PyPI attestations ([#1292](https://github.com/astroautomata/PySR/issues/1292)) ([71242e8](https://github.com/astroautomata/PySR/commit/71242e8420e90db7be4f8ff064ab3dc9df2c52d2))
+* bump the checkpoint schema to version 3 ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+* rebuild Julia-backed equation columns after unpickling ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+
+
+### Documentation
+
+* rewrite the examples for TypeSpec and template expressions ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+
+## [2.0.0-beta.1](https://github.com/astroautomata/PySR/compare/v2.0.0a2...v2.0.0-beta.1) (2026-08-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* enable annealing by default ([#1283](https://github.com/astroautomata/PySR/issues/1283))
+* remove ParametricExpressionSpec ([#1277](https://github.com/astroautomata/PySR/issues/1277))
+* switch to SlurmClusterManager.jl for slurm allocations ([#794](https://github.com/astroautomata/PySR/issues/794))
+
+### Features
+
+* expose new plugin interface + upgrade to v2.0.0-beta.3 ([#1282](https://github.com/astroautomata/PySR/issues/1282)) ([e20c880](https://github.com/astroautomata/PySR/commit/e20c88015cc4294ea41d52cc2e9345bed7f1ebac))
+* remove ParametricExpressionSpec ([#1277](https://github.com/astroautomata/PySR/issues/1277)) ([d5f0bb0](https://github.com/astroautomata/PySR/commit/d5f0bb0b4b1e5d13463ba988c3ff15fba00bfe13))
+* set precompile_float64=false preference for SymbolicRegression ([#1279](https://github.com/astroautomata/PySR/issues/1279)) ([b89f920](https://github.com/astroautomata/PySR/commit/b89f9209d8ead59974bcff8f0f295b71c4a8fb7c))
+* switch to SlurmClusterManager.jl for slurm allocations ([#794](https://github.com/astroautomata/PySR/issues/794)) ([49f44a4](https://github.com/astroautomata/PySR/commit/49f44a420c3c08c4406c8c9685ba9d34d7773b23))
+
+
+### Bug Fixes
+
+* convert num_features dict keys to Julia Symbols ([#1209](https://github.com/astroautomata/PySR/issues/1209)) ([8aa59b8](https://github.com/astroautomata/PySR/commit/8aa59b82bfbe29daba59e38c2c063d8184c9dd0b)), closes [#811](https://github.com/astroautomata/PySR/issues/811)
+* enable annealing by default ([#1283](https://github.com/astroautomata/PySR/issues/1283)) ([f4dc86b](https://github.com/astroautomata/PySR/commit/f4dc86b21df97724f0e5efc8f9bc4ce34b8814d4))
+* respect tempdir for temporary equation files ([#1207](https://github.com/astroautomata/PySR/issues/1207)) ([beaa405](https://github.com/astroautomata/PySR/commit/beaa4053a1352789176b1b3bae356007dcbebabd))
+
+
+### Documentation
+
+* add agent skill for using PySR effectively ([#1264](https://github.com/astroautomata/PySR/issues/1264)) ([fdedcc8](https://github.com/astroautomata/PySR/commit/fdedcc892db4ae2fed289601718074ec45a596d0))
+* add angular coefficients paper ([da6d2d2](https://github.com/astroautomata/PySR/commit/da6d2d27f782156e5378ecd0255474cad5dc684d))
+* add biomass pyrolysis paper ([ccb473e](https://github.com/astroautomata/PySR/commit/ccb473ec715f353e32729f6921352a572f6ca71f))
+* add dark energy symbolic regression paper ([da9ad80](https://github.com/astroautomata/PySR/commit/da9ad80bc0187ca65f12b331d919c322264ea874))
+* add human mobility models paper ([f47c4d2](https://github.com/astroautomata/PySR/commit/f47c4d27496659ea97cc72ab9cfe138964c3ea53))
+* add microbial growth models paper ([f7c72fb](https://github.com/astroautomata/PySR/commit/f7c72fbc3ba13ed6e7e5f69f946c3c57d0a2d755))
+* add paper showcase entries ([9283914](https://github.com/astroautomata/PySR/commit/9283914523b52e5e992f4238d7ca6692de7825d1))
+* add s-stars chaos paper ([cfc4907](https://github.com/astroautomata/PySR/commit/cfc490762cac17ea248cfb83555c261779fa61e9))
+* add skin friction estimation paper ([8ec43f0](https://github.com/astroautomata/PySR/commit/8ec43f082e2b449d7dece4cb5ba2372915b81a7c))
+* add yawed wind turbines paper ([e1dc986](https://github.com/astroautomata/PySR/commit/e1dc986ef096b3c0c14e7f7f4429aee6b730f429))
+* update contributors list ([#1286](https://github.com/astroautomata/PySR/issues/1286)) ([10b3637](https://github.com/astroautomata/PySR/commit/10b36376b2866e09e8382669df20e4a7a1539ec5))
+* use Float32 literals in custom loss example ([#1276](https://github.com/astroautomata/PySR/issues/1276)) ([2bd7db2](https://github.com/astroautomata/PySR/commit/2bd7db238a70773c9b4882259b940f3dec8c8591))
+
 ## [2.0.0a2](https://github.com/MilesCranmer/PySR/compare/v2.0.0a1...v2.0.0a2) (2026-05-15)
 
 This is an alpha release of v2.0.0. It includes backend, packaging, export, and documentation updates since `v2.0.0a1`.
