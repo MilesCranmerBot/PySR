@@ -144,7 +144,6 @@ Template caveats (as of 1.5.x):
 - Write Float32-safe literals in the combine string (`0.5f0`, not `0.5`) or convert explicitly; a bare Float64 literal can break type stability.
 - Incompatible with dimensional constraints (`X_units`); combining with a custom objective requires `loss_function_expression` (not `loss_function`).
 - Use `TemplateExpressionSpec` with `parameters` for learnable parameters. The pre-1.4 template API (`function_symbols`, lambda-style combine) is deprecated.
-- Pickle round-trips work as of 2.0.0-beta.3 (live Julia objects are dropped at dump time and rebuilt from `julia_state_stream_` on load, no run directory needed). On 1.5.x, dumping a fitted template model fails; use `from_file(run_directory=...)` or upgrade.
 
 ## Custom operators
 
