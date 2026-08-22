@@ -4,6 +4,7 @@ import json
 import os
 import pickle as pkl
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -947,6 +948,61 @@ print(json.dumps({{
 
         loaded = pkl.loads(pkl.dumps(model))
         self.assertIsNotNone(loaded.julia_state_)
+
+    def test_template_expression_pickle_roundtrip_in_fresh_process(self):
+        X = self.rstate.uniform(-1, 1, (30, 2))
+        y = np.sin(X[:, 0] + X[:, 1])
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor(
+                expression_spec=TemplateExpressionSpec(
+                    combine="sin(f(x, y))",
+                    expressions=["f"],
+                    variable_names=["x", "y"],
+                ),
+                binary_operators=["+", "-", "*"],
+                unary_operators=[],
+                maxsize=10,
+                **{
+                    **self.default_test_kwargs,
+                    "temp_equation_file": False,
+                },
+                output_directory=directory,
+                run_id="template-pickle",
+            )
+            model.fit(X, y)
+            expected = model.predict(X)
+
+            pickle_path = Path(directory) / "template-model.pkl"
+            with open(pickle_path, "wb") as f:
+                pkl.dump(model, f)
+            # Delete the run directory: the pickle alone must be enough to
+            # rebuild the Julia-backed equation columns.
+            shutil.rmtree(Path(directory) / "template-pickle")
+
+            code = f"""
+import json
+import pickle
+import numpy as np
+
+with open({str(pickle_path)!r}, "rb") as f:
+    model = pickle.load(f)
+X = np.array({X.tolist()!r})
+prediction = model.predict(X)
+print(json.dumps({{
+    "columns": list(model.equations_.columns),
+    "prediction": prediction.tolist(),
+}}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn("lambda_format", payload["columns"])
+        np.testing.assert_allclose(payload["prediction"], expected, atol=1e-10)
 
     def test_template_expression_with_parameters_multiout(self):
         # Create random data

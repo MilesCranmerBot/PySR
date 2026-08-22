@@ -144,7 +144,6 @@ Template caveats (as of 1.5.x):
 - Write Float32-safe literals in the combine string (`0.5f0`, not `0.5`) or convert explicitly; a bare Float64 literal can break type stability.
 - Incompatible with dimensional constraints (`X_units`); combining with a custom objective requires `loss_function_expression` (not `loss_function`).
 - Use `TemplateExpressionSpec` with `parameters` for learnable parameters. The pre-1.4 template API (`function_symbols`, lambda-style combine) is deprecated.
-- Saving/reloading template models via pickle has been unreliable; keep the CSV and the spec-construction code.
 
 ## Custom operators
 
