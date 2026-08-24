@@ -1,6 +1,6 @@
-name: conda-forge
+name: conda-forge published-package canary
 
-# This CI tries the conda-forge version of PySR
+# Weekly smoke test for the latest published PySR package on conda-forge.
 
 on:
   pull_request:
@@ -9,9 +9,6 @@ on:
       - 'release-*'
     paths:
       - '.github/workflows/CI_conda_forge.yml'
-      - 'environment.yml'
-      - 'pyproject.toml'
-      - 'pysr/juliapkg.json'
   schedule:
     - cron: "0 10 * * 1"
   workflow_dispatch:
@@ -44,7 +41,7 @@ jobs:
       - name: "Install pysr"
         run: |
           conda install -y pysr
-          python -c "import pysr"
+          python -c 'import importlib.metadata, pysr; print("Installed PySR", importlib.metadata.version("pysr"))'
           echo "Finished."
       - name: "Run tests"
         run: |
