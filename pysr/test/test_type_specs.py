@@ -1522,7 +1522,6 @@ print(json.dumps({{
                 model.fit(X, y, weights=np.ones(len(y)))
         self.assertFalse(hasattr(model, "_type_spec_runtime_definition_"))
 
-
     def test_guess_seeds_the_search_with_a_custom_constant(self):
         type_name = "GuessVectorValue"
         model = tiny_model(
