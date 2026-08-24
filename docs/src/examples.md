@@ -1079,8 +1079,7 @@ each displayed constant contains the fitted matrix or vector payload.
 
 </details>
 
-`TypeSpec` can also be used with `guesses`. Constants in a guess are evaluated
-in the generated Julia module for the type, so write them with the TypeSpec
+`TypeSpec` can also be used with `guesses`. Write them with the TypeSpec
 constructor, for example `guesses=["add_vectors(x0, Vec2([1.0, 2.0]))"]`.
 
 ## 15. Discovering a PDE
