@@ -1594,6 +1594,18 @@ print(json.dumps({{
         ):
             model.fit(X, y)
 
+    def test_guess_rejects_an_undefined_constant_constructor(self):
+        model = tiny_model(
+            string_spec(name="GuessUndefinedValue"),
+            guesses=['MissingGuessValue("!")'],
+        )
+        X, y = string_data()
+
+        with self.assertRaisesRegex(
+            JuliaError, "Tried to interpolate function `MissingGuessValue`"
+        ):
+            model.fit(X, y)
+
 
 if __name__ == "__main__":
     unittest.main()
