@@ -479,6 +479,7 @@ _TYPE_SPEC_MODULE = _block(r"""
         _include(_config.preamble, "TypeSpec.preamble")
     @_define_type_spec _config
     const _value_type = getfield(@__MODULE__, Symbol(_config.name))
+    SymbolicRegression.parse_scope(::Type{<:_TypeSpecValue}) = @__MODULE__
 
     _fields(value) = ntuple(i -> getfield(value, i), fieldcount(_value_type))
     Base.:(==)(a::_TypeSpecValue, b::_TypeSpecValue) = _fields(a) == _fields(b)
@@ -1315,7 +1316,6 @@ def validate_type_spec_model_configuration(model: Any) -> None:
         loss_function_expression=model.loss_function_expression,
     )
     unsupported = {
-        "guesses": model.guesses is not None,
         "turbo": model.turbo,
         "bumper": model.bumper,
         "autodiff_backend": model.autodiff_backend is not None,

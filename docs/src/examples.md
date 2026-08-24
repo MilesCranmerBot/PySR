@@ -1079,6 +1079,9 @@ each displayed constant contains the fitted matrix or vector payload.
 
 </details>
 
+`TypeSpec` can also be used with `guesses`. Write them with the TypeSpec
+constructor, for example `guesses=["add_vectors(x0, Vec2([1.0, 2.0]))"]`.
+
 ## 15. Discovering a PDE
 
 Suppose we have data in the form of a field `u(x, t)`: measurements of
