@@ -145,6 +145,68 @@ Template caveats (as of 1.5.x):
 - Incompatible with dimensional constraints (`X_units`); combining with a custom objective requires `loss_function_expression` (not `loss_function`).
 - Use `TemplateExpressionSpec` with `parameters` for learnable parameters. The pre-1.4 template API (`function_symbols`, lambda-style combine) is deprecated.
 
+## Custom value types with `TypeSpec`
+
+`TypeSpec` makes each expression-tree node hold a generated Julia struct instead of a scalar. It is independent of `expression_spec`: use both when values need custom types and the expression also needs a fixed structure.
+
+A Python value supplies the struct fields in declaration order. Here one logical value is `((1.0, 2.0, 3.0), np.uint32(7))`: the outer pair supplies `triple` and `code`, while the inner tuple stays one field. Keep `X` two-dimensional and `y` one-dimensional; assign object-array cells individually so NumPy does not expand nested values into extra axes.
+
+```python
+import numpy as np
+from pysr import PySRRegressor, TypeSpec
+
+value = ((1.0, 2.0, 3.0), np.uint32(7))
+X = np.empty((1, 1), dtype=object)
+y = np.empty(1, dtype=object)
+X[0, 0] = value
+y[0] = value
+
+packet = TypeSpec(
+    "Packet",
+    fields={"triple": "NTuple{3,Float64}", "code": "UInt32"},
+    sample="rng -> Packet(ntuple(_ -> randn(rng), 3), rand(rng, UInt32))",
+    mutate="""(rng, value, temperature) -> begin
+        triple = ntuple(i -> value.triple[i] + temperature * randn(rng), 3)
+        bit = UInt32(1) << rand(rng, 0:31)
+        Packet(triple, xor(value.code, bit))
+    end""",
+    scalar_constants="value -> collect(value.triple)",
+    with_scalar_constants=(
+        "(value, c) -> Packet((c[1], c[2], c[3]), value.code)"
+    ),
+    is_valid="value -> all(isfinite, value.triple)",
+)
+
+operators = {
+    1: [
+        "negate_packet(x::Packet)::Packet = "
+        "Packet(ntuple(i -> -x.triple[i], 3), x.code)"
+    ],
+    2: [
+        "combine_packets(x::Packet, y::Packet)::Packet = "
+        "Packet(ntuple(i -> x.triple[i] + y.triple[i], 3), "
+        "xor(x.code, y.code))"
+    ],
+}
+loss = """
+packet_loss(p::Packet, y::Packet)::Float64 =
+    sum((p.triple[i] - y.triple[i])^2 for i in 1:3) +
+    Float64(count_ones(xor(p.code, y.code)))
+"""
+
+model = PySRRegressor(
+    type_spec=packet,
+    operators=operators,
+    elementwise_loss=loss,
+)
+```
+
+`sample(rng) -> Packet` creates constant leaves. `mutate(rng, value, temperature) -> Packet` perturbs continuous fields and evolves the discrete field. `scalar_constants(Packet) -> Vector{Float64}` exposes only optimizable scalars; `with_scalar_constants(Packet, Vector{Float64}) -> Packet` rebuilds the value after optimization and must preserve non-optimized fields. `is_valid(Packet) -> Bool` rejects invalid intermediate values. The extraction and reconstruction hooks must be supplied together.
+
+Optional hooks: `init` is a Julia callable `() -> Packet` for initialization; `string` is `Packet -> AbstractString` for printing; `preamble` is Julia source evaluated before the generated type and hooks; `loss_type` names the concrete `AbstractFloat` returned by a full custom objective. Elementwise losses cannot take `loss_type`; their return type is inferred, so the example annotates `packet_loss` as `Float64` to keep it concrete.
+
+When adapting this pattern, check that Python values match the declared field count and order; each field converts to its Julia type; every searched operator is type-stable and returns `Packet`; and the loss returns one finite real scalar per prediction-target pair.
+
 ## Custom operators
 
 Pass Julia definitions as strings, and always provide the SymPy mapping (with *SymPy* functions, never numpy/scipy, or export and `predict` will break):
