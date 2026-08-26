@@ -147,9 +147,9 @@ Template caveats (PySR 2.0):
 
 ## Custom value types with `TypeSpec`
 
-`TypeSpec` makes each expression-tree node hold a generated Julia struct instead of a scalar. It is independent of `expression_spec`: use both when values need custom types and the expression also needs a fixed structure.
+`TypeSpec` makes expression-tree nodes hold generated Julia structs. It is independent of `expression_spec`, so custom values can also use a fixed structure.
 
-A Python value supplies the struct fields in declaration order. Here one logical value is `((1.0, 2.0, 3.0), np.uint32(7))`: the outer pair supplies `triple` and `code`, while the inner tuple stays one field. Keep `X` two-dimensional and `y` one-dimensional; assign object-array cells individually so NumPy does not expand nested values into extra axes.
+Python values supply fields in declaration order. Here `((1.0, 2.0, 3.0), np.uint32(7))` supplies `triple` and `code`; the inner tuple remains one field. Keep `X` two-dimensional and `y` one-dimensional; assign object cells individually so NumPy does not create extra axes.
 
 ```python
 import numpy as np
@@ -165,7 +165,7 @@ packet = TypeSpec(
     "Packet",
     fields={"triple": "NTuple{3,Float64}", "code": "UInt32"},
     sample="rng -> Packet(ntuple(_ -> randn(rng), 3), rand(rng, UInt32))",
-    mutate="""(rng, value, temperature) -> begin
+    mutate="""function (rng, value::Packet, temperature::Float64)  # note annotation isn't required; shown for documentation purposes
         triple = ntuple(i -> value.triple[i] + temperature * randn(rng), 3)
         bit = UInt32(1) << rand(rng, 0:31)
         Packet(triple, xor(value.code, bit))
