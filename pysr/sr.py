@@ -14,6 +14,7 @@ import tempfile
 import threading
 import warnings
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, fields
 from functools import wraps
 from io import StringIO
@@ -104,14 +105,83 @@ _CHECKPOINT_SCHEMA_VERSION = 3
 
 ALREADY_RAN = False
 
-# Returns the Julia runtime to its pre-arming state; `exit_on_sigint(true)` is
-# the PYTHON_JULIACALL_HANDLE_SIGNALS=yes baseline (Julia has no getter for
-# the prior value).
-_RESET_STOP_JL = (
-    "SymbolicRegression.stop_fd[] = Cint(-1);"
-    " SymbolicRegression.stop_requested[] = false;"
-    " Base.exit_on_sigint(true)"
-)
+
+class _SigactionStorage(ctypes.Union):
+    _fields_ = [
+        ("alignment", ctypes.c_longdouble),
+        ("storage", ctypes.c_ubyte * 1024),
+    ]
+
+
+def _libc_with_sigaction():
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+    libc.sigaction.restype = ctypes.c_int
+    return libc
+
+
+def _checked_sigaction(libc, action, old_action):
+    result = libc.sigaction(signal.SIGINT, action, old_action)
+    if result != 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
+
+
+def _external_stop_supported() -> bool:
+    return bool(jl.seval("isdefined(SymbolicRegression, :ExternalStop)"))
+
+
+def _should_arm_external_stop() -> bool:
+    return (
+        os.name == "posix"
+        and threading.current_thread() is threading.main_thread()
+        and os.environ.get("PYTHON_JULIACALL_HANDLE_SIGNALS") == "yes"
+        and _external_stop_supported()
+    )
+
+
+@contextmanager
+def _external_stop_signal_context(model):
+    interrupted = False
+    external_stop = None
+
+    with ExitStack() as cleanup:
+        if _should_arm_external_stop():
+            stop_read_fd, stop_write_fd = os.pipe()
+            cleanup.callback(os.close, stop_read_fd)
+            cleanup.callback(os.close, stop_write_fd)
+            os.set_blocking(stop_read_fd, False)
+            os.set_blocking(stop_write_fd, False)
+            external_stop = SymbolicRegression.ExternalStop(stop_read_fd, signal.SIGINT)
+
+            libc = _libc_with_sigaction()
+            saved_sigaction = _SigactionStorage()
+            _checked_sigaction(libc, None, ctypes.byref(saved_sigaction))
+            cleanup.callback(
+                _checked_sigaction, libc, ctypes.byref(saved_sigaction), None
+            )
+
+            saved_python_handler = signal.getsignal(signal.SIGINT)
+
+            def record_interrupt(*_):
+                nonlocal interrupted
+                interrupted = True
+
+            signal.signal(signal.SIGINT, record_interrupt)
+            cleanup.callback(signal.signal, signal.SIGINT, saved_python_handler)
+            previous_wakeup_fd = signal.set_wakeup_fd(stop_write_fd)
+            cleanup.callback(signal.set_wakeup_fd, previous_wakeup_fd)
+
+        yield external_stop
+
+    model.interrupted_ = interrupted
+    if interrupted:
+        warnings.warn(
+            "The search was interrupted. Returning partial results.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
 
 pysr_logger = logging.getLogger(__name__)
 
@@ -2722,51 +2792,10 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
         else:
             addprocs_function = cluster_manager
-        # Convert SIGINT into a cooperative stop (see SymbolicRegression.stop_fd).
-        restore_sigint = None
-        if (
-            os.name == "posix"
-            and threading.current_thread() is threading.main_thread()
-            and jl.seval("isdefined(SymbolicRegression, :stop_fd_trigger)")
-        ):
-            stop_read_fd, stop_write_fd = os.pipe()
-            os.set_blocking(stop_write_fd, False)
-            libc = ctypes.CDLL(None)
-            saved_sigaction = (ctypes.c_char * 512)()
-            saved_py_handler = None
-            prev_wakeup_fd = None
-            try:
-                # Backend setup first: it is the only step that can
-                # realistically raise, and it precedes any signal mutation.
-                jl.seval(f"""
-                    # Julia's signal listener thread can win the race for a
-                    # process-directed SIGINT even while CPython's handler is
-                    # installed; keep a listener-caught SIGINT from killing
-                    # the process. Restored in the `finally` below.
-                    Base.exit_on_sigint(false)
-                    SymbolicRegression.stop_requested[] = false
-                    SymbolicRegression.stop_fd_trigger[] = UInt8({int(signal.SIGINT)})
-                    SymbolicRegression.stop_fd[] = Cint({stop_read_fd})
-                    """)
-                # `signal.signal` below replaces the native SIGINT disposition
-                # (installed by JuliaCall, not visible to `signal.getsignal`),
-                # so snapshot it via sigaction to reinstate it afterwards.
-                libc.sigaction(int(signal.SIGINT), None, saved_sigaction)
-                saved_py_handler = signal.getsignal(signal.SIGINT)
-                signal.signal(signal.SIGINT, lambda *_: None)
-                prev_wakeup_fd = signal.set_wakeup_fd(stop_write_fd)
-            except BaseException:
-                if prev_wakeup_fd is not None:
-                    signal.set_wakeup_fd(prev_wakeup_fd)
-                if saved_py_handler is not None:
-                    signal.signal(signal.SIGINT, saved_py_handler)
-                    libc.sigaction(int(signal.SIGINT), saved_sigaction, None)
-                os.close(stop_write_fd)
-                os.close(stop_read_fd)
-                jl.seval(_RESET_STOP_JL)
-                raise
-            restore_sigint = saved_py_handler
-        try:
+        with _external_stop_signal_context(self) as external_stop:
+            external_stop_kw = (
+                {"external_stop": external_stop} if external_stop is not None else {}
+            )
             out = SymbolicRegression.equation_search(
                 jl_X,
                 jl_y,
@@ -2799,17 +2828,9 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 and len(y.shape) == 1,
                 verbosity=int(self.verbosity),
                 logger=logger,
+                **external_stop_kw,
                 **({"loss_type": loss_type} if loss_type is not None else {}),
             )
-        finally:
-            if restore_sigint is not None:
-                assert prev_wakeup_fd is not None
-                signal.set_wakeup_fd(prev_wakeup_fd)
-                signal.signal(signal.SIGINT, restore_sigint)
-                libc.sigaction(int(signal.SIGINT), saved_sigaction, None)
-                jl.seval(_RESET_STOP_JL)
-                os.close(stop_write_fd)
-                os.close(stop_read_fd)
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
             if not self.warm_start:

@@ -1,11 +1,10 @@
 """End-to-end tests for graceful SIGINT handling during a search.
 
-Both tests drive a *separate* process (a plain Python subprocess and a real
-Jupyter kernel) so that signal delivery is tested exactly as a user would
-trigger it. They skip themselves when the installed backend does not provide
-the cooperative-stop API (``SymbolicRegression.stop_fd_trigger``).
+The subprocess and Jupyter tests require a paired SymbolicRegression backend
+with the per-search ExternalStop API.
 """
 
+import ctypes
 import os
 import signal
 import subprocess
@@ -15,11 +14,138 @@ import textwrap
 import threading
 import time
 import unittest
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+import pysr.sr as sr_module
 
 # Interrupts are only delivered this way on POSIX; the feature is gated
 # identically in `pysr/sr.py`.
 POSIX = os.name == "posix"
+
+
+@unittest.skipUnless(POSIX, "SIGINT signal contexts are POSIX-only")
+class TestExternalStopSignalContext(unittest.TestCase):
+    def setUp(self):
+        self.native_before = self._native_action()
+        self.python_before = signal.getsignal(signal.SIGINT)
+        self.stop_fds = []
+        backend = SimpleNamespace(ExternalStop=self._external_stop)
+        self.patches = (
+            mock.patch.dict(os.environ, {"PYTHON_JULIACALL_HANDLE_SIGNALS": "yes"}),
+            mock.patch.object(sr_module, "SymbolicRegression", backend),
+            mock.patch.object(sr_module, "_external_stop_supported", return_value=True),
+        )
+        for patcher in self.patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        self.assertEqual(signal.getsignal(signal.SIGINT), self.python_before)
+        self.assertEqual(self._native_action(), self.native_before)
+
+    def _external_stop(self, read_fd, trigger):
+        self.stop_fds.append(read_fd)
+        return SimpleNamespace(fd=read_fd, trigger=trigger)
+
+    @staticmethod
+    def _native_action():
+        class Action(ctypes.Union):
+            _fields_ = [
+                ("alignment", ctypes.c_longdouble),
+                ("storage", ctypes.c_ubyte * 1024),
+            ]
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+        libc.sigaction.restype = ctypes.c_int
+        action = Action()
+        result = libc.sigaction(signal.SIGINT, None, ctypes.byref(action))
+        if result != 0:
+            errno = ctypes.get_errno()
+            raise OSError(errno, os.strerror(errno))
+        return bytes(action)
+
+    @staticmethod
+    def _current_wakeup_fd():
+        current = signal.set_wakeup_fd(-1)
+        signal.set_wakeup_fd(current)
+        return current
+
+    def _assert_stop_fds_closed(self):
+        for fd in self.stop_fds:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    def test_cleanup_after_normal_return_restores_existing_wakeup_fd(self):
+        wakeup_read, wakeup_write = os.pipe()
+        os.set_blocking(wakeup_write, False)
+        previous_wakeup = signal.set_wakeup_fd(wakeup_write)
+        try:
+            model = SimpleNamespace()
+            with sr_module._external_stop_signal_context(model) as external_stop:
+                self.assertEqual(external_stop.fd, self.stop_fds[0])
+                self.assertEqual(external_stop.trigger, signal.SIGINT)
+                self.assertFalse(os.get_blocking(external_stop.fd))
+                self.assertFalse(os.get_blocking(self._current_wakeup_fd()))
+            self.assertEqual(self._current_wakeup_fd(), wakeup_write)
+            self.assertFalse(model.interrupted_)
+            self._assert_stop_fds_closed()
+        finally:
+            signal.set_wakeup_fd(previous_wakeup)
+            os.close(wakeup_write)
+            os.close(wakeup_read)
+
+    def test_cleanup_after_search_error(self):
+        model = SimpleNamespace()
+        with self.assertRaisesRegex(RuntimeError, "search failed"):
+            with sr_module._external_stop_signal_context(model):
+                raise RuntimeError("search failed")
+        self._assert_stop_fds_closed()
+
+    def test_cleanup_continues_after_cleanup_failure(self):
+        real_set_wakeup_fd = signal.set_wakeup_fd
+        calls = []
+
+        def fail_after_restoring(fd):
+            result = real_set_wakeup_fd(fd)
+            calls.append(fd)
+            if len(calls) == 2:
+                raise RuntimeError("injected cleanup failure")
+            return result
+
+        model = SimpleNamespace()
+        with mock.patch.object(signal, "set_wakeup_fd", fail_after_restoring):
+            with self.assertRaisesRegex(RuntimeError, "injected cleanup failure"):
+                with sr_module._external_stop_signal_context(model):
+                    pass
+        self._assert_stop_fds_closed()
+
+    def test_signals_disabled_does_not_arm(self):
+        model = SimpleNamespace(interrupted_=True)
+        with (
+            mock.patch.dict(os.environ, {"PYTHON_JULIACALL_HANDLE_SIGNALS": "no"}),
+            mock.patch.object(os, "pipe") as pipe,
+            mock.patch.object(sr_module, "_external_stop_supported") as supported,
+        ):
+            with sr_module._external_stop_signal_context(model) as external_stop:
+                self.assertIsNone(external_stop)
+        pipe.assert_not_called()
+        supported.assert_not_called()
+        self.assertFalse(model.interrupted_)
+
+    def test_interrupted_return_sets_attribute_and_warns(self):
+        model = SimpleNamespace()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with sr_module._external_stop_signal_context(model):
+                handler = signal.getsignal(signal.SIGINT)
+                handler(signal.SIGINT, None)
+        self.assertTrue(model.interrupted_)
+        self.assertTrue(any("partial" in str(item.message).lower() for item in caught))
+
 
 # The child asserts partial results, a byte-identical native SIGINT
 # disposition after the fit, and that a second fit in the same process works.
@@ -28,17 +154,18 @@ CHILD_SCRIPT = textwrap.dedent("""
     import os
     import signal
     import sys
+    import warnings
 
     import numpy as np
 
     from pysr import PySRRegressor, jl
 
     supported = os.name == "posix" and jl.seval(
-        "isdefined(SymbolicRegression, :stop_fd_trigger)"
+        "isdefined(SymbolicRegression, :ExternalStop)"
     )
     print(f"SUPPORT:{supported}", flush=True)
     if not supported:
-        sys.exit(0)
+        sys.exit("paired backend lacks SymbolicRegression.ExternalStop")
 
     libc = ctypes.CDLL(None)
     before = (ctypes.c_char * 512)()
@@ -55,8 +182,12 @@ CHILD_SCRIPT = textwrap.dedent("""
         temp_equation_file=True,
     )
     print("SEARCHING", flush=True)
-    model.fit(X, y)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model.fit(X, y)
     assert model.equations_ is not None
+    assert model.interrupted_ is True
+    assert any("partial" in str(item.message).lower() for item in caught)
     print(f"INTERRUPTED_OK:{len(model.equations_)}", flush=True)
 
     after = (ctypes.c_char * 512)()
@@ -72,14 +203,13 @@ CHILD_SCRIPT = textwrap.dedent("""
     )
     model2.fit(X, y)
     assert model2.equations_ is not None
+    assert model2.interrupted_ is False
     print("SECOND_FIT_OK", flush=True)
     """)
 
-# Wait this long after the SEARCHING marker before the first SIGINT, so the
-# fit has armed the cooperative handler; repeat in case Julia's signal
-# listener thread wins the delivery race for one signal.
+# Wait this long after the SEARCHING marker so the fit has armed the cooperative
+# handler before the single user interrupt.
 FIRST_SIGNAL_DELAY = 15.0
-SIGNAL_REPEAT_INTERVAL = 15.0
 TOTAL_TIMEOUT = 600.0
 
 
@@ -101,26 +231,23 @@ class TestSubprocessInterrupt(unittest.TestCase):
             watchdog = threading.Timer(TOTAL_TIMEOUT, p.kill)
             watchdog.start()
 
-            def send_signals_after_marker():
+            def send_signal_after_marker():
                 time.sleep(FIRST_SIGNAL_DELAY)
-                while p.poll() is None:
-                    try:
-                        os.kill(p.pid, signal.SIGINT)
-                    except ProcessLookupError:
-                        return
-                    time.sleep(SIGNAL_REPEAT_INTERVAL)
+                if p.poll() is not None:
+                    return
+                try:
+                    os.kill(p.pid, signal.SIGINT)
+                except ProcessLookupError:
+                    pass
 
             lines = []
             signaler = None
             try:
                 for line in p.stdout:
                     lines.append(line.strip())
-                    if line.startswith("SUPPORT:False"):
-                        p.wait()
-                        self.skipTest("backend lacks the cooperative-stop API")
                     if line.startswith("SEARCHING"):
                         signaler = threading.Thread(
-                            target=send_signals_after_marker, daemon=True
+                            target=send_signal_after_marker, daemon=True
                         )
                         signaler.start()
                 p.wait()
@@ -152,6 +279,7 @@ JUPYTER_FIT_CELL = textwrap.dedent("""
     )
     print("SEARCHING", flush=True)
     model.fit(X, y)
+    assert model.interrupted_ is True
     print("INTERRUPTED_OK", len(model.equations_), flush=True)
     """)
 
@@ -178,29 +306,21 @@ class TestJupyterInterrupt(unittest.TestCase):
             reply = kc.execute_interactive(
                 "import os; from pysr import jl\n"
                 "print('SUPPORT:', os.name == 'posix' and jl.seval("
-                "'isdefined(SymbolicRegression, :stop_fd_trigger)'), flush=True)",
+                "'isdefined(SymbolicRegression, :ExternalStop)'), flush=True)",
                 timeout=TOTAL_TIMEOUT,
                 output_hook=collect,
             )
             self.assertEqual(reply["content"]["status"], "ok")
-            if "SUPPORT: True" not in "".join(streams):
-                self.skipTest("backend lacks the cooperative-stop API")
+            self.assertIn("SUPPORT: True", "".join(streams))
 
             msg_id = kc.execute(JUPYTER_FIT_CELL)
             self._await_stream(kc, "SEARCHING", timeout=TOTAL_TIMEOUT)
 
-            # Interrupt like the Jupyter UI (interrupt_mode="signal" sends
-            # SIGINT to the kernel process); repeat in case one delivery is
-            # consumed by Julia's signal listener thread.
-            deadline = time.monotonic() + TOTAL_TIMEOUT
+            # Interrupt once, exactly like one click on Jupyter's interrupt action.
             time.sleep(FIRST_SIGNAL_DELAY)
-            reply = None
-            while reply is None:
-                km.interrupt_kernel()
-                reply = self._await_reply(kc, msg_id, timeout=SIGNAL_REPEAT_INTERVAL)
-                self.assertLess(
-                    time.monotonic(), deadline, "kernel never returned from fit"
-                )
+            km.interrupt_kernel()
+            reply = self._await_reply(kc, msg_id, timeout=TOTAL_TIMEOUT)
+            assert reply is not None, "kernel never returned from fit"
             # The fit returns normally with partial results: no error status.
             self.assertEqual(reply["content"]["status"], "ok")
 
@@ -237,7 +357,11 @@ class TestJupyterInterrupt(unittest.TestCase):
 
 
 def runtests(just_tests=False):
-    tests = [TestSubprocessInterrupt, TestJupyterInterrupt]
+    tests = [
+        TestExternalStopSignalContext,
+        TestSubprocessInterrupt,
+        TestJupyterInterrupt,
+    ]
     if just_tests:
         return tests
     suite = unittest.TestSuite()
