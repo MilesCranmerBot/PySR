@@ -20,10 +20,34 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pysr.interrupt as interrupt_module
+from pysr.sr import _resolve_input_stream as sr_resolve
 
 # Interrupts are only delivered this way on POSIX; the feature is gated
 # identically in `pysr/interrupt.py`.
 POSIX = os.name == "posix"
+
+
+class TestResolveInputStream(unittest.TestCase):
+    def test_auto_uses_stdin_on_interactive_terminal(self):
+        with mock.patch.object(sys, "stdin") as stdin:
+            stdin.isatty.return_value = True
+            self.assertEqual(sr_resolve("auto"), "stdin")
+
+    def test_auto_disables_stdin_watching_without_terminal(self):
+        with mock.patch.object(sys, "stdin") as stdin:
+            stdin.isatty.return_value = False
+            self.assertEqual(sr_resolve("auto"), "devnull")
+
+    def test_auto_handles_missing_or_closed_stdin(self):
+        with mock.patch.object(sys, "stdin", None):
+            self.assertEqual(sr_resolve("auto"), "devnull")
+        with mock.patch.object(sys, "stdin") as stdin:
+            stdin.isatty.side_effect = ValueError("I/O operation on closed file")
+            self.assertEqual(sr_resolve("auto"), "devnull")
+
+    def test_explicit_values_pass_through(self):
+        for value in ("stdin", "devnull", "Main.my_stream"):
+            self.assertEqual(sr_resolve(value), value)
 
 
 @unittest.skipUnless(POSIX, "SIGINT signal contexts are POSIX-only")
@@ -362,6 +386,7 @@ class TestJupyterInterrupt(unittest.TestCase):
 
 def runtests(just_tests=False):
     tests = [
+        TestResolveInputStream,
         TestExternalStopSignalContext,
         TestSubprocessInterrupt,
         TestJupyterInterrupt,

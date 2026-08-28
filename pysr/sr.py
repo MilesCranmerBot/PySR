@@ -106,6 +106,22 @@ ALREADY_RAN = False
 pysr_logger = logging.getLogger(__name__)
 
 
+def _resolve_input_stream(input_stream: str) -> str:
+    """Map ``"auto"`` to ``"stdin"`` on an interactive terminal, else ``"devnull"``.
+
+    Watching stdin for the ``'q'`` quit command (and advertising it in the
+    progress output) only makes sense when a user can actually type into
+    stdin; in notebooks, pipes, and CI it cannot work.
+    """
+    if input_stream != "auto":
+        return input_stream
+    try:
+        interactive = sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        interactive = False
+    return "stdin" if interactive else "devnull"
+
+
 def _process_constraints(
     operators: dict[int, list[str]],
     constraints: dict[str, int | tuple[int, ...]],
@@ -900,11 +916,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
     default_plugins : Sequence[AbstractPlugin] | None
         Default plugin configurations. Default is `None`.
     input_stream : str
-        The stream to read user input from. By default, this is `"stdin"`.
-        If you encounter issues with reading from `stdin`, like a hang,
-        you can simply pass `"devnull"` to this argument. You can also
-        reference an arbitrary Julia object in the `Main` namespace.
-        Default is `"stdin"`.
+        The stream to read user input from, used for the `'q'` + `<enter>`
+        command that stops a search early. `"auto"` reads from `"stdin"`
+        when attached to an interactive terminal and otherwise disables
+        stdin watching via `"devnull"` (for example in Jupyter, where typed
+        input never reaches the search). You can also pass `"stdin"` or
+        `"devnull"` explicitly, or reference an arbitrary Julia object in
+        the `Main` namespace. Default is `"auto"`.
     run_id : str
         A unique identifier for the run. Will be generated using the
         current date and time if not provided.
@@ -1173,7 +1191,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         logger_spec: AbstractLoggerSpec | None = None,
         plugins: Sequence[AbstractPlugin] | None = None,
         default_plugins: Sequence[AbstractPlugin] | None = None,
-        input_stream: str = "stdin",
+        input_stream: str = "auto",
         run_id: str | None = None,
         output_directory: str | None = None,
         temp_equation_file: bool = False,
@@ -2470,7 +2488,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else type_spec_runtime.early_stop_condition
         )
 
-        input_stream = jl.seval(self.input_stream)
+        input_stream = jl.seval(_resolve_input_stream(self.input_stream))
 
         load_required_packages(
             turbo=self.turbo,
