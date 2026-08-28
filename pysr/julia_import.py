@@ -35,6 +35,10 @@ else:
         ("PYTHON_JULIACALL_HANDLE_SIGNALS", "yes"),
         ("PYTHON_JULIACALL_THREADS", "auto"),
         ("PYTHON_JULIACALL_OPTLEVEL", "3"),
+        # Don't hijack `%%julia` magics in notebooks unless asked;
+        # opt back in with PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION=yes
+        # or `%load_ext juliacall`.
+        ("PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION", "no"),
     ):
         os.environ[k] = os.environ.get(k, default)
 
