@@ -139,6 +139,8 @@ class TestStartup(unittest.TestCase):
             ({}, "no"),
             ({autoload_key: "yes"}, "yes"),
             ({deprecated_key: "yes"}, "yes"),
+            # Deprecated passthrough overwrites the explicit juliacall var:
+            ({autoload_key: "no", deprecated_key: "yes"}, "yes"),
         ]
         for extra_env, expected in cases:
             env = {
