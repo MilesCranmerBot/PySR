@@ -19,10 +19,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import pysr.sr as sr_module
+import pysr.interrupt as interrupt_module
 
 # Interrupts are only delivered this way on POSIX; the feature is gated
-# identically in `pysr/sr.py`.
+# identically in `pysr/interrupt.py`.
 POSIX = os.name == "posix"
 
 
@@ -35,8 +35,10 @@ class TestExternalStopSignalContext(unittest.TestCase):
         backend = SimpleNamespace(ExternalStop=self._external_stop)
         self.patches = (
             mock.patch.dict(os.environ, {"PYTHON_JULIACALL_HANDLE_SIGNALS": "yes"}),
-            mock.patch.object(sr_module, "SymbolicRegression", backend),
-            mock.patch.object(sr_module, "_external_stop_supported", return_value=True),
+            mock.patch.object(interrupt_module, "SymbolicRegression", backend),
+            mock.patch.object(
+                interrupt_module, "_external_stop_supported", return_value=True
+            ),
         )
         for patcher in self.patches:
             patcher.start()
@@ -85,7 +87,7 @@ class TestExternalStopSignalContext(unittest.TestCase):
         previous_wakeup = signal.set_wakeup_fd(wakeup_write)
         try:
             model = SimpleNamespace()
-            with sr_module._external_stop_signal_context(model) as external_stop:
+            with interrupt_module._external_stop_signal_context(model) as external_stop:
                 self.assertEqual(external_stop.fd, self.stop_fds[0])
                 self.assertEqual(external_stop.trigger, signal.SIGINT)
                 self.assertFalse(os.get_blocking(external_stop.fd))
@@ -101,7 +103,7 @@ class TestExternalStopSignalContext(unittest.TestCase):
     def test_cleanup_after_search_error(self):
         model = SimpleNamespace()
         with self.assertRaisesRegex(RuntimeError, "search failed"):
-            with sr_module._external_stop_signal_context(model):
+            with interrupt_module._external_stop_signal_context(model):
                 raise RuntimeError("search failed")
         self._assert_stop_fds_closed()
 
@@ -119,7 +121,7 @@ class TestExternalStopSignalContext(unittest.TestCase):
         model = SimpleNamespace()
         with mock.patch.object(signal, "set_wakeup_fd", fail_after_restoring):
             with self.assertRaisesRegex(RuntimeError, "injected cleanup failure"):
-                with sr_module._external_stop_signal_context(model):
+                with interrupt_module._external_stop_signal_context(model):
                     pass
         self._assert_stop_fds_closed()
 
@@ -128,9 +130,11 @@ class TestExternalStopSignalContext(unittest.TestCase):
         with (
             mock.patch.dict(os.environ, {"PYTHON_JULIACALL_HANDLE_SIGNALS": "no"}),
             mock.patch.object(os, "pipe") as pipe,
-            mock.patch.object(sr_module, "_external_stop_supported") as supported,
+            mock.patch.object(
+                interrupt_module, "_external_stop_supported"
+            ) as supported,
         ):
-            with sr_module._external_stop_signal_context(model) as external_stop:
+            with interrupt_module._external_stop_signal_context(model) as external_stop:
                 self.assertIsNone(external_stop)
         pipe.assert_not_called()
         supported.assert_not_called()
@@ -140,7 +144,7 @@ class TestExternalStopSignalContext(unittest.TestCase):
         model = SimpleNamespace()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            with sr_module._external_stop_signal_context(model):
+            with interrupt_module._external_stop_signal_context(model):
                 handler = signal.getsignal(signal.SIGINT)
                 handler(signal.SIGINT, None)
         self.assertTrue(model.interrupted_)
