@@ -3517,10 +3517,8 @@ def _mutate_parameter(param_name: str, param_value):
         and param_value == True
         and "buffer" not in sys.stdout.__dir__()
     ):
-        warnings.warn(
-            "Note: it looks like you are running in Jupyter. "
-            "The progress bar will be turned off."
-        )
+        # The progress bar needs a real stdout buffer (e.g., not Jupyter's
+        # stream proxy), so fall back to plain printing silently.
         return False
 
     return param_value
