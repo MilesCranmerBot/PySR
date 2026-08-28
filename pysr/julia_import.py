@@ -6,6 +6,18 @@ from typing import cast
 
 from .julia_registry_helpers import try_with_registry_fallback
 
+autoload_extensions = os.environ.get("PYSR_AUTOLOAD_EXTENSIONS")
+if autoload_extensions is not None:
+    warnings.warn(
+        "PYSR_AUTOLOAD_EXTENSIONS is deprecated and will be removed in a future release. "
+        "Set PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION instead.",
+        FutureWarning,
+    )
+    # Only fill the gap; an explicitly set juliacall variable takes precedence.
+    os.environ.setdefault(
+        "PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION", autoload_extensions
+    )
+
 # Check if JuliaCall is already loaded, and if so, warn the user
 # about the relevant environment variables. If not loaded,
 # set up sensible defaults.
@@ -41,12 +53,6 @@ else:
         ("PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION", "no"),
     ):
         os.environ[k] = os.environ.get(k, default)
-
-
-autoload_extensions = os.environ.get("PYSR_AUTOLOAD_EXTENSIONS")
-if autoload_extensions is not None:
-    # Deprecated; so just pass to juliacall
-    os.environ["PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION"] = autoload_extensions
 
 
 def _import_juliacall():

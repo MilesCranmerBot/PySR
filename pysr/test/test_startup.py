@@ -139,8 +139,8 @@ class TestStartup(unittest.TestCase):
             ({}, "no"),
             ({autoload_key: "yes"}, "yes"),
             ({deprecated_key: "yes"}, "yes"),
-            # Deprecated passthrough overwrites the explicit juliacall var:
-            ({autoload_key: "no", deprecated_key: "yes"}, "yes"),
+            # An explicitly set juliacall var beats the deprecated alias:
+            ({autoload_key: "no", deprecated_key: "yes"}, "no"),
         ]
         for extra_env, expected in cases:
             env = {
@@ -161,6 +161,11 @@ class TestStartup(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             self.assertIn(f"autoload={expected}", result.stdout.decode())
+            deprecation_expected = deprecated_key in extra_env
+            self.assertEqual(
+                "PYSR_AUTOLOAD_EXTENSIONS is deprecated" in result.stderr.decode(),
+                deprecation_expected,
+            )
 
     def test_notebook(self):
         if platform.system() == "Windows":
