@@ -49,7 +49,7 @@ class TestResolveInputStream(unittest.TestCase):
 @unittest.skipUnless(POSIX, "SIGINT signal contexts are POSIX-only")
 class TestExternalStopSignalContext(unittest.TestCase):
     def setUp(self):
-        self.native_before = self._native_action()
+        self.native_handler_before = self._native_handler()
         self.python_before = signal.getsignal(signal.SIGINT)
         self.stop_fds = []
         backend = SimpleNamespace(ExternalStop=self._external_stop)
@@ -63,16 +63,21 @@ class TestExternalStopSignalContext(unittest.TestCase):
 
     def tearDown(self):
         self.assertEqual(signal.getsignal(signal.SIGINT), self.python_before)
-        self.assertEqual(self._native_action(), self.native_before)
+        self.assertEqual(self._native_handler(), self.native_handler_before)
 
     def _external_stop(self, read_fd, trigger):
         self.stop_fds.append(read_fd)
         return SimpleNamespace(fd=read_fd, trigger=trigger)
 
     @staticmethod
-    def _native_action():
+    def _native_handler():
+        # Only `sa_handler` is compared. `sigaction` writes `sizeof(struct
+        # sigaction)` bytes and, on glibc, fills just 8 of the 128 `sa_mask`
+        # bytes; the rest of the buffer is untouched padding that varies
+        # between calls. `sa_handler` is the first member on Linux and Darwin.
         class Action(ctypes.Union):
             _fields_ = [
+                ("handler", ctypes.c_void_p),
                 ("alignment", ctypes.c_longdouble),
                 ("storage", ctypes.c_ubyte * 1024),
             ]
@@ -85,7 +90,7 @@ class TestExternalStopSignalContext(unittest.TestCase):
         if result != 0:
             errno = ctypes.get_errno()
             raise OSError(errno, os.strerror(errno))
-        return bytes(action)
+        return action.handler
 
     @staticmethod
     def _current_wakeup_fd():
@@ -176,8 +181,15 @@ CHILD_SCRIPT = textwrap.dedent("""
     from pysr import PySRRegressor
 
     libc = ctypes.CDLL(None)
-    before = (ctypes.c_char * 512)()
-    libc.sigaction(int(signal.SIGINT), None, before)
+
+    def native_handler():
+        # Only `sa_handler` is compared; the rest of the buffer is padding
+        # that `sigaction` leaves untouched and that varies between calls.
+        storage = (ctypes.c_char * 512)()
+        libc.sigaction(int(signal.SIGINT), None, storage)
+        return ctypes.cast(storage, ctypes.POINTER(ctypes.c_void_p)).contents.value
+
+    before = native_handler()
 
     rstate = np.random.RandomState(0)
     X = rstate.randn(150, 2)
@@ -198,9 +210,7 @@ CHILD_SCRIPT = textwrap.dedent("""
     assert any("partial" in str(item.message).lower() for item in caught)
     print(f"INTERRUPTED_OK:{len(model.equations_)}", flush=True)
 
-    after = (ctypes.c_char * 512)()
-    libc.sigaction(int(signal.SIGINT), None, after)
-    print(f"HANDLER_RESTORED:{bytes(before) == bytes(after)}", flush=True)
+    print(f"HANDLER_RESTORED:{native_handler() == before}", flush=True)
 
     model2 = PySRRegressor(
         niterations=2,
