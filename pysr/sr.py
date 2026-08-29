@@ -2715,9 +2715,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         else:
             addprocs_function = cluster_manager
         with _external_stop_signal_context(self) as external_stop:
-            external_stop_kw = (
-                {"external_stop": external_stop} if external_stop is not None else {}
-            )
             out = SymbolicRegression.equation_search(
                 jl_X,
                 jl_y,
@@ -2750,7 +2747,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
                 and len(y.shape) == 1,
                 verbosity=int(self.verbosity),
                 logger=logger,
-                **external_stop_kw,
+                external_stop=external_stop,
                 **({"loss_type": loss_type} if loss_type is not None else {}),
             )
         if self.logger_spec is not None:
