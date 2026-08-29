@@ -146,6 +146,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           activate-environment: pysr-test
           environment-file: environment.yml
+      - name: "Set up Julia"
+        uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
       - name: "Cache Julia"
         uses: julia-actions/cache@v3
         with:
