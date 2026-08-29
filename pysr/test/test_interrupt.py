@@ -71,10 +71,12 @@ class TestExternalStopSignalContext(unittest.TestCase):
 
     @staticmethod
     def _native_handler():
-        # Only `sa_handler` is compared. `sigaction` writes `sizeof(struct
-        # sigaction)` bytes and, on glibc, fills just 8 of the 128 `sa_mask`
-        # bytes; the rest of the buffer is untouched padding that varies
-        # between calls. `sa_handler` is the first member on Linux and Darwin.
+        # Only `sa_handler` is compared. ctypes zero-fills the buffer, so the
+        # bytes that differ between two consecutive calls are ones `sigaction`
+        # itself wrote: of the 128-byte `sa_mask`, only the leading bytes carry
+        # the kernel's signal set, and glibc fills the remainder from a
+        # temporary whose contents are indeterminate. `sa_handler` is the
+        # first member on both Linux and Darwin.
         class Action(ctypes.Union):
             _fields_ = [
                 ("handler", ctypes.c_void_p),
@@ -183,8 +185,9 @@ CHILD_SCRIPT = textwrap.dedent("""
     libc = ctypes.CDLL(None)
 
     def native_handler():
-        # Only `sa_handler` is compared; the rest of the buffer is padding
-        # that `sigaction` leaves untouched and that varies between calls.
+        # Only `sa_handler` is compared. ctypes zero-fills the buffer, so
+        # bytes past the kernel's signal set hold whatever `sigaction` wrote
+        # there and differ between calls.
         storage = (ctypes.c_char * 512)()
         libc.sigaction(int(signal.SIGINT), None, storage)
         return ctypes.cast(storage, ctypes.POINTER(ctypes.c_void_p)).contents.value
