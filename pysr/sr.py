@@ -80,6 +80,7 @@ from .utils import (
     ArrayLike,
     PathLike,
     _preprocess_julia_floats,
+    _resolve_input_stream,
     _safe_check_feature_names_in,
     _subscriptify,
     _suggest_keywords,
@@ -104,22 +105,6 @@ ALREADY_RAN = False
 
 
 pysr_logger = logging.getLogger(__name__)
-
-
-def _resolve_input_stream(input_stream: str) -> str:
-    """Map ``"auto"`` to ``"stdin"`` on an interactive terminal, else ``"devnull"``.
-
-    Watching stdin for the ``'q'`` quit command (and advertising it in the
-    progress output) only makes sense when a user can actually type into
-    stdin; in notebooks, pipes, and CI it cannot work.
-    """
-    if input_stream != "auto":
-        return input_stream
-    try:
-        interactive = sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        interactive = False
-    return "stdin" if interactive else "devnull"
 
 
 def _process_constraints(
@@ -915,14 +900,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         plugin type. Default is `None`.
     default_plugins : Sequence[AbstractPlugin] | None
         Default plugin configurations. Default is `None`.
-    input_stream : str
+    input_stream : str | None
         The stream to read user input from, used for the `'q'` + `<enter>`
-        command that stops a search early. `"auto"` reads from `"stdin"`
-        when attached to an interactive terminal and otherwise disables
-        stdin watching via `"devnull"` (for example in Jupyter, where typed
-        input never reaches the search). You can also pass `"stdin"` or
-        `"devnull"` explicitly, or reference an arbitrary Julia object in
-        the `Main` namespace. Default is `"auto"`.
+        command that stops a search early. `None` reads from `"stdin"` when
+        attached to an interactive terminal and otherwise disables stdin
+        watching via `"devnull"` (for example in Jupyter, where typed input
+        never reaches the search). You can also pass `"stdin"` or `"devnull"`
+        explicitly, or reference an arbitrary Julia object in the `Main`
+        namespace. Default is `None`.
     run_id : str
         A unique identifier for the run. Will be generated using the
         current date and time if not provided.
@@ -1191,7 +1176,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         logger_spec: AbstractLoggerSpec | None = None,
         plugins: Sequence[AbstractPlugin] | None = None,
         default_plugins: Sequence[AbstractPlugin] | None = None,
-        input_stream: str = "auto",
+        input_stream: str | None = None,
         run_id: str | None = None,
         output_directory: str | None = None,
         temp_equation_file: bool = False,
