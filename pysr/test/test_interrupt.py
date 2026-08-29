@@ -71,9 +71,9 @@ class TestExternalStopSignalContext(unittest.TestCase):
 
     @staticmethod
     def _native_handler():
-        # Compare only `sa_handler`, the first member on both Linux and
-        # Darwin. The other `struct sigaction` fields are not guaranteed to
-        # be stable across calls, so they are deliberately ignored.
+        # Compare only `sa_handler`. It is the whole of what this test
+        # asserts, and as the first member on both Linux and Darwin it needs
+        # no platform-specific struct offsets to read.
         class Action(ctypes.Union):
             _fields_ = [
                 ("handler", ctypes.c_void_p),
@@ -182,8 +182,8 @@ CHILD_SCRIPT = textwrap.dedent("""
     libc = ctypes.CDLL(None)
 
     def native_handler():
-        # Compare only `sa_handler`; the other fields are not guaranteed to
-        # be stable across calls.
+        # Compare only `sa_handler`: the first member on both platforms, and
+        # all this check needs.
         storage = (ctypes.c_char * 512)()
         libc.sigaction(int(signal.SIGINT), None, storage)
         return ctypes.cast(storage, ctypes.POINTER(ctypes.c_void_p)).contents.value
