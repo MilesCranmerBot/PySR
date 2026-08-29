@@ -80,7 +80,6 @@ from .utils import (
     ArrayLike,
     PathLike,
     _preprocess_julia_floats,
-    _resolve_input_stream,
     _safe_check_feature_names_in,
     _subscriptify,
     _suggest_keywords,
@@ -3507,6 +3506,22 @@ def _mutate_parameter(param_name: str, param_value):
         return False
 
     return param_value
+
+
+def _resolve_input_stream(input_stream: str | None) -> str:
+    """Map `None` to ``"stdin"`` on an interactive terminal, else ``"devnull"``.
+
+    Watching stdin for the ``'q'`` quit command (and advertising it in the
+    progress output) only makes sense when a user can actually type into
+    stdin; in notebooks, pipes, and CI it cannot work.
+    """
+    if input_stream is not None:
+        return input_stream
+    try:
+        interactive = sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        interactive = False
+    return "stdin" if interactive else "devnull"
 
 
 def _map_parallelism_params(

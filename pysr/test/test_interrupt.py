@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pysr.interrupt as interrupt_module
-from pysr.utils import _resolve_input_stream as sr_resolve
+from pysr.sr import _resolve_input_stream as sr_resolve
 
 # Interrupts are only delivered this way on POSIX; the feature is gated
 # identically in `pysr/interrupt.py`.

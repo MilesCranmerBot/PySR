@@ -3,7 +3,6 @@ from __future__ import annotations
 import difflib
 import inspect
 import re
-import sys
 from pathlib import Path
 from typing import Any, TypeVar, Union
 
@@ -72,19 +71,3 @@ def _suggest_keywords(cls, k: str) -> list[str]:
     ]
     suggestions = difflib.get_close_matches(k, valid_keywords, n=3)
     return suggestions
-
-
-def _resolve_input_stream(input_stream: str | None) -> str:
-    """Map `None` to ``"stdin"`` on an interactive terminal, else ``"devnull"``.
-
-    Watching stdin for the ``'q'`` quit command (and advertising it in the
-    progress output) only makes sense when a user can actually type into
-    stdin; in notebooks, pipes, and CI it cannot work.
-    """
-    if input_stream is not None:
-        return input_stream
-    try:
-        interactive = sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        interactive = False
-    return "stdin" if interactive else "devnull"
