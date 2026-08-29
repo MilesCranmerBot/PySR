@@ -131,6 +131,42 @@ class TestStartup(unittest.TestCase):
             )
             self.assertIn(warning_test["msg"], result.stderr.decode())
 
+    def test_autoload_extension_env_precedence(self):
+        autoload_key = "PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION"
+        deprecated_key = "PYSR_AUTOLOAD_EXTENSIONS"
+        cases = [
+            # (extra env, expected value after `import pysr`)
+            ({}, "no"),
+            ({autoload_key: "yes"}, "yes"),
+            ({deprecated_key: "yes"}, "yes"),
+            # An explicitly set juliacall var beats the deprecated alias:
+            ({autoload_key: "no", deprecated_key: "yes"}, "no"),
+        ]
+        for extra_env, expected in cases:
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in (autoload_key, deprecated_key)
+            }
+            env.update(extra_env)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    f'import pysr, os; print("autoload=" + os.environ["{autoload_key}"])',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertIn(f"autoload={expected}", result.stdout.decode())
+            deprecation_expected = deprecated_key in extra_env
+            self.assertEqual(
+                "PYSR_AUTOLOAD_EXTENSIONS is deprecated" in result.stderr.decode(),
+                deprecation_expected,
+            )
+
     def test_notebook(self):
         if platform.system() == "Windows":
             self.skipTest("Notebook test incompatible with Windows")
