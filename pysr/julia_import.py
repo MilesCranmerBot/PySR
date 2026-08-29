@@ -58,6 +58,7 @@ from juliacall import Main as jl  # type: ignore
 
 jl = cast(ModuleType, jl)
 
+
 jl_version = (jl.VERSION.major, jl.VERSION.minor, jl.VERSION.patch)
 
 jl.seval("using SymbolicRegression")
