@@ -9,7 +9,7 @@ import threading
 import warnings
 from contextlib import ExitStack, contextmanager
 
-from .julia_import import SymbolicRegression, jl
+from .julia_import import SymbolicRegression
 
 
 class _SigactionStorage(ctypes.Union):
@@ -33,16 +33,11 @@ def _checked_sigaction(libc, action, old_action):
         raise OSError(errno, os.strerror(errno))
 
 
-def _external_stop_supported() -> bool:
-    return bool(jl.seval("isdefined(SymbolicRegression, :ExternalStop)"))
-
-
 def _should_arm_external_stop() -> bool:
     return (
         os.name == "posix"
         and threading.current_thread() is threading.main_thread()
         and os.environ.get("PYTHON_JULIACALL_HANDLE_SIGNALS") == "yes"
-        and _external_stop_supported()
     )
 
 

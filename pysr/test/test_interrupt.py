@@ -1,8 +1,4 @@
-"""End-to-end tests for graceful SIGINT handling during a search.
-
-The subprocess and Jupyter tests require a paired SymbolicRegression backend
-with the per-search ExternalStop API.
-"""
+"""End-to-end tests for graceful SIGINT handling during a search."""
 
 import ctypes
 import os
@@ -60,9 +56,6 @@ class TestExternalStopSignalContext(unittest.TestCase):
         self.patches = (
             mock.patch.dict(os.environ, {"PYTHON_JULIACALL_HANDLE_SIGNALS": "yes"}),
             mock.patch.object(interrupt_module, "SymbolicRegression", backend),
-            mock.patch.object(
-                interrupt_module, "_external_stop_supported", return_value=True
-            ),
         )
         for patcher in self.patches:
             patcher.start()
@@ -154,14 +147,10 @@ class TestExternalStopSignalContext(unittest.TestCase):
         with (
             mock.patch.dict(os.environ, {"PYTHON_JULIACALL_HANDLE_SIGNALS": "no"}),
             mock.patch.object(os, "pipe") as pipe,
-            mock.patch.object(
-                interrupt_module, "_external_stop_supported"
-            ) as supported,
         ):
             with interrupt_module._external_stop_signal_context(model) as external_stop:
                 self.assertIsNone(external_stop)
         pipe.assert_not_called()
-        supported.assert_not_called()
         self.assertFalse(model.interrupted_)
 
     def test_interrupted_return_sets_attribute_and_warns(self):
@@ -179,21 +168,12 @@ class TestExternalStopSignalContext(unittest.TestCase):
 # disposition after the fit, and that a second fit in the same process works.
 CHILD_SCRIPT = textwrap.dedent("""
     import ctypes
-    import os
     import signal
-    import sys
     import warnings
 
     import numpy as np
 
-    from pysr import PySRRegressor, jl
-
-    supported = os.name == "posix" and jl.seval(
-        "isdefined(SymbolicRegression, :ExternalStop)"
-    )
-    print(f"SUPPORT:{supported}", flush=True)
-    if not supported:
-        sys.exit("paired backend lacks SymbolicRegression.ExternalStop")
+    from pysr import PySRRegressor
 
     libc = ctypes.CDLL(None)
     before = (ctypes.c_char * 512)()
@@ -325,22 +305,6 @@ class TestJupyterInterrupt(unittest.TestCase):
 
         km, kc = start_new_kernel()
         try:
-            streams = []
-
-            def collect(msg):
-                if msg["msg_type"] == "stream":
-                    streams.append(msg["content"]["text"])
-
-            reply = kc.execute_interactive(
-                "import os; from pysr import jl\n"
-                "print('SUPPORT:', os.name == 'posix' and jl.seval("
-                "'isdefined(SymbolicRegression, :ExternalStop)'), flush=True)",
-                timeout=TOTAL_TIMEOUT,
-                output_hook=collect,
-            )
-            self.assertEqual(reply["content"]["status"], "ok")
-            self.assertIn("SUPPORT: True", "".join(streams))
-
             msg_id = kc.execute(JUPYTER_FIT_CELL)
             self._await_stream(kc, "SEARCHING", timeout=TOTAL_TIMEOUT)
 
