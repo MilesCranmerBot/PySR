@@ -42,6 +42,7 @@ from .expression_specs import (
     TemplateExpressionSpec,
 )
 from .feature_selection import run_feature_selection
+from .interrupt import _external_stop_signal_context
 from .julia_extensions import load_required_packages
 from .julia_helpers import (
     _escape_filename,
@@ -100,6 +101,7 @@ except ImportError:
 _CHECKPOINT_SCHEMA_VERSION = 3
 
 ALREADY_RAN = False
+
 
 pysr_logger = logging.getLogger(__name__)
 
@@ -897,12 +899,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         plugin type. Default is `None`.
     default_plugins : Sequence[AbstractPlugin] | None
         Default plugin configurations. Default is `None`.
-    input_stream : str
-        The stream to read user input from. By default, this is `"stdin"`.
-        If you encounter issues with reading from `stdin`, like a hang,
-        you can simply pass `"devnull"` to this argument. You can also
-        reference an arbitrary Julia object in the `Main` namespace.
-        Default is `"stdin"`.
+    input_stream : str | None
+        The stream to read user input from, used for the `'q'` + `<enter>`
+        command that stops a search early. `None` reads from `"stdin"` when
+        attached to an interactive terminal and otherwise disables stdin
+        watching via `"devnull"` (for example in Jupyter, where typed input
+        never reaches the search). You can also pass `"stdin"` or `"devnull"`
+        explicitly, or reference an arbitrary Julia object in the `Main`
+        namespace. Default is `None`.
     run_id : str
         A unique identifier for the run. Will be generated using the
         current date and time if not provided.
@@ -1171,7 +1175,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         logger_spec: AbstractLoggerSpec | None = None,
         plugins: Sequence[AbstractPlugin] | None = None,
         default_plugins: Sequence[AbstractPlugin] | None = None,
-        input_stream: str = "stdin",
+        input_stream: str | None = None,
         run_id: str | None = None,
         output_directory: str | None = None,
         temp_equation_file: bool = False,
@@ -2468,7 +2472,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             else type_spec_runtime.early_stop_condition
         )
 
-        input_stream = jl.seval(self.input_stream)
+        input_stream = jl.seval(_resolve_input_stream(self.input_stream))
 
         load_required_packages(
             turbo=self.turbo,
@@ -2710,40 +2714,42 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             )
         else:
             addprocs_function = cluster_manager
-        out = SymbolicRegression.equation_search(
-            jl_X,
-            jl_y,
-            weights=jl_weights,
-            niterations=int(self.niterations),
-            variable_names=jl_array([str(v) for v in self.feature_names_in_]),
-            display_variable_names=jl_array(
-                [str(v) for v in self.display_feature_names_in_]
-            ),
-            y_variable_names=jl_y_variable_names,
-            X_units=jl_array(self.X_units_),
-            y_units=(
-                jl_array(self.y_units_)
-                if isinstance(self.y_units_, list)
-                else self.y_units_
-            ),
-            options=options,
-            guesses=jl_guesses,
-            numprocs=numprocs,
-            parallelism=parallelism,
-            saved_state=saved_state,
-            return_state=True,
-            run_id=self.run_id_,
-            addprocs_function=addprocs_function,
-            heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
-            worker_timeout=self.worker_timeout,
-            worker_imports=jl_worker_imports,
-            progress=runtime_params.progress
-            and self.verbosity > 0
-            and len(y.shape) == 1,
-            verbosity=int(self.verbosity),
-            logger=logger,
-            **({"loss_type": loss_type} if loss_type is not None else {}),
-        )
+        with _external_stop_signal_context(self) as external_stop:
+            out = SymbolicRegression.equation_search(
+                jl_X,
+                jl_y,
+                weights=jl_weights,
+                niterations=int(self.niterations),
+                variable_names=jl_array([str(v) for v in self.feature_names_in_]),
+                display_variable_names=jl_array(
+                    [str(v) for v in self.display_feature_names_in_]
+                ),
+                y_variable_names=jl_y_variable_names,
+                X_units=jl_array(self.X_units_),
+                y_units=(
+                    jl_array(self.y_units_)
+                    if isinstance(self.y_units_, list)
+                    else self.y_units_
+                ),
+                options=options,
+                guesses=jl_guesses,
+                numprocs=numprocs,
+                parallelism=parallelism,
+                saved_state=saved_state,
+                return_state=True,
+                run_id=self.run_id_,
+                addprocs_function=addprocs_function,
+                heap_size_hint_in_bytes=self.heap_size_hint_in_bytes,
+                worker_timeout=self.worker_timeout,
+                worker_imports=jl_worker_imports,
+                progress=runtime_params.progress
+                and self.verbosity > 0
+                and len(y.shape) == 1,
+                verbosity=int(self.verbosity),
+                logger=logger,
+                external_stop=external_stop,
+                **({"loss_type": loss_type} if loss_type is not None else {}),
+            )
         if self.logger_spec is not None:
             self.logger_spec.write_hparams(logger, self.get_params())
             if not self.warm_start:
@@ -3492,13 +3498,27 @@ def _mutate_parameter(param_name: str, param_value):
         and param_value == True
         and "buffer" not in sys.stdout.__dir__()
     ):
-        warnings.warn(
-            "Note: it looks like you are running in Jupyter. "
-            "The progress bar will be turned off."
-        )
+        # The progress bar needs a real stdout buffer (e.g., not Jupyter's
+        # stream proxy), so fall back to plain printing silently.
         return False
 
     return param_value
+
+
+def _resolve_input_stream(input_stream: str | None) -> str:
+    """Map `None` to ``"stdin"`` on an interactive terminal, else ``"devnull"``.
+
+    Watching stdin for the ``'q'`` quit command (and advertising it in the
+    progress output) only makes sense when a user can actually type into
+    stdin; in notebooks, pipes, and CI it cannot work.
+    """
+    if input_stream is not None:
+        return input_stream
+    try:
+        interactive = sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        interactive = False
+    return "stdin" if interactive else "devnull"
 
 
 def _map_parallelism_params(

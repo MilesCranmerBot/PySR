@@ -1792,7 +1792,7 @@ class TestMiscellaneous(unittest.TestCase):
 
         self.assertTrue(any("batch_size" in str(w.message) for w in caught))
 
-    def test_progress_disabled_when_stdout_lacks_buffer(self):
+    def test_progress_silently_disabled_when_stdout_lacks_buffer(self):
         fake_stdout = type(
             "FakeStdout", (), {"write": lambda self, *_args, **_kwargs: None}
         )()
@@ -1810,7 +1810,7 @@ class TestMiscellaneous(unittest.TestCase):
                 y = X[:, 0]
                 model.fit(X, y)
 
-        self.assertTrue(any("progress bar" in str(w.message) for w in caught))
+        self.assertFalse(any("progress bar" in str(w.message) for w in caught))
 
     def test_builtin_mutation_and_plugin_configs(self):
         from pysr import (
