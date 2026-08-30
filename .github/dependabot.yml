@@ -19,6 +19,14 @@ updates:
     directory: "/docs"
     schedule:
       interval: "daily"
+    groups:
+      js-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "pip"
     directory: "/"
