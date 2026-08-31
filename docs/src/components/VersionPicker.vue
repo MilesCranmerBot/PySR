@@ -71,10 +71,13 @@ const loadVersions = async () => {
       const scriptsLoaded = await waitForScriptsToLoad();
 
       if (scriptsLoaded && window.DOC_VERSIONS && window.DOCUMENTER_CURRENT_VERSION) {
-        versions.value = window.DOC_VERSIONS.map(v => ({
-          text: v,
-          link: absoluteUrl(`/${v}/`),
-        }));
+        versions.value = window.DOC_VERSIONS
+          // Prerelease folders such as v2.0.0a2 stay reachable by URL, out of the picker
+          .filter(v => v === 'dev' || v === 'stable' || /^v\d+(\.\d+){0,2}$/.test(v))
+          .map(v => ({
+            text: v,
+            link: absoluteUrl(`/${v}/`),
+          }));
         currentVersion.value = window.DOCUMENTER_CURRENT_VERSION;
       } else {
         versions.value = [{ text: 'dev', link: absoluteUrl('/dev/') }];
