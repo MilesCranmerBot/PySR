@@ -392,69 +392,6 @@ function, and automatic prediction or symbolic export cannot reproduce that
 reinterpretation. Keep the objective source and apply the same transformation
 when evaluating the selected equation.
 
-### Writing the objective in Python
-
-The examples above keep the whole objective in Julia. You can instead write
-the objective in pure Python, and keep only a thin shim on the Julia side. The
-shim locks Python's global interpreter lock (GIL), calls the Python function,
-and converts the result to the loss type. The Python function receives the
-tree, dataset, and options as Julia objects, and may itself call back into
-Julia, including `eval_tree_array`:
-
-```python
-import numpy as np
-from pysr import PySRRegressor, jl
-
-
-def python_objective(tree, dataset, options):
-    prediction, completed = jl.SymbolicRegression.eval_tree_array(
-        tree, dataset.X, options
-    )
-    if not completed:
-        return float("inf")
-
-    prediction = np.asarray(prediction)
-    target = np.asarray(dataset.y)
-    return float(np.mean((prediction - target) ** 2))
-
-
-jl.python_objective = python_objective
-
-jl.seval("""
-using PythonCall
-
-function python_objective_shim(
-    tree, dataset::Dataset{T,L}, options
-)::L where {T,L}
-    PythonCall.GIL.@lock begin
-        return pyconvert(L, python_objective(tree, dataset, options))
-    end
-end
-""")
-
-model = PySRRegressor(
-    loss_function="python_objective_shim",
-    precision=64,
-)
-```
-
-Three details matter here:
-
-- `PythonCall.GIL.@lock` is required. The search releases the GIL, so a shim
-  that calls Python without re-locking it crashes the process.
-- `precision=64` stores the data as `Float64`, so the Python float converts
-  exactly to the loss type `L`.
-- Always check the `completed` flag from `eval_tree_array`, and return an
-  infinite loss when it is false.
-
-This is an escape hatch rather than a fast path. Every objective evaluation
-crosses the language boundary, and concurrent evaluations serialise on the
-GIL. As a scale reference: a one-iteration search on a 12-point dataset called
-the Python objective 970 times with `parallelism="serial"` and 929 times with
-`parallelism="multithreading"` (one run each, Apple M1 Pro). A realistic
-search multiplies that by the iteration count. Objectives that need to run
-fast belong in Julia.
-
 ## 10. Dimensional constraints
 
 One other feature we can exploit is dimensional analysis.
