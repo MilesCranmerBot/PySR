@@ -1548,6 +1548,61 @@ class TestMiscellaneous(unittest.TestCase):
         # Holding the GIL across the search would leave one gap spanning it.
         self.assertLess(max(gaps), elapsed / 4)
 
+    def test_loss_function_can_call_back_into_python(self):
+        """A Julia loss_function shim can drive a Python objective mid-search."""
+        calls = {"n": 0}
+
+        def python_objective(tree, dataset, options):
+            calls["n"] += 1
+            prediction, completed = jl.SymbolicRegression.eval_tree_array(
+                tree, dataset.X, options
+            )
+            if not completed:
+                return float("inf")
+            prediction = np.asarray(prediction)
+            target = np.asarray(dataset.y)
+            return float(np.mean((prediction - target) ** 2))
+
+        jl.pysr_test_python_objective = python_objective
+        jl.seval("""
+            using PythonCall
+
+            function pysr_test_python_objective_shim(
+                tree, dataset::Dataset{T,L}, options
+            )::L where {T,L}
+                PythonCall.GIL.@lock begin
+                    return pyconvert(
+                        L, pysr_test_python_objective(tree, dataset, options)
+                    )
+                end
+            end
+            """)
+
+        X = np.arange(8.0).reshape(-1, 1)
+        y = 2.0 * X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            loss_function="pysr_test_python_objective_shim",
+            niterations=1,
+            populations=1,
+            population_size=20,
+            ncycles_per_iteration=1,
+            maxsize=7,
+            should_optimize_constants=False,
+            parallelism="serial",
+            deterministic=True,
+            random_state=0,
+            precision=64,
+            progress=False,
+            verbosity=0,
+            temp_equation_file=True,
+        )
+        model.fit(X, y)
+
+        self.assertGreater(calls["n"], 0)
+        self.assertTrue(np.all(np.isfinite(model.equations_["loss"])))
+
     def test_unfitted_julia_streams_are_none(self):
         model = PySRRegressor()
         self.assertIsNone(model.julia_options_)
