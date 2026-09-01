@@ -287,6 +287,18 @@ JUPYTER_FIT_CELL = textwrap.dedent("""
     rstate = np.random.RandomState(0)
     X = rstate.randn(150, 2)
     y = X[:, 0] * X[:, 1]
+
+    # Compile the search pipeline before the timed window opens, so that the
+    # interrupt lands on a running search rather than on Julia's warm-up.
+    warmup = PySRRegressor(
+        niterations=1,
+        populations=3,
+        verbosity=0,
+        progress=False,
+        temp_equation_file=True,
+    )
+    warmup.fit(X[:20], y[:20])
+
     model = PySRRegressor(
         niterations=1_000_000,
         populations=8,
@@ -297,6 +309,7 @@ JUPYTER_FIT_CELL = textwrap.dedent("""
     print("SEARCHING", flush=True)
     model.fit(X, y)
     assert model.interrupted_ is True
+    assert len(model.equations_) > 0, "search returned no partial results"
     print("INTERRUPTED_OK", len(model.equations_), flush=True)
     """)
 
@@ -305,8 +318,6 @@ class TestJupyterInterrupt(unittest.TestCase):
     """Drive a real ipykernel and interrupt it exactly like the Jupyter UI."""
 
     def test_kernel_interrupt_stops_search_and_kernel_survives(self):
-        if not POSIX:
-            self.skipTest("SIGINT-based interruption is POSIX-only")
         try:
             from jupyter_client.manager import start_new_kernel
         except ImportError:
