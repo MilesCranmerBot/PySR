@@ -160,7 +160,7 @@ class TestTypeSpecs(unittest.TestCase):
 
     def test_multithreaded_type_spec(self):
         X, y = string_data()
-        model = tiny_model(string_spec(), parallelism="multithreading")
+        model = tiny_model(string_spec(), parallelism="multithreading", niterations=10)
         model.fit(X, y)
         np.testing.assert_array_equal(model.predict(X), y)
 
