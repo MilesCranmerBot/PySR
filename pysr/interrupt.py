@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import signal
+import socket
 import threading
 import warnings
 from contextlib import ExitStack, contextmanager
@@ -35,10 +36,23 @@ def _checked_sigaction(libc, action, old_action):
 
 def _should_arm_external_stop() -> bool:
     return (
-        os.name == "posix"
-        and threading.current_thread() is threading.main_thread()
+        threading.current_thread() is threading.main_thread()
         and os.environ.get("PYTHON_JULIACALL_HANDLE_SIGNALS") == "yes"
     )
+
+
+def _stop_channel(cleanup: ExitStack) -> tuple[int, int]:
+    """Open a nonblocking pair of descriptors carrying the signal wakeup byte.
+
+    Windows writes that byte with `send` and can only poll sockets, so a socket
+    pair is the one transport that works everywhere.
+    """
+    read_end, write_end = socket.socketpair()
+    cleanup.callback(read_end.close)
+    cleanup.callback(write_end.close)
+    read_end.setblocking(False)
+    write_end.setblocking(False)
+    return read_end.fileno(), write_end.fileno()
 
 
 @contextmanager
@@ -48,19 +62,19 @@ def _external_stop_signal_context(model):
 
     with ExitStack() as cleanup:
         if _should_arm_external_stop():
-            stop_read_fd, stop_write_fd = os.pipe()
-            cleanup.callback(os.close, stop_read_fd)
-            cleanup.callback(os.close, stop_write_fd)
-            os.set_blocking(stop_read_fd, False)
-            os.set_blocking(stop_write_fd, False)
+            stop_read_fd, stop_write_fd = _stop_channel(cleanup)
             external_stop = SymbolicRegression.ExternalStop(stop_read_fd, signal.SIGINT)
 
-            libc = _libc_with_sigaction()
-            saved_sigaction = _SigactionStorage()
-            _checked_sigaction(libc, None, ctypes.byref(saved_sigaction))
-            cleanup.callback(
-                _checked_sigaction, libc, ctypes.byref(saved_sigaction), None
-            )
+            # `signal.signal` below replaces the SIGINT handler Julia installed
+            # for itself, and sigaction is the only way to put it back. Windows
+            # has none to save: Julia handles Ctrl-C through the console there.
+            if os.name == "posix":
+                libc = _libc_with_sigaction()
+                saved_sigaction = _SigactionStorage()
+                _checked_sigaction(libc, None, ctypes.byref(saved_sigaction))
+                cleanup.callback(
+                    _checked_sigaction, libc, ctypes.byref(saved_sigaction), None
+                )
 
             saved_python_handler = signal.getsignal(signal.SIGINT)
 
