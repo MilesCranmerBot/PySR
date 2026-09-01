@@ -53,7 +53,8 @@ class AdaptiveParsimonyPlugin(AbstractPlugin):
 class AdaptiveMutationWeightsPlugin(AbstractPlugin):
     """Adapt mutation weights from their observed success rates.
 
-    Disabled by default in PySR.
+    Enabled by default in PySR. Pass an explicit ``default_plugins`` that
+    omits this plugin to disable it.
     Learned runtime state is reinitialized for each call to ``fit``.
     """
 
