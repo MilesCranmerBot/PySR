@@ -2715,8 +2715,6 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         else:
             addprocs_function = cluster_manager
         with _external_stop_signal_context(self) as external_stop:
-            # Julia never calls back into Python during a search, so the GIL is
-            # released for its duration and other Python threads keep running.
             out = SymbolicRegression.equation_search._jl_call_nogil(
                 jl_X,
                 jl_y,
