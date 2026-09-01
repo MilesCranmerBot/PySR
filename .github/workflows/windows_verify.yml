@@ -1,0 +1,37 @@
+name: Interrupt Verify
+
+on:
+  push:
+    branches:
+      - ci/windows-verify
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: "Set up Julia"
+        uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
+      - name: "Set up Python"
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: "Install PySR"
+        run: |
+          python -m pip install --upgrade pip
+          pip install '.[dev]'
+          python -c 'import pysr'
+      - name: "Run interrupt tests"
+        run: python -m pysr test interrupt
