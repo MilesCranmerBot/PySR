@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import traceback
 import unittest
 import warnings
@@ -1508,6 +1510,43 @@ class TestFeatureSelection(unittest.TestCase):
 
 class TestMiscellaneous(unittest.TestCase):
     """Test miscellaneous functions."""
+
+    def test_search_releases_the_gil(self):
+        """Other Python threads must keep running while Julia searches."""
+        gaps = []
+        stop = threading.Event()
+
+        def sample_gaps():
+            previous = time.monotonic()
+            while not stop.is_set():
+                time.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - previous)
+                previous = now
+
+        rstate = np.random.RandomState(0)
+        X = rstate.randn(100, 2)
+        y = X[:, 0] * X[:, 1]
+        model = PySRRegressor(
+            niterations=40,
+            populations=8,
+            verbosity=0,
+            progress=False,
+            temp_equation_file=True,
+        )
+
+        watcher = threading.Thread(target=sample_gaps, daemon=True)
+        watcher.start()
+        started = time.monotonic()
+        try:
+            model.fit(X, y)
+        finally:
+            elapsed = time.monotonic() - started
+            stop.set()
+            watcher.join(timeout=5)
+
+        # Holding the GIL across the search would leave one gap spanning it.
+        self.assertLess(max(gaps), elapsed / 4)
 
     def test_unfitted_julia_streams_are_none(self):
         model = PySRRegressor()
