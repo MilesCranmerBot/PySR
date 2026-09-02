@@ -24,17 +24,9 @@ def process_readme_content(readme_content):
         if not found_first_header:
             continue
 
-        # Skip GitHub user-images URLs
-        if "user-images" in line:
-            continue
-
         # Adjust header levels: # -> ##
         if line.startswith("# ") and not line.startswith("# PySR"):
             line = "#" + line
-
-        # Transform "### Test status" to "**Test status**"
-        if line == "### Test status":
-            line = "**Test status**"
 
         # Fix internal links to use VitePress paths
         line = line.replace("(https://ai.damtp.cam.ac.uk/pysr/papers)", "(/papers)")
