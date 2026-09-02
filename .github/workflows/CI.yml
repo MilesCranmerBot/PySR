@@ -49,7 +49,7 @@ jobs:
             os: ubuntu-latest
             test-id: include
           - julia-version: '1'
-            python-version: '3.9'
+            python-version: '3.10'
             os: ubuntu-latest
             test-id: include
 

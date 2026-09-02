@@ -204,4 +204,4 @@ These constructor arguments are accepted but ignored with a warning:
 
 ## Environment changes
 
-- The minimum versions remain Python 3.9 and Julia 1.10.
+- The minimum versions are Python 3.10 and Julia 1.10.
