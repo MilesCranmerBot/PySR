@@ -1,23 +1,8 @@
-[//]: # (Logo:)
+<h1><img align="left" height="171" src="https://raw.githubusercontent.com/astroautomata/SymbolicRegression.jl/master/docs/src/assets/logo.png" alt="">PySR<br><sub><sub>Symbolic Regression in Python and Julia</sub></sub><br><sub><sub><a href="https://ai.damtp.cam.ac.uk/pysr/">Docs</a> &nbsp;&nbsp;×&nbsp;&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/examples">Examples</a> &nbsp;&nbsp;×&nbsp;&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/api">API Reference</a> &nbsp;&nbsp;×&nbsp;&nbsp; <a href="https://github.com/astroautomata/PySR/discussions">Forum</a> &nbsp;&nbsp;×&nbsp;&nbsp; <a href="https://github.com/astroautomata/PySR/blob/master/skills/pysr/SKILL.md">Agents</a></sub></sub><br><sub><a href="https://pypi.org/project/pysr/"><img src="https://img.shields.io/pypi/v/pysr" alt="PyPI"></a> <a href="https://anaconda.org/conda-forge/pysr"><img src="https://img.shields.io/conda/vn/conda-forge/pysr" alt="conda-forge"></a> <a href="https://github.com/astroautomata/PySR/actions/workflows/CI.yml"><img src="https://github.com/astroautomata/PySR/actions/workflows/CI.yml/badge.svg" alt="CI"></a></sub><br clear="all"></h1>
 
-<div align="center">
-
-PySR searches for symbolic expressions which optimize a particular objective.
-
-https://github.com/astroautomata/PySR/assets/7593028/c8511a49-b408-488f-8f18-b1749078268f
-
-
-# PySR: High-Performance Symbolic Regression in Python and Julia
-
-| **Docs** | **Forums** | **Paper** | **colab demo** |
-|:---:|:---:|:---:|:---:|
-|[![Documentation](https://github.com/astroautomata/PySR/actions/workflows/docs.yml/badge.svg)](https://ai.damtp.cam.ac.uk/pysr/)|[![Discussions](https://img.shields.io/badge/discussions-github-informational)](https://github.com/astroautomata/PySR/discussions)|[![Paper](https://img.shields.io/badge/arXiv-2305.01582-b31b1b)](https://arxiv.org/abs/2305.01582)|[![Colab](https://img.shields.io/badge/colab-notebook-yellow)](https://colab.research.google.com/github/astroautomata/PySR/blob/master/examples/pysr_demo.ipynb)|
-
-| **pip** | **conda** | **Stats** |
-| :---: | :---: | :---: |
-|[![PyPI version](https://badge.fury.io/py/pysr.svg)](https://badge.fury.io/py/pysr)|[![Conda Version](https://img.shields.io/conda/vn/conda-forge/pysr.svg)](https://anaconda.org/conda-forge/pysr)|<div align="center">pip: [![Downloads](https://static.pepy.tech/badge/pysr)](https://pypi.org/project/pysr/)<br>conda: [![Anaconda-Server Badge](https://anaconda.org/conda-forge/pysr/badges/downloads.svg)](https://anaconda.org/conda-forge/pysr)</div>|
-
-</div>
+```bash
+pip install pysr
+```
 
 If you find PySR useful, please cite the paper [arXiv:2305.01582](https://arxiv.org/abs/2305.01582).
 If you've finished a project with PySR, please submit a PR to showcase your work on the [research showcase page](https://ai.damtp.cam.ac.uk/pysr/papers)!
@@ -29,18 +14,6 @@ If you've finished a project with PySR, please submit a PR to showcase your work
 - [Quickstart](#quickstart)
 - [→ Documentation](https://ai.damtp.cam.ac.uk/pysr)
 - [Contributors](#contributors-)
-
-<div align="center">
-
-### Test status
-
-| **Linux** | **Windows** | **macOS** |
-|---|---|---|
-|[![Linux](https://github.com/astroautomata/PySR/actions/workflows/CI.yml/badge.svg)](https://github.com/astroautomata/PySR/actions/workflows/CI.yml)|[![Windows](https://github.com/astroautomata/PySR/actions/workflows/CI_Windows.yml/badge.svg)](https://github.com/astroautomata/PySR/actions/workflows/CI_Windows.yml)|[![macOS](https://github.com/astroautomata/PySR/actions/workflows/CI_mac.yml/badge.svg)](https://github.com/astroautomata/PySR/actions/workflows/CI_mac.yml)|
-| **Docker** | **Conda** | **Coverage** |
-|[![Docker](https://github.com/astroautomata/PySR/actions/workflows/CI_docker.yml/badge.svg)](https://github.com/astroautomata/PySR/actions/workflows/CI_docker.yml)|[![conda-forge](https://github.com/astroautomata/PySR/actions/workflows/CI_conda_forge.yml/badge.svg)](https://github.com/astroautomata/PySR/actions/workflows/CI_conda_forge.yml)|[![codecov](https://codecov.io/gh/astroautomata/PySR/branch/master/graph/badge.svg)](https://codecov.io/gh/astroautomata/PySR)|
-
-</div>
 
 ## Why PySR?
 
