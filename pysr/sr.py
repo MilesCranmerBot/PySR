@@ -907,6 +907,17 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         never reaches the search). You can also pass `"stdin"` or `"devnull"`
         explicitly, or reference an arbitrary Julia object in the `Main`
         namespace. Default is `None`.
+    use_tracing : bool
+        Whether to write a JSONL trace of the search to `tracing_file`.
+        One record per line holds the live members of one population at one
+        iteration, along with every mutation, crossover, tuning and death
+        event. Uses JSON3.jl, which is installed into the Julia environment
+        on first use.
+        Default is `False`.
+    tracing_file : str | Path
+        Where to write the trace when `use_tracing` is set. Any existing
+        file is overwritten when the search starts.
+        Default is `"pysr_trace.jsonl"`.
     run_id : str
         A unique identifier for the run. Will be generated using the
         current date and time if not provided.
@@ -1176,6 +1187,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         plugins: Sequence[AbstractPlugin] | None = None,
         default_plugins: Sequence[AbstractPlugin] | None = None,
         input_stream: str | None = None,
+        use_tracing: bool = False,
+        tracing_file: str | Path = "pysr_trace.jsonl",
         run_id: str | None = None,
         output_directory: str | None = None,
         temp_equation_file: bool = False,
@@ -1297,6 +1310,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         self.plugins = plugins
         self.default_plugins = default_plugins
         self.input_stream = input_stream
+        self.use_tracing = use_tracing
+        self.tracing_file = tracing_file
         # - Project management
         self.run_id = run_id
         self.output_directory = output_directory
@@ -2480,6 +2495,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             autodiff_backend=self.autodiff_backend,
             cluster_manager=cluster_manager,
             logger_spec=self.logger_spec,
+            use_tracing=self.use_tracing,
         )
 
         if cluster_manager is not None:
@@ -2652,6 +2668,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             skip_mutation_failures=self.skip_mutation_failures,
             max_evals=self.max_evals,
             input_stream=input_stream,
+            use_tracing=self.use_tracing,
+            tracing_file=str(self.tracing_file),
             early_stop_condition=early_stop_condition,
             seed=seed,
             deterministic=self.deterministic,

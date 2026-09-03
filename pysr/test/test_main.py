@@ -40,6 +40,7 @@ from pysr import (
 from pysr.export_latex import sympy2latex
 from pysr.export_sympy import pysr2sympy
 from pysr.feature_selection import _handle_feature_selection, run_feature_selection
+from pysr.julia_extensions import load_package
 from pysr.julia_helpers import _load_cluster_manager, init_julia
 from pysr.sr import (
     _check_assertions,
@@ -1114,6 +1115,42 @@ print(json.dumps({{
 
                 # Verify model still works as expected
                 self.assertLessEqual(model.get_best()["loss"], 1e-4)
+
+    def test_tracing_writes_jsonl(self):
+        """Tracing should write the search and each iteration as JSON lines."""
+        try:
+            load_package("JSON3", "0f8b85d8-7281-11e9-16c2-39a750bddbf1")
+        except JuliaError as e:
+            self.skipTest(f"JSON3 unavailable in the Julia environment: {e}")
+
+        X = self.rstate.randn(10, 2)
+        y = X[:, 0]
+        kwargs = dict(
+            niterations=2,
+            populations=2,
+            population_size=20,
+            ncycles_per_iteration=DEFAULT_NCYCLES,
+            progress=False,
+            temp_equation_file=True,
+            parallelism="serial",
+            deterministic=True,
+            random_state=0,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace_file = Path(tmpdir) / "trace.jsonl"
+
+            PySRRegressor(**kwargs, use_tracing=True, tracing_file=trace_file).fit(X, y)
+
+            records = [json.loads(line) for line in trace_file.read_text().splitlines()]
+            self.assertEqual(records[0]["record_type"], "search")
+            iterations = [r for r in records if r["record_type"] == "iteration"]
+            self.assertGreater(len(iterations), 0)
+            self.assertIn("tree", iterations[0]["members"][0])
+            self.assertIn("mutations", iterations[0])
+
+            trace_file.unlink()
+            PySRRegressor(**kwargs).fit(X, y)
+            self.assertFalse(trace_file.exists())
 
     def test_negative_losses(self):
         X = self.rstate.rand(100, 3) * 20.0

@@ -16,6 +16,7 @@ def load_required_packages(
     autodiff_backend: Literal["Zygote", "Mooncake", "Enzyme"] | None = None,
     cluster_manager: str | None = None,
     logger_spec: AbstractLoggerSpec | None = None,
+    use_tracing: bool = False,
 ):
     if turbo:
         load_package("LoopVectorization", "bdcacae8-1622-11e9-2a5c-532679323890")
@@ -33,6 +34,8 @@ def load_required_packages(
         load_package("ClusterManagers", "34f1f09b-3a8b-5176-ab39-66d58a4d544e")
     if isinstance(logger_spec, TensorBoardLoggerSpec):
         load_package("TensorBoardLogger", "899adc3e-224a-11e9-021f-63837185c80f")
+    if use_tracing:
+        load_package("JSON3", "0f8b85d8-7281-11e9-16c2-39a750bddbf1")
 
 
 def load_all_packages():
@@ -43,6 +46,7 @@ def load_all_packages():
         autodiff_backend="Zygote",
         cluster_manager="slurm",
         logger_spec=TensorBoardLoggerSpec(log_dir="logs"),
+        use_tracing=True,
     )
     load_package("ClusterManagers", "34f1f09b-3a8b-5176-ab39-66d58a4d544e")
 

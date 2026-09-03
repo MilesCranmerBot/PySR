@@ -107,6 +107,8 @@
   - progress
   - logger_spec
   - input_stream
+  - use_tracing
+  - tracing_file
 - Environment:
   - temp_equation_file
   - tempdir
