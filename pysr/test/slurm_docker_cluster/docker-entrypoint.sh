@@ -18,8 +18,6 @@ if [ "${1:-}" = "slurmd" ]; then
     echo "-- slurmctld not available; sleeping ..."
     sleep 2
   done
-  # Slurm's cgroup/v2 plugin expects this systemd-like slice path.
-  mkdir -p /sys/fs/cgroup/system.slice || true
   echo "---> Starting slurmd on $(hostname) ..."
   exec /usr/sbin/slurmd -D
 fi
