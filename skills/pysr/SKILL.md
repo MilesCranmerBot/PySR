@@ -66,7 +66,7 @@ Pass candidate expressions through the `PySRRegressor` constructor's `guesses` p
 
 For single-output regression, use a list of strings. For multiple outputs, use one list per output. For templates, use dictionaries keyed by component name, such as `guesses=[{"f": "#1 + #2", "g": "#1 * #1"}]`; `#1` and `#2` refer to each component's arguments. Set guesses on the estimator, never on `.fit()`. Between fits, `model.set_params(guesses=[...], warm_start=True)` replaces the guesses while continuing the existing search. Keep the data representation and search space fixed for continuation.
 
-Template dictionaries can also include full parameter vectors, such as `guesses=[{"f": "#1 * #1", "p": [5.0, 10.0, 0.8]}]`. Omit a parameter name to keep its normal initialization. Numeric values use the model's precision. This dictionary form requires a SymbolicRegression.jl backend that supports flat template parameter guesses; older backends reject it.
+Template dictionaries can also include full parameter vectors, such as `guesses=[{"f": "#1 * #1", "p": [5.0, 10.0, 0.8]}]`. Omit a parameter name to keep its normal initialization. Numeric values use the model's precision. This dictionary form requires SymbolicRegression.jl 2.3.0 or later.
 
 ## Recommended workflow
 
