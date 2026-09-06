@@ -40,7 +40,6 @@ from pysr import (
 from pysr.export_latex import sympy2latex
 from pysr.export_sympy import pysr2sympy
 from pysr.feature_selection import _handle_feature_selection, run_feature_selection
-from pysr.julia_extensions import load_package
 from pysr.julia_helpers import _load_cluster_manager, init_julia
 from pysr.sr import (
     _check_assertions,
@@ -1118,11 +1117,6 @@ print(json.dumps({{
 
     def test_tracing_writes_jsonl(self):
         """Tracing should write the search and each iteration as JSON lines."""
-        try:
-            load_package("JSON3", "0f8b85d8-7281-11e9-16c2-39a750bddbf1")
-        except JuliaError as e:
-            self.skipTest(f"JSON3 unavailable in the Julia environment: {e}")
-
         X = self.rstate.randn(10, 2)
         y = X[:, 0]
         kwargs = dict(
