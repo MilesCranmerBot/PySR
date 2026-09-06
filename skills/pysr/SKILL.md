@@ -48,6 +48,8 @@ Running plain `python` scripts works fine; this is an optimization, not a requir
 
 ## Candidate equations with `guesses`
 
+Use `guesses` and template expressions as the main interfaces for injecting knowledge about the problem into a search. Use `guesses` to supply plausible equations that the search can modify or discard. Use template expressions to specify structure that every candidate must satisfy. They can be combined by supplying guesses for a template's components and parameters.
+
 Pass candidate expressions through the `PySRRegressor` constructor's `guesses` parameter. Use Julia expression strings with the input variable names and operators enabled in the model. For example, `guesses=["x0 + 0.5 * x1", "x0 * (x1 + 1.0)"]` with `operators={2: ["+", "*"]}`. Guesses are mixed into populations throughout the search. With `should_optimize_constants=True`, their constants are optimized before insertion. `fraction_replaced_guesses` controls the fraction replaced from guesses at the end of each cycle; its default is `0.001`.
 
 For single-output regression, use a list of strings. For multiple outputs, use one list per output. For templates, use dictionaries keyed by component name, such as `guesses=[{"f": "#1 + #2", "g": "#1 * #1"}]`; `#1` and `#2` refer to each component's arguments. Set guesses on the estimator, never on `.fit()`. Between fits, `model.set_params(guesses=[...], warm_start=True)` replaces the guesses while continuing the existing search. Keep the data representation and search space fixed for continuation.
