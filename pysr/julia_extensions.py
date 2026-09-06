@@ -35,7 +35,7 @@ def load_required_packages(
     if isinstance(logger_spec, TensorBoardLoggerSpec):
         load_package("TensorBoardLogger", "899adc3e-224a-11e9-021f-63837185c80f")
     if use_tracing:
-        load_package("JSON3", "0f8b85d8-7281-11e9-16c2-39a750bddbf1")
+        load_package("JSON", "682c06a0-de6a-54ab-a142-c8b1cf79cde6")
 
 
 def load_all_packages():
@@ -56,7 +56,9 @@ def load_all_packages():
 
 
 def isinstalled(uuid_s: str):
-    return jl.haskey(Pkg.dependencies(), jl.Base.UUID(uuid_s))
+    dependencies = Pkg.dependencies()
+    uuid = jl.Base.UUID(uuid_s)
+    return jl.haskey(dependencies, uuid) and dependencies[uuid].is_direct_dep
 
 
 def load_package(package_name: str, uuid_s: str) -> None:

@@ -911,7 +911,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         Whether to write a JSONL trace of the search to `tracing_file`.
         One record per line holds the live members of one population at one
         iteration, along with every mutation, crossover, tuning and death
-        event. Uses JSON3.jl, which is installed into the Julia environment
+        event. Uses JSON.jl, which is installed into the Julia environment
         on first use.
         Default is `False`.
     tracing_file : str | Path
