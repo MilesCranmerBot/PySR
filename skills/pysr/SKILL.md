@@ -46,20 +46,6 @@ Instead:
 
 Running plain `python` scripts works fine; this is an optimization, not a requirement.
 
-## Iterating with candidate equations
-
-When you have plausible equation structures, give them to PySR through `guesses` before spending the search budget. Domain knowledge and simple data inspection can suggest candidates evolution would otherwise need to invent. The search can modify or discard them, and it optimizes their coefficients. See "Candidate equations with guesses" for syntax.
-
-Use a short feedback loop when you can improve a candidate after seeing search results:
-
-1. Propose a few plausible full equations and pass them as `guesses`.
-2. Run a short search, then inspect the Pareto front on validation data and examine residuals for systematic dependence on the inputs.
-3. Revise the guesses to address that evidence. Preserve useful structure from a discovered equation and test a specific alternative for the part that appears wrong.
-4. Set the revised guesses on the same estimator with `warm_start=True`, then fit again. Existing populations continue evolving alongside the new candidates.
-5. Compare validation error and complexity across rounds. Keep the best candidate seen, including earlier rounds; a new guess need not help.
-
-Keep the Python process alive between rounds. A normal continuation is `model.set_params(guesses=revised_guesses, warm_start=True)` followed by `model.fit(X, y)`. Leave operators, input columns, precision, and expression specification unchanged.
-
 ## Candidate equations with `guesses`
 
 Pass candidate expressions through the `PySRRegressor` constructor's `guesses` parameter. Use Julia expression strings with the input variable names and operators enabled in the model. For example, `guesses=["x0 + 0.5 * x1", "x0 * (x1 + 1.0)"]` with `operators={2: ["+", "*"]}`. Guesses are mixed into populations throughout the search. With `should_optimize_constants=True`, their constants are optimized before insertion. `fraction_replaced_guesses` controls the fraction replaced from guesses at the end of each cycle; its default is `0.001`.
