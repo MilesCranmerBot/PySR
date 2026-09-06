@@ -1577,6 +1577,111 @@ print(json.dumps({{
         self.assertEqual(model.equations_.loss.min(), 0.0)
         self.assertIn('concat(#1, "!")', " ".join(model.equations_.equation))
 
+    def test_template_parameter_guess_with_string_values(self):
+        type_name = "GuessTemplateParameterString"
+        model = tiny_model(
+            string_spec(
+                name=type_name,
+                sample=f'rng -> {type_name}("a")',
+                mutate="(rng, value, temperature) -> value",
+            ),
+            expression_spec=TemplateExpressionSpec(
+                combine="choose_parameter(p[1], f(x))",
+                expressions=["f"],
+                variable_names=["x"],
+                parameters={"p": 1},
+            ),
+            operators={
+                1: [f"identity_{type_name}(x::{type_name}) = x"],
+                2: [
+                    f"""
+                    choose_parameter(a::{type_name}, b::{type_name}) = a
+                    choose_parameter(a::{type_name}, b::ValidVector) =
+                        ValidVector(map(_ -> a, b.x), b.valid)
+                    """
+                ],
+            },
+            guesses=[{"f": "#1", "p": ["!"]}],
+        )
+        X = np.array([["a"], ["b"], ["a"], ["b"]], dtype=object)
+        y = np.full(len(X), "!", dtype=object)
+
+        model.fit(X, y, variable_names=["x"])
+
+        np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_template_parameter_guess_with_vector_values(self):
+        type_name = "GuessTemplateParameterVector"
+        parameter_values = object_array_1d([np.array([1.5, -2.5])])
+        original_value = parameter_values[0].copy()
+        model = tiny_model(
+            vector_spec(name=type_name),
+            expression_spec=TemplateExpressionSpec(
+                combine="choose_parameter(p[1], f(x))",
+                expressions=["f"],
+                variable_names=["x"],
+                parameters={"p": 1},
+            ),
+            operators={
+                1: [f"identity_{type_name}(x::{type_name}) = x"],
+                2: [
+                    f"""
+                    choose_parameter(a::{type_name}, b::{type_name}) = a
+                    choose_parameter(a::{type_name}, b::ValidVector) =
+                        ValidVector(map(_ -> a, b.x), b.valid)
+                    """
+                ],
+            },
+            guesses=[{"f": "#1", "p": parameter_values}],
+        )
+        X = np.empty((4, 1), dtype=object)
+        X[:, 0] = [np.array([1.0, 2.0])] * 4
+        y = np.empty(4, dtype=object)
+        y[:] = [np.array([1.5, -2.5])] * 4
+
+        model.fit(X, y, variable_names=["x"])
+
+        self.assertEqual(
+            [list(value) for value in model.predict(X)],
+            [list(value) for value in y],
+        )
+        np.testing.assert_array_equal(parameter_values[0], original_value)
+
+    def test_template_parameter_guess_with_packet_values(self):
+        type_name = "GuessTemplateParameterPacket"
+        model = tiny_model(
+            TypeSpec(
+                type_name,
+                fields={"number": "Float64", "label": "String"},
+                sample=f'rng -> {type_name}(0.0, "")',
+                mutate="(rng, value, temperature) -> value",
+            ),
+            expression_spec=TemplateExpressionSpec(
+                combine="choose_parameter(p[1], f(x))",
+                expressions=["f"],
+                variable_names=["x"],
+                parameters={"p": 1},
+            ),
+            operators={
+                1: [f"identity_{type_name}(x::{type_name}) = x"],
+                2: [
+                    f"""
+                    choose_parameter(a::{type_name}, b::{type_name}) = a
+                    choose_parameter(a::{type_name}, b::ValidVector) =
+                        ValidVector(map(_ -> a, b.x), b.valid)
+                    """
+                ],
+            },
+            guesses=[{"f": "#1", "p": [(2.0, "two")]}],
+        )
+        X = np.empty((4, 1), dtype=object)
+        X[:, 0] = object_array_1d([(1.0, "one")] * 4)
+        y = object_array_1d([(2.0, "two")] * 4)
+
+        model.fit(X, y, variable_names=["x"])
+
+        self.assertEqual(model.predict(X).tolist(), y.tolist())
+
     def test_guess_rejects_a_constant_that_is_not_the_custom_type(self):
         type_name = "GuessConversionValue"
         model = tiny_model(
