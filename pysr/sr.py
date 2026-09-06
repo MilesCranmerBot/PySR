@@ -69,6 +69,7 @@ from .type_specs import (
     create_type_spec_addprocs_function,
     create_type_spec_exports,
     load_type_spec_runtime,
+    object_array_1d,
     prepare_type_spec_fit_data,
     prepare_type_spec_prediction_data,
     type_spec_to_julia_array,
@@ -872,11 +873,15 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         If false, each call to fit will be fresh, overwriting previous results.
         Plugin runtime state is reinitialized for each call to `fit`.
         Default is `False`.
-    guesses : list[str] | list[list[str]] | list[dict[str, str]] | list[list[dict[str, str]]] | None
+    guesses : list[str] | list[list[str]] | list[dict[str, str | ArrayLike]] | list[list[dict[str, str | ArrayLike]]] | None
         Initial guesses for expressions to seed the search. Examples:
         `["x0 + x1", "x0^2"]`, `[["x0"], ["x1"]]` (multi-output),
-        `[{"f": "#1 + #2"}]` (TemplateExpressionSpec where `#1`, `#2` are
-        placeholders for the 1st, 2nd arguments of expression `f`).
+        or `[{"f": "#1 + #2", "p": [5.0, 10.0]}]` for a
+        `TemplateExpressionSpec` with component `f` and parameter vector `p`.
+        Here `#1` and `#2` are the first and second arguments of `f`.
+        Parameter values use the data precision or the model's `TypeSpec`, and
+        supplied vectors must match the lengths declared by the template.
+        Parameter names may be omitted to retain their normal initialization.
         Default is `None`.
     verbosity : int
         What verbosity level to use. 0 means minimal print statements.
@@ -1173,8 +1178,8 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         guesses: (
             list[str]
             | list[list[str]]
-            | list[dict[str, str]]
-            | list[list[dict[str, str]]]
+            | list[dict[str, str | ArrayLike]]
+            | list[list[dict[str, str | ArrayLike]]]
             | list[AnyValue]
             | list[list[AnyValue]]
             | None
@@ -2714,7 +2719,13 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         else:
             jl_y_variable_names = None
 
-        jl_guesses = _prepare_guesses_for_julia(self.guesses, self.nout_)
+        jl_guesses = _prepare_guesses_for_julia(
+            self.guesses,
+            self.nout_,
+            expression_spec=self.expression_spec_,
+            np_dtype=np_dtype,
+            type_spec_runtime=type_spec_runtime,
+        )
 
         # Convert worker_imports to Julia symbols
         jl_worker_imports = (
@@ -3446,21 +3457,15 @@ def calculate_scores(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _prepare_guesses_for_julia(guesses, nout) -> VectorValue | None:
-    """Convert Python guesses to Julia format.
-
-    Parameters
-    ----------
-    guesses : list[str] | list[list[str]] | list[dict[str, str]] | list[list[dict[str, str]]] | None
-        Initial guesses for equations
-    nout : int
-        Number of output dimensions
-
-    Returns
-    -------
-    jl_guesses: VectorValue | None
-        Julia-compatible guesses array or None if no guesses provided
-    """
+def _prepare_guesses_for_julia(
+    guesses,
+    nout,
+    *,
+    expression_spec: AbstractExpressionSpec,
+    np_dtype: type | None,
+    type_spec_runtime: _TypeSpecRuntime | None,
+) -> VectorValue | None:
+    """Convert Python guesses to Julia format."""
     if guesses is None:
         return None
 
@@ -3488,16 +3493,70 @@ def _prepare_guesses_for_julia(guesses, nout) -> VectorValue | None:
                 f"Number of guess lists ({len(g)}) must match number of outputs ({nout})"
             )
 
+    template = (
+        expression_spec if isinstance(expression_spec, TemplateExpressionSpec) else None
+    )
+    expression_names = set(template.expressions) if template is not None else set()
+    parameter_lengths = template.parameters if template is not None else None
+    valid_names = expression_names | set(parameter_lengths or {})
+
     julia_guesses = []
     for output_guesses in g:
         julia_output_guesses = []
         for item in output_guesses:
-            if isinstance(item, dict):
-                # Convert dict to NamedTuple for template expressions
-                julia_output_guesses.append(jl_named_tuple(item))
-            else:
-                # Keep strings as-is
+            if not isinstance(item, dict):
                 julia_output_guesses.append(item)
+                continue
+            if template is None or not parameter_lengths:
+                julia_output_guesses.append(jl_named_tuple(item))
+                continue
+
+            unknown_names = set(item) - valid_names
+            if unknown_names:
+                names = ", ".join(sorted(map(str, unknown_names)))
+                raise ValueError(
+                    f"Template guess has unknown template name(s): {names}"
+                )
+            missing_expressions = expression_names - set(item)
+            if missing_expressions:
+                names = ", ".join(sorted(missing_expressions))
+                raise ValueError(f"Template guess is missing expression(s): {names}")
+
+            converted_item = {}
+            for name, value in item.items():
+                if name in expression_names:
+                    if not isinstance(value, str):
+                        raise ValueError(
+                            f"Template expression '{name}' must be a string"
+                        )
+                    converted_item[name] = value
+                    continue
+                if not isinstance(value, (list, np.ndarray)):
+                    raise ValueError(f"Template parameter '{name}' must be a 1D vector")
+                if type_spec_runtime is not None:
+                    parameter_array = object_array_1d(value)
+                else:
+                    try:
+                        parameter_array = np.array(value, dtype=np_dtype, copy=True)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError(
+                            f"Template parameter '{name}' must be a 1D vector "
+                            "compatible with the data precision"
+                        ) from error
+                if parameter_array.ndim != 1:
+                    raise ValueError(f"Template parameter '{name}' must be a 1D vector")
+                expected_length = parameter_lengths[name]
+                if len(parameter_array) != expected_length:
+                    raise ValueError(
+                        f"Template parameter '{name}' must have length "
+                        f"{expected_length}, got {len(parameter_array)}"
+                    )
+                converted_item[name] = (
+                    type_spec_to_julia_array(type_spec_runtime, parameter_array)
+                    if type_spec_runtime is not None
+                    else jl_array(parameter_array)
+                )
+            julia_output_guesses.append(jl_named_tuple(converted_item))
         julia_guesses.append(jl_array(julia_output_guesses))
 
     return jl_array(julia_guesses)

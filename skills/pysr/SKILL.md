@@ -46,9 +46,31 @@ Instead:
 
 Running plain `python` scripts works fine; this is an optimization, not a requirement.
 
+## Iterating with candidate equations
+
+When you have plausible equation structures, give them to PySR through `guesses` before spending the search budget. Domain knowledge and simple data inspection can suggest candidates evolution would otherwise need to invent. The search can modify or discard them, and it optimizes their coefficients. See "Candidate equations with guesses" for syntax.
+
+Use a short feedback loop when you can improve a candidate after seeing search results:
+
+1. Propose a few plausible full equations and pass them as `guesses`.
+2. Run a short search, then inspect the Pareto front on validation data and examine residuals for systematic dependence on the inputs.
+3. Revise the guesses to address that evidence. Preserve useful structure from a discovered equation and test a specific alternative for the part that appears wrong.
+4. Set the revised guesses on the same estimator with `warm_start=True`, then fit again. Existing populations continue evolving alongside the new candidates.
+5. Compare validation error and complexity across rounds. Keep the best candidate seen, including earlier rounds; a new guess need not help.
+
+Keep the Python process alive between rounds. A normal continuation is `model.set_params(guesses=revised_guesses, warm_start=True)` followed by `model.fit(X, y)`. Leave operators, input columns, precision, and expression specification unchanged.
+
+## Candidate equations with `guesses`
+
+Pass candidate expressions through the `PySRRegressor` constructor's `guesses` parameter. Use Julia expression strings with the input variable names and operators enabled in the model. For example, `guesses=["x0 + 0.5 * x1", "x0 * (x1 + 1.0)"]` with `operators={2: ["+", "*"]}`. Guesses are mixed into populations throughout the search. With `should_optimize_constants=True`, their constants are optimized before insertion. `fraction_replaced_guesses` controls the fraction replaced from guesses at the end of each cycle; its default is `0.001`.
+
+For single-output regression, use a list of strings. For multiple outputs, use one list per output. For templates, use dictionaries keyed by component name, such as `guesses=[{"f": "#1 + #2", "g": "#1 * #1"}]`; `#1` and `#2` refer to each component's arguments. Set guesses on the estimator, never on `.fit()`. Between fits, `model.set_params(guesses=[...], warm_start=True)` replaces the guesses while continuing the existing search. Keep the data representation and search space fixed for continuation.
+
+Template dictionaries can also include full parameter vectors, such as `guesses=[{"f": "#1 * #1", "p": [5.0, 10.0, 0.8]}]`. Omit a parameter name to keep its normal initialization. Numeric values use the model's precision. This dictionary form requires a SymbolicRegression.jl backend that supports flat template parameter guesses; older backends reject it.
+
 ## Recommended workflow
 
-1. **Subsample the data.** Symbolic regression rarely needs more than a few thousand rows; ~1,000 to 5,000 representative rows often suffice even when millions are available. More rows help with many features, heavy noise, or rare regimes. PySR 2.0 uses automatic batching for larger datasets by default. Fewer rows still mean proportionally faster search.
+1. **Subsample the data.** Symbolic regression rarely needs more than a few thousand rows; ~1,000 to 5,000 representative rows often suffice even when millions are available. More rows help with many features, heavy noise, or rare regimes. PySR 2.0 uses automatic batching for larger datasets by default. Pass `batching=False` when you need every search evaluation to use the full dataset; with batching enabled, hall-of-fame candidates are still reevaluated on the full dataset. Fewer rows still mean proportionally faster search.
 2. **Choose the minimal operator set.** Only operators plausible for the domain. Redundant operators (e.g. `pow` alongside `square` and `cube`, or `-` alongside `neg`) blow up the search space. Fewer operators is better. If the target is a polynomial, use `["+", "-", "*"]` and skip `/` and `^` entirely.
 3. **Start from defaults otherwise.** The default hyperparameters (populations, parsimony, mutation weights, `ncycles_per_iteration`) were tuned by large-scale search in 2024-2025. Do not copy hyperparameter recipes from old forum threads or papers; most predate the retuning.
 4. **Short runs first.** Debug the setup with a few-minute run: check operators, loss, and that sensible equations appear. Then do one long run for the real search.
@@ -135,6 +157,10 @@ spec = TemplateExpressionSpec(
 )
 ```
 
+Seed known template coefficients alongside component strings. Every supplied vector must have its declared length; omitted names, such as `q` here, keep their normal initialization:
+
+`model = PySRRegressor(expression_spec=spec, operators={2: ["*"]}, guesses=[{"f": "#1 * #2", "p": [5.0, 10.0, 0.8]}])`
+
 The combine string is arbitrary Julia: multiple statements, reuse of a subexpression (`fx = f(x); fx + fx^2`), evaluating the same f at different arguments (`f(x1) - f(x2)`), derivatives (`df = D(f, 1); df(x)`). Multi-output/vector problems: put the extra targets in X as columns, return the per-row residual from the template, fit against dummy y with `elementwise_loss="(p, t) -> p"` (the template output is then the loss itself).
 
 Template caveats (PySR 2.0):
@@ -143,17 +169,16 @@ Template caveats (PySR 2.0):
 - Values inside the combine string are `ValidVector`s: raw data in `.x`, validity flag in `.valid`. Ordinary arithmetic propagates validity automatically; custom manipulations must unwrap and rebuild (`ValidVector(raw, valid)`).
 - Write Float32-safe literals in the combine string (`0.5f0`, not `0.5`) or convert explicitly; a bare Float64 literal can break type stability.
 - Combining a template with a custom objective requires `loss_function_expression` (not `loss_function`).
-- Use `TemplateExpressionSpec` with `parameters` for learnable parameters. The pre-1.4 template API (`function_symbols`, lambda-style combine) is deprecated.
+- Use `TemplateExpressionSpec` with `parameters` for learnable parameters. The pre-1.4 template API (`function_symbols`, lambda-style combine) was removed in PySR 2.0.
 
 ## Custom value types with `TypeSpec`
 
 `TypeSpec` makes expression-tree nodes hold generated Julia structs. It is independent of `expression_spec`, so custom values can also use a fixed structure.
 
 Python values supply fields in declaration order. Here `((1.0, 2.0, 3.0), np.uint32(7))` supplies `triple` and `code`; the inner tuple remains one field. Keep `X` two-dimensional and `y` one-dimensional; assign object cells individually so NumPy does not create extra axes.
-
 ```python
 import numpy as np
-from pysr import PySRRegressor, TypeSpec
+from pysr import PySRRegressor, TemplateExpressionSpec, TypeSpec
 
 value = ((1.0, 2.0, 3.0), np.uint32(7))
 X = np.empty((1, 1), dtype=object)
@@ -185,7 +210,12 @@ operators = {
     2: [
         "combine_packets(x::Packet, y::Packet)::Packet = "
         "Packet(ntuple(i -> x.triple[i] + y.triple[i], 3), "
-        "xor(x.code, y.code))"
+        "xor(x.code, y.code))",
+        """
+        choose_parameter(a::Packet, b::Packet) = a
+        choose_parameter(a::Packet, b::ValidVector) =
+            ValidVector(map(_ -> a, b.x), b.valid)
+        """,
     ],
 }
 loss = """
@@ -198,6 +228,37 @@ model = PySRRegressor(
     type_spec=packet,
     operators=operators,
     elementwise_loss=loss,
+)
+```
+
+Typed constants can use the generated constructor in ordinary or template-component guess strings:
+
+`ordinary_guess = ["combine_packets(x0, Packet((1.0, 2.0, 3.0), UInt32(7)))"]`
+
+`template_component_guess = [{"f": "combine_packets(#1, Packet((1.0, 2.0, 3.0), UInt32(7)))"}]`
+
+PySR parses these strings in the generated `TypeSpec` configuration module, where `Packet` and its operators are already defined. They need no parser closure or extra import.
+
+Template parameter values use the same `TypeSpec` as the data. A Python list preserves `value` as one logical `Packet`; a one-dimensional object array does the same explicitly:
+
+```python
+packet_parameter_array = np.empty(1, dtype=object)
+packet_parameter_array[0] = value
+
+packet_template = TemplateExpressionSpec(
+    combine="choose_parameter(p[1], f(x))",
+    expressions=["f"],
+    variable_names=["x"],
+    parameters={"p": 1},
+)
+packet_guess_from_list = [{"f": "#1", "p": [value]}]
+packet_guess_from_array = [{"f": "#1", "p": packet_parameter_array}]
+model = PySRRegressor(
+    type_spec=packet,
+    expression_spec=packet_template,
+    operators=operators,
+    elementwise_loss=loss,
+    guesses=packet_guess_from_array,
 )
 ```
 

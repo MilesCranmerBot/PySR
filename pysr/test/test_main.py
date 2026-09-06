@@ -1294,6 +1294,29 @@ class TestGuesses(unittest.TestCase):
         # Check that a good fit was found
         self.assertTrue(any(model.equations_["loss"] < 1e-10))
 
+    def test_template_expression_guess_parameters(self):
+        X = self.rstate.randn(100, 1)
+        y = 5.0 * X[:, 0] ** 2 + 10.0 * X[:, 0] + 0.8
+        parameter_values = np.array([5.0, 10.0, 0.8], dtype=np.float64)
+        original_values = parameter_values.copy()
+        model = PySRRegressor(
+            expression_spec=TemplateExpressionSpec(
+                expressions=["f"],
+                combine="p[1] * f(x) + p[2] * x + p[3]",
+                variable_names=["x"],
+                parameters={"p": 3, "unused": 1},
+            ),
+            guesses=[{"f": "#1 * #1", "p": parameter_values}],
+            should_optimize_constants=False,
+            precision=32,
+            **self.default_test_kwargs,
+        )
+        model.fit(X, y, variable_names=["x"])
+
+        np.testing.assert_allclose(model.predict(X), y, rtol=1e-6, atol=1e-6)
+        np.testing.assert_array_equal(parameter_values, original_values)
+        self.assertEqual(parameter_values.dtype, np.float64)
+
     def test_multi_output_template_expression_guesses(self):
         X = self.rstate.randn(100, 2)
         Y = np.column_stack([X[:, 0] + X[:, 1], X[:, 0] - X[:, 1]])
@@ -1312,6 +1335,77 @@ class TestGuesses(unittest.TestCase):
         # Check both outputs have good fits
         for i, eqs_df in enumerate(model.equations_):
             self.assertTrue(any(eqs_df["loss"] < 1e-10))
+
+    def test_template_parameter_guesses_replace_on_warm_start(self):
+        X = self.rstate.randn(100, 1)
+        y = 3.0 * X[:, 0] + 4.0
+        template = TemplateExpressionSpec(
+            expressions=["f"],
+            combine="p[1] * f(x) + p[2]",
+            variable_names=["x"],
+            parameters={"p": 2},
+        )
+        model = PySRRegressor(
+            expression_spec=template,
+            guesses=[{"f": "#1", "p": [1.0, 0.0]}],
+            should_optimize_constants=False,
+            **self.default_test_kwargs,
+        )
+        model.fit(X, y, variable_names=["x"])
+        model.set_params(guesses=[{"f": "#1", "p": [3.0, 4.0]}], warm_start=True)
+        model.fit(X, y, variable_names=["x"])
+
+        np.testing.assert_allclose(model.predict(X), y, rtol=1e-6, atol=1e-6)
+
+    def test_multi_output_template_parameter_guesses(self):
+        X = self.rstate.randn(100, 1)
+        Y = np.column_stack([2.0 * X[:, 0] + 1.0, -3.0 * X[:, 0] + 0.5])
+        model = PySRRegressor(
+            expression_spec=TemplateExpressionSpec(
+                expressions=["f"],
+                combine="p[1] * f(x) + p[2]",
+                variable_names=["x"],
+                parameters={"p": 2},
+            ),
+            guesses=[
+                [{"f": "#1", "p": [2.0, 1.0]}],
+                [{"f": "#1", "p": [-3.0, 0.5]}],
+            ],
+            should_optimize_constants=False,
+            **self.default_test_kwargs,
+        )
+        model.fit(X, Y, variable_names=["x"])
+
+        prediction = model.predict(X)
+        self.assertEqual(prediction.shape, Y.shape)
+        np.testing.assert_allclose(prediction, Y, rtol=1e-6, atol=1e-6)
+
+    def test_invalid_template_parameter_guesses(self):
+        X = self.rstate.randn(10, 1)
+        y = X[:, 0]
+        template = TemplateExpressionSpec(
+            expressions=["f"],
+            combine="p[1] * f(x) + p[2]",
+            variable_names=["x"],
+            parameters={"p": 2},
+        )
+        cases = [
+            {"missing": "#1"},
+            {"p": [1.0, 2.0]},
+            {"f": ["#1"], "p": [1.0, 2.0]},
+            {"f": "#1", "p": [1.0]},
+            {"f": "#1", "p": 1.0},
+            {"f": "#1", "p": [[1.0, 2.0]]},
+        ]
+        for guess in cases:
+            with self.subTest(guess=guess):
+                model = PySRRegressor(
+                    expression_spec=template,
+                    guesses=[guess],
+                    **self.default_test_kwargs,
+                )
+                with self.assertRaises(ValueError):
+                    model.fit(X, y, variable_names=["x"])
 
     def test_invalid_multi_output_format_guesses(self):
         X = self.rstate.randn(100, 2)
