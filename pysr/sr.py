@@ -3496,9 +3496,7 @@ def _prepare_guesses_for_julia(
     template = (
         expression_spec if isinstance(expression_spec, TemplateExpressionSpec) else None
     )
-    expression_names = set(template.expressions) if template is not None else set()
-    parameter_lengths = template.parameters if template is not None else None
-    valid_names = expression_names | set(parameter_lengths or {})
+    parameter_names = set(template.parameters or {}) if template is not None else set()
 
     julia_guesses = []
     for output_guesses in g:
@@ -3507,28 +3505,13 @@ def _prepare_guesses_for_julia(
             if not isinstance(item, dict):
                 julia_output_guesses.append(item)
                 continue
-            if template is None or not parameter_lengths:
+            if not parameter_names:
                 julia_output_guesses.append(jl_named_tuple(item))
                 continue
 
-            unknown_names = set(item) - valid_names
-            if unknown_names:
-                names = ", ".join(sorted(map(str, unknown_names)))
-                raise ValueError(
-                    f"Template guess has unknown template name(s): {names}"
-                )
-            missing_expressions = expression_names - set(item)
-            if missing_expressions:
-                names = ", ".join(sorted(missing_expressions))
-                raise ValueError(f"Template guess is missing expression(s): {names}")
-
             converted_item = {}
             for name, value in item.items():
-                if name in expression_names:
-                    if not isinstance(value, str):
-                        raise ValueError(
-                            f"Template expression '{name}' must be a string"
-                        )
+                if name not in parameter_names:
                     converted_item[name] = value
                     continue
                 if not isinstance(value, (list, np.ndarray)):
@@ -3545,12 +3528,6 @@ def _prepare_guesses_for_julia(
                         ) from error
                 if parameter_array.ndim != 1:
                     raise ValueError(f"Template parameter '{name}' must be a 1D vector")
-                expected_length = parameter_lengths[name]
-                if len(parameter_array) != expected_length:
-                    raise ValueError(
-                        f"Template parameter '{name}' must have length "
-                        f"{expected_length}, got {len(parameter_array)}"
-                    )
                 converted_item[name] = (
                     type_spec_to_julia_array(type_spec_runtime, parameter_array)
                     if type_spec_runtime is not None

@@ -1390,21 +1390,21 @@ class TestGuesses(unittest.TestCase):
             parameters={"p": 2},
         )
         cases = [
-            {"missing": "#1"},
-            {"p": [1.0, 2.0]},
-            {"f": ["#1"], "p": [1.0, 2.0]},
-            {"f": "#1", "p": [1.0]},
-            {"f": "#1", "p": 1.0},
-            {"f": "#1", "p": [[1.0, 2.0]]},
+            ({"f": "#1", "missing": "#1", "p": [1.0, 2.0]}, JuliaError),
+            ({"p": [1.0, 2.0]}, JuliaError),
+            ({"f": ["#1"], "p": [1.0, 2.0]}, JuliaError),
+            ({"f": "#1", "p": [1.0]}, JuliaError),
+            ({"f": "#1", "p": 1.0}, ValueError),
+            ({"f": "#1", "p": [[1.0, 2.0]]}, ValueError),
         ]
-        for guess in cases:
+        for guess, error in cases:
             with self.subTest(guess=guess):
                 model = PySRRegressor(
                     expression_spec=template,
                     guesses=[guess],
                     **self.default_test_kwargs,
                 )
-                with self.assertRaises(ValueError):
+                with self.assertRaises(error):
                     model.fit(X, y, variable_names=["x"])
 
     def test_invalid_multi_output_format_guesses(self):
