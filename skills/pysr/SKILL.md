@@ -50,11 +50,20 @@ Running plain `python` scripts works fine; this is an optimization, not a requir
 
 Use `guesses` and template expressions as the main interfaces for injecting knowledge about the problem into a search. Use `guesses` to supply plausible equations that the search can modify or discard. Use template expressions to specify structure that every candidate must satisfy. They can be combined by supplying guesses for a template's components and parameters.
 
-Pass candidate expressions through the `PySRRegressor` constructor's `guesses` parameter. Use Julia expression strings with the input variable names and operators enabled in the model. For example, `guesses=["x0 + 0.5 * x1", "x0 * (x1 + 1.0)"]` with `operators={2: ["+", "*"]}`. Guesses are mixed into populations throughout the search. With `should_optimize_constants=True`, their constants are optimized before insertion. `fraction_replaced_guesses` controls the fraction replaced from guesses at the end of each cycle; its default is `0.001`.
+Pass candidate expressions through the `PySRRegressor` constructor. Expression strings use Julia syntax, the model's input variable names, and its enabled operators:
 
-For single-output regression, use a list of strings. For multiple outputs, use one list per output. For templates, use dictionaries keyed by component name, such as `guesses=[{"f": "#1 + #2", "g": "#1 * #1"}]`; `#1` and `#2` refer to each component's arguments. Set guesses on the estimator, never on `.fit()`. Between fits, `model.set_params(guesses=[...], warm_start=True)` replaces the guesses while continuing the existing search. Keep the data representation and search space fixed for continuation.
+```python
+model = PySRRegressor(
+    operators={2: ["+", "*"]},
+    guesses=["x0 + 0.5 * x1", "x0 * (x1 + 1.0)"],
+)
+```
 
-Template dictionaries can also include full parameter vectors, such as `guesses=[{"f": "#1 * #1", "p": [5.0, 10.0, 0.8]}]`. Omit a parameter name to keep its normal initialization. Numeric values use the model's precision. This dictionary form requires SymbolicRegression.jl 2.3.0 or later.
+For single-output regression, pass a list of candidates. For multiple outputs, pass one candidate list per output in target-column order: `guesses=[["x0 + x1"], ["x0 * x1"]]`. For templates, use dictionaries keyed by component and parameter names. In component formulas, `#1`, `#2`, and so on refer to the component's arguments.
+
+Guesses are mixed into populations throughout the search. With `should_optimize_constants=True`, their constants and template parameters are optimized before insertion. `fraction_replaced_guesses` controls the fraction replaced from guesses at the end of each cycle; its default is `0.001`.
+
+Set guesses on the estimator, never on `.fit()`. Between fits, `model.set_params(guesses=[...], warm_start=True)` replaces the guesses while continuing the existing search. Keep the data representation and search space fixed for continuation.
 
 ## Recommended workflow
 
@@ -134,20 +143,31 @@ model = PySRRegressor(expression_spec=spec, binary_operators=["+", "-", "*", "/"
 model.fit(X, y)
 ```
 
-With per-category parameters (pass the category as a column of X; Julia indexing is 1-based, so pass `category + 1` if starting from 0):
+With per-category parameters, pass the category as a column of `X`. Julia indexing is 1-based, so add one if your category IDs start at zero:
 
 ```python
 spec = TemplateExpressionSpec(
     combine="p[class] * f(x1, x2) + q[class]",
     expressions=["f"],
     variable_names=["x1", "x2", "class"],
-    parameters={"p": 3, "q": 3},   # 3 categories
+    parameters={"p": 3, "q": 3},
+)
+model = PySRRegressor(
+    expression_spec=spec,
+    operators={2: ["+", "*"]},
+    guesses=[{
+        "f": "#1 + #2",
+        "p": [5.0, 10.0, 0.8],
+        "q": [0.0, 0.0, 0.0],
+    }],
 )
 ```
 
-Seed known template coefficients alongside component strings. Every supplied vector must have its declared length; omitted names, such as `q` here, keep their normal initialization:
+`parameters={"p": 3, "q": 3}` declares the vector lengths. The guess supplies initial values for those vectors and a formula for `f`. Component and parameter names must be disjoint, and every key must be declared in the specification. Supply every component formula. Each parameter vector must match its declared length and can be a Python list or one-dimensional NumPy array. You can omit a parameter vector to keep its normal initialization.
 
-`model = PySRRegressor(expression_spec=spec, operators={2: ["*"]}, guesses=[{"f": "#1 * #2", "p": [5.0, 10.0, 0.8]}])`
+`#1` and `#2` refer to the arguments passed to the component, here `x1` and `x2`. A template can also pass a parameter into a component. With `combine="f(x, p[1])"`, `#2` refers to `p[1]`.
+
+Supplied parameter values remain learnable. PySR copies them into the candidate, so optimization does not modify the caller's array. Numeric parameter values use the model's precision. Template parameter guesses require SymbolicRegression.jl 2.3.0 or later.
 
 The combine string is arbitrary Julia: multiple statements, reuse of a subexpression (`fx = f(x); fx + fx^2`), evaluating the same f at different arguments (`f(x1) - f(x2)`), derivatives (`df = D(f, 1); df(x)`). Multi-output/vector problems: put the extra targets in X as columns, return the per-row residual from the template, fit against dummy y with `elementwise_loss="(p, t) -> p"` (the template output is then the loss itself).
 
