@@ -31,6 +31,10 @@ RUN pip3 install --no-cache-dir .
 FROM pysr-runtime AS pysr-slurm
 
 RUN set -eu; \
+    sed -i \
+      -e 's|http://deb.debian.org/debian-security |[check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260901T000000Z |' \
+      -e 's|http://deb.debian.org/debian |[check-valid-until=no] https://snapshot.debian.org/archive/debian/20260901T000000Z |' \
+      /etc/apt/sources.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       ca-certificates \
