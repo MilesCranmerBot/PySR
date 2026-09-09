@@ -224,6 +224,61 @@ class TestTypeSpecs(unittest.TestCase):
         result = runtime.operator_functions[1][0](value)
         self.assertTrue(bool(jl.isa(result.data, runtime.module.PrivatePayload)))
 
+    def test_definitions_supply_methods_that_mention_the_generated_type(self):
+        spec = TypeSpec(
+            "Force",
+            fields={"x": "Component", "y": "Component", "z": "Component"},
+            preamble="const Component = Float64",
+            definitions="Force(u::Real) = Force(u, u, u)",
+            init="() -> Force(0.0)",
+            sample="rng -> Force(randn(rng, 3)...)",
+            scalar_constants="value -> [value.x, value.y, value.z]",
+            with_scalar_constants="(value, c) -> Force(c[1], c[2], c[3])",
+        )
+        rows = [(0.0, 0.0, 0.0), (1.0, 4.0, 9.0), (4.0, 9.0, 16.0), (2.0, 2.0, 2.0)]
+        model = tiny_model(
+            spec,
+            operators={
+                1: [
+                    "sqrt_force(a::Force)::Force = "
+                    "Force(sqrt(abs(a.x)), sqrt(abs(a.y)), sqrt(abs(a.z)))"
+                ],
+                2: [
+                    "div_force(a::Force, b::Force)::Force = "
+                    "Force(a.x / b.x, a.y / b.y, a.z / b.z)"
+                ],
+            },
+            elementwise_loss=(
+                "force_loss(a::Force, b::Force)::Float64 = "
+                "abs2(a.x - b.x) + abs2(a.y - b.y) + abs2(a.z - b.z)"
+            ),
+            # Dividing the zero row by itself makes the fused kernel for the
+            # first guess build the invalid sentinel `Force(Inf)`.
+            guesses=["sqrt_force(div_force(x0, x0))", "x0"],
+        )
+        X = object_array_2d([[row] for row in rows])
+        y = object_array_1d(rows)
+
+        model.fit(X, y)
+
+        self.assertEqual(model.equations_.loss.min(), 0.0)
+        self.assertEqual(model.predict(X).tolist(), rows)
+
+    def test_definitions_are_private_to_their_specification(self):
+        type_name = "DefinitionIdentityValue"
+        for tag in ("first", "second"):
+            with self.subTest(tag=tag):
+                runtime = load_type_spec_runtime(
+                    compile_type_spec(
+                        string_spec(
+                            name=type_name,
+                            definitions=f'tag(::{type_name}) = "{tag}"',
+                        )
+                    )
+                )
+                value = runtime.module._sample(runtime.module.Random.default_rng())
+                self.assertEqual(str(runtime.module.tag(value)), tag)
+
     def test_repeated_runtime_load_does_not_mutate_child_module(self):
         spec = string_spec(name="RepeatedLoadValue")
         definition = compile_type_spec_runtime(

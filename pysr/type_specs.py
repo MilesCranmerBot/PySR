@@ -97,6 +97,11 @@ class TypeSpec:
         and functions it defines are visible to the hooks and to operator and
         objective sources; imports are not, so any source needing a package
         beyond SymbolicRegression must import it itself.
+    definitions : str, optional
+        Julia source evaluated once directly after the generated type, for
+        constructors and methods that mention it. Fused operator kernels
+        construct ``{name}(Inf)`` when an inner operator returns an invalid
+        value, so define a scalar constructor here if that can happen.
     loss_type : str, optional
         Concrete Julia ``AbstractFloat`` type returned by a custom full
         objective. Elementwise loss return types are inferred.
@@ -112,6 +117,7 @@ class TypeSpec:
     is_valid: str | None = None
     string: str | None = None
     preamble: str | None = None
+    definitions: str | None = None
     loss_type: str | None = None
 
     def __post_init__(self) -> None:
@@ -145,6 +151,7 @@ class TypeSpec:
             "is_valid",
             "string",
             "preamble",
+            "definitions",
             "loss_type",
         ):
             value = getattr(self, name)
@@ -479,6 +486,8 @@ _TYPE_SPEC_MODULE = _block(r"""
         _include(_config.preamble, "TypeSpec.preamble")
     @_define_type_spec _config
     const _value_type = getfield(@__MODULE__, Symbol(_config.name))
+    _config.definitions === nothing ||
+        _include(_config.definitions, "TypeSpec.definitions")
     SymbolicRegression.parse_scope(::Type{<:_TypeSpecValue}) = @__MODULE__
 
     _fields(value) = ntuple(i -> getfield(value, i), fieldcount(_value_type))
@@ -683,6 +692,7 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
             is_valid = {_optional_source(spec.is_valid)},
             string = {_optional_source(spec.string)},
             preamble = {_optional_source(spec.preamble)},
+            definitions = {_optional_source(spec.definitions)},
             optimizable = {str(spec.can_optimize).lower()},
         )
         """)

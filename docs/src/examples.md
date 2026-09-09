@@ -869,6 +869,21 @@ struct Vec2
 end
 ```
 
+Methods on this generated type go in `definitions`, which is evaluated right
+after the type exists:
+
+```python
+type_spec = TypeSpec(
+    ...,
+    definitions="Vec2(u::Real) = Vec2(fill(u, 2))",
+)
+```
+
+A fused operator kernel builds `Vec2(Inf)` to mark an evaluation whose inner
+operator returned an invalid value, so define a scalar constructor whenever
+your operators can produce one. Anything the field types themselves depend on
+goes in `preamble` instead, which runs before the type is generated.
+
 Once you have defined your type, you need to define the operators that accept and return this type. For example, we can define a `rotate90` operator that rotates a vector by 90 degrees, and a `double` operator that doubles the vector. We also define an `add_vectors` operator that adds two vectors together:
 
 ```python
