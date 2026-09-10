@@ -869,19 +869,6 @@ struct Vec2
 end
 ```
 
-Methods on this generated type go in `definitions`, which is evaluated right
-after the type exists. For example, this method computes the Euclidean magnitude
-from the `Vector{Float64}` stored in `Vec2.data`:
-
-```python
-type_spec = TypeSpec(
-    ...,
-    definitions="magnitude(v::Vec2) = sqrt(sum(abs2, v.data))",
-)
-```
-
-Use `preamble` for Julia source that must run before the type is generated.
-
 Once you have defined your type, you need to define the operators that accept and return this type. For example, we can define a `rotate90` operator that rotates a vector by 90 degrees, and a `double` operator that doubles the vector. We also define an `add_vectors` operator that adds two vectors together:
 
 ```python
