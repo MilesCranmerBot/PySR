@@ -167,6 +167,50 @@ class TestStartup(unittest.TestCase):
                 deprecation_expected,
             )
 
+    def test_juliacall_0935_distributed_worker_uses_current_python(self):
+        import_orders = (
+            "import pysr\nfrom pysr import jl",
+            "import juliacall\nimport pysr\nfrom pysr import jl",
+        )
+        worker_code = r"""
+            using Distributed
+            worker = only(addprocs(1, exeflags="--threads=1"))
+            try
+                fetch(Distributed.remotecall_eval(Main, worker, :(using PythonCall)))
+                @fetchfrom worker (
+                    pyconvert(String, pyimport("sys").executable),
+                    pyconvert(Int, pybuiltins.sum([1, 2, 3])),
+                )
+            finally
+                rmprocs(worker)
+            end
+        """
+        env = os.environ.copy()
+        env.pop("JULIA_PYTHONCALL_EXE", None)
+        env.pop("JULIA_PYTHONCALL_EXECUTABLE", None)
+        env["JULIA_CONDAPKG_OFFLINE"] = "yes"
+        env["PYTHON_JULIACALL_THREADS"] = "1"
+        env["JULIA_NUM_THREADS"] = "1"
+
+        for import_order in import_orders:
+            with self.subTest(import_order=import_order):
+                code = (
+                    "import sys\n"
+                    f"{import_order}\n"
+                    f"worker_python, total = jl.seval({worker_code!r})\n"
+                    "assert worker_python == sys.executable, "
+                    "(worker_python, sys.executable)\n"
+                    "assert total == 6, total\n"
+                )
+                result = subprocess.run(
+                    [sys.executable, "-c", code],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=300,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_notebook(self):
         if platform.system() == "Windows":
             self.skipTest("Notebook test incompatible with Windows")
