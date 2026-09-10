@@ -99,9 +99,7 @@ class TypeSpec:
         beyond SymbolicRegression must import it itself.
     definitions : str, optional
         Julia source evaluated once directly after the generated type, for
-        constructors and methods that mention it. Fused operator kernels
-        construct ``{name}(Inf)`` when an inner operator returns an invalid
-        value, so define a scalar constructor here if that can happen.
+        constructors and methods that mention it.
     loss_type : str, optional
         Concrete Julia ``AbstractFloat`` type returned by a custom full
         objective. Elementwise loss return types are inferred.
