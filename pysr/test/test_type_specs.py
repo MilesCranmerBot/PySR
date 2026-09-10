@@ -103,9 +103,9 @@ def string_data(*, constant: bool = False):
 
 
 class TestTypeSpecs(unittest.TestCase):
-    def test_invalid_value_hook(self):
+    def test_init_invalid_value_hook(self):
         spec = string_spec(
-            invalid='() -> StringValue("")',
+            init_invalid='() -> StringValue("")',
             is_valid="value -> !isempty(value.data)",
         )
         runtime = load_type_spec_runtime(compile_type_spec(spec))
@@ -120,16 +120,20 @@ class TestTypeSpecs(unittest.TestCase):
         model.fit(X, y)
         self.assertEqual(model.predict(X).tolist(), y.tolist())
 
-    def test_invalid_hook_rejects_wrong_type_or_valid_value(self):
+    def test_init_invalid_hook_rejects_wrong_type_or_valid_value(self):
         for source, message in (
-            ('() -> ""', "invalid.*must return `StringValue`"),
-            ('() -> StringValue("valid")', "invalid.*must return an invalid value"),
+            ('() -> ""', "init_invalid.*must return `StringValue`"),
+            (
+                '() -> StringValue("valid")',
+                "init_invalid.*must return an invalid value",
+            ),
         ):
             with self.subTest(source=source):
                 runtime = load_type_spec_runtime(
                     compile_type_spec(
                         string_spec(
-                            invalid=source, is_valid="value -> !isempty(value.data)"
+                            init_invalid=source,
+                            is_valid="value -> !isempty(value.data)",
                         )
                     )
                 )

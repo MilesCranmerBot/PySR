@@ -89,7 +89,7 @@ class TypeSpec:
         you may use this function to check for that. This will be used to quit evaluation early.
         The default checks that every scalar constant is finite, or accepts every value for a
         non-optimizable type.
-    invalid : str, optional
+    init_invalid : str, optional
         Julia callable with signature ``() -> value::{name}`` that constructs an
         invalid value. The result must have this type and fail ``is_valid``.
         Used by DynamicExpressions to fill failed convenience evaluations.
@@ -119,7 +119,7 @@ class TypeSpec:
     string: str | None = None
     preamble: str | None = None
     loss_type: str | None = None
-    invalid: str | None = None
+    init_invalid: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.isidentifier():
@@ -150,7 +150,7 @@ class TypeSpec:
             "init",
             "mutate",
             "is_valid",
-            "invalid",
+            "init_invalid",
             "string",
             "preamble",
             "loss_type",
@@ -571,9 +571,9 @@ _TYPE_SPEC_MODULE = _block(r"""
     end
     is_valid(value::_TypeSpecValue) = _is_valid(value)
 
-    if _config.invalid !== nothing
-        const _invalid = _include(_config.invalid, "TypeSpec.invalid")
-        invalid_value(::Type{<:_TypeSpecValue}) = _invalid()
+    if _config.init_invalid !== nothing
+        const _init_invalid = _include(_config.init_invalid, "TypeSpec.init_invalid")
+        invalid_value(::Type{<:_TypeSpecValue}) = _init_invalid()
     end
 
     const _string = if _config.string === nothing
@@ -694,7 +694,7 @@ def compile_type_spec(spec: TypeSpec) -> _TypeSpecDefinition:
             init = {_optional_source(spec.init)},
             mutate = {_optional_source(spec.mutate)},
             is_valid = {_optional_source(spec.is_valid)},
-            invalid = {_optional_source(spec.invalid)},
+            init_invalid = {_optional_source(spec.init_invalid)},
             string = {_optional_source(spec.string)},
             preamble = {_optional_source(spec.preamble)},
             optimizable = {str(spec.can_optimize).lower()},
@@ -1017,12 +1017,12 @@ def _type_spec_validator() -> AnyValue:
                 optimizable && check_optimization(value, count)
             end
 
-            if module_._config.invalid !== nothing
-                invalid = call("invalid", DE.invalid_value, T)
-                invalid isa T || fail("invalid", "must return `$type_name`.")
+            if module_._config.init_invalid !== nothing
+                invalid = call("init_invalid", DE.invalid_value, T)
+                invalid isa T || fail("init_invalid", "must return `$type_name`.")
                 valid = call("is_valid", DE.is_valid, invalid)
                 valid isa Bool || fail("is_valid", "must return `Bool`.")
-                !valid || fail("invalid", "must return an invalid value.")
+                !valid || fail("init_invalid", "must return an invalid value.")
             end
 
             mutated = check_value(
