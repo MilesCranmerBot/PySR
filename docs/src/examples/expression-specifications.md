@@ -320,74 +320,53 @@ HELD_OUT_X = on_diagonal(HELD_OUT_INPUTS)
 </details>
 
 The type spec declares the three fields and the hooks PySR needs to sample and optimize
-constants. The one-argument constructor is the diagonal embedding of a scalar, and it also
-gives the evaluator the `Force(Inf)` sentinel it substitutes for an invalid value. A
-constant is a whole vector: `sample` draws all three slots and `scalar_constants` hands all
-three to BFGS, so the same spec still works when an expression has to return a direction
-rather than a magnitude:
+constants. `sample` draws all three slots and `scalar_constants` hands all three to BFGS, so
+the same spec still works when an expression has to return a direction rather than a
+magnitude. The `init_invalid` hook supplies a `Force` with `NaN` components for failed
+evaluations; the default validity check derived from `scalar_constants` rejects it:
 
 ```python
 FORCE = TypeSpec(
     "Force",
     fields={"x": "Float64", "y": "Float64", "z": "Float64"},
-    sample="""begin
-        Force(u::Real) = Force(u, u, u)
-        rng -> Force(randn(rng, 3)...)
-    end""",
+    sample="rng -> Force(randn(rng, 3)...)",
+    definitions="""
+        Base.sin(a::Force)::Force = Force(sin(a.x), sin(a.y), sin(a.z))
+        Base.cos(a::Force)::Force = Force(cos(a.x), cos(a.y), cos(a.z))
+        function Base.sqrt(a::Force)::Force
+            f(v) = v < 0 ? NaN : sqrt(v)
+            return Force(f(a.x), f(a.y), f(a.z))
+        end
+        Base.exp(a::Force)::Force = Force(exp(a.x), exp(a.y), exp(a.z))
+        Base.:+(a::Force, b::Force)::Force = Force(a.x + b.x, a.y + b.y, a.z + b.z)
+        Base.:-(a::Force, b::Force)::Force = Force(a.x - b.x, a.y - b.y, a.z - b.z)
+        Base.:*(a::Force, b::Force)::Force = Force(a.x * b.x, a.y * b.y, a.z * b.z)
+        Base.:/(a::Force, b::Force)::Force = Force(a.x / b.x, a.y / b.y, a.z / b.z)
+    """,
     scalar_constants="value -> [value.x, value.y, value.z]",
     with_scalar_constants="(value, c) -> Force(c[1], c[2], c[3])",
     string="value -> sprint(show, (value.x, value.y, value.z); context = :compact => true)",
+    init_invalid="() -> Force(NaN, NaN, NaN)",
 )
 ```
 
-The operators extend Julia's own `Base` functions to this type, so we pass each definition
-followed by the name PySR should use to look it up. All of them are type-stable through the
-`::Force` return annotation, and `sqrt` returns `NaN` rather than throwing on negative input:
+The `definitions` source adds the `Base` methods used by this search. `OPERATORS` lists those
+existing function names by arity. All of them are type-stable through the `::Force` return
+annotation, and `sqrt` returns `NaN` rather than throwing on negative input:
 
 ```python
-def _method(body, name):
-    return body + "\n" + name
-
-
 OPERATORS = {
     1: [
-        _method(
-            "Base.sin(a::Force)::Force = Force(sin(a.x), sin(a.y), sin(a.z))",
-            "Base.sin",
-        ),
-        _method(
-            "Base.cos(a::Force)::Force = Force(cos(a.x), cos(a.y), cos(a.z))",
-            "Base.cos",
-        ),
-        _method(
-            """function Base.sqrt(a::Force)::Force
-            f(v) = v < 0 ? NaN : sqrt(v)
-            return Force(f(a.x), f(a.y), f(a.z))
-            end""",
-            "Base.sqrt",
-        ),
-        _method(
-            "Base.exp(a::Force)::Force = Force(exp(a.x), exp(a.y), exp(a.z))",
-            "Base.exp",
-        ),
+        "Base.sin",
+        "Base.cos",
+        "Base.sqrt",
+        "Base.exp",
     ],
     2: [
-        _method(
-            "Base.:+(a::Force, b::Force)::Force = Force(a.x + b.x, a.y + b.y, a.z + b.z)",
-            "Base.:+",
-        ),
-        _method(
-            "Base.:-(a::Force, b::Force)::Force = Force(a.x - b.x, a.y - b.y, a.z - b.z)",
-            "Base.:-",
-        ),
-        _method(
-            "Base.:*(a::Force, b::Force)::Force = Force(a.x * b.x, a.y * b.y, a.z * b.z)",
-            "Base.:*",
-        ),
-        _method(
-            "Base.:/(a::Force, b::Force)::Force = Force(a.x / b.x, a.y / b.y, a.z / b.z)",
-            "Base.:/",
-        ),
+        "Base.:+",
+        "Base.:-",
+        "Base.:*",
+        "Base.:/",
     ],
 }
 

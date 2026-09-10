@@ -46,66 +46,42 @@ VARIABLE_NAMES = ["t", "v_x", "v_y", "v_z", "T"]
 HELD_OUT_INPUTS, HELD_OUT_FORCES = experiments(500, seed=12345)
 HELD_OUT_X = on_diagonal(HELD_OUT_INPUTS)
 
-# The one-argument constructor is the diagonal embedding of a scalar. It also gives
-# the evaluator the Force(Inf) sentinel it substitutes for an invalid value. A constant
-# is a whole vector: all three slots are sampled and all three are handed to BFGS, so
-# the spec stays usable when an expression itself has to return a direction.
 FORCE = TypeSpec(
     "Force",
     fields={"x": "Float64", "y": "Float64", "z": "Float64"},
-    sample="""begin
-        Force(u::Real) = Force(u, u, u)
-        rng -> Force(randn(rng, 3)...)
-    end""",
+    sample="rng -> Force(randn(rng, 3)...)",
+    definitions="""
+        Base.sin(a::Force)::Force = Force(sin(a.x), sin(a.y), sin(a.z))
+        Base.cos(a::Force)::Force = Force(cos(a.x), cos(a.y), cos(a.z))
+        function Base.sqrt(a::Force)::Force
+            f(v) = v < 0 ? NaN : sqrt(v)
+            return Force(f(a.x), f(a.y), f(a.z))
+        end
+        Base.exp(a::Force)::Force = Force(exp(a.x), exp(a.y), exp(a.z))
+        Base.:+(a::Force, b::Force)::Force = Force(a.x + b.x, a.y + b.y, a.z + b.z)
+        Base.:-(a::Force, b::Force)::Force = Force(a.x - b.x, a.y - b.y, a.z - b.z)
+        Base.:*(a::Force, b::Force)::Force = Force(a.x * b.x, a.y * b.y, a.z * b.z)
+        Base.:/(a::Force, b::Force)::Force = Force(a.x / b.x, a.y / b.y, a.z / b.z)
+    """,
     scalar_constants="value -> [value.x, value.y, value.z]",
     with_scalar_constants="(value, c) -> Force(c[1], c[2], c[3])",
     string="value -> sprint(show, (value.x, value.y, value.z); context = :compact => true)",
+    init_invalid="() -> Force(NaN, NaN, NaN)",
 )
-
-
-def _method(body, name):
-    return body + "\n" + name
 
 
 OPERATORS = {
     1: [
-        _method(
-            "Base.sin(a::Force)::Force = Force(sin(a.x), sin(a.y), sin(a.z))",
-            "Base.sin",
-        ),
-        _method(
-            "Base.cos(a::Force)::Force = Force(cos(a.x), cos(a.y), cos(a.z))",
-            "Base.cos",
-        ),
-        _method(
-            """function Base.sqrt(a::Force)::Force
-            f(v) = v < 0 ? NaN : sqrt(v)
-            return Force(f(a.x), f(a.y), f(a.z))
-            end""",
-            "Base.sqrt",
-        ),
-        _method(
-            "Base.exp(a::Force)::Force = Force(exp(a.x), exp(a.y), exp(a.z))",
-            "Base.exp",
-        ),
+        "Base.sin",
+        "Base.cos",
+        "Base.sqrt",
+        "Base.exp",
     ],
     2: [
-        _method(
-            "Base.:+(a::Force, b::Force)::Force = Force(a.x + b.x, a.y + b.y, a.z + b.z)",
-            "Base.:+",
-        ),
-        _method(
-            "Base.:-(a::Force, b::Force)::Force = Force(a.x - b.x, a.y - b.y, a.z - b.z)",
-            "Base.:-",
-        ),
-        _method(
-            "Base.:*(a::Force, b::Force)::Force = Force(a.x * b.x, a.y * b.y, a.z * b.z)",
-            "Base.:*",
-        ),
-        _method(
-            "Base.:/(a::Force, b::Force)::Force = Force(a.x / b.x, a.y / b.y, a.z / b.z)",
-            "Base.:/",
-        ),
+        "Base.:+",
+        "Base.:-",
+        "Base.:*",
+        "Base.:/",
     ],
 }
 
