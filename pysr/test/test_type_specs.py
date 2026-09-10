@@ -224,6 +224,52 @@ class TestTypeSpecs(unittest.TestCase):
         result = runtime.operator_functions[1][0](value)
         self.assertTrue(bool(jl.isa(result.data, runtime.module.PrivatePayload)))
 
+    def test_definitions_support_fit_and_predict(self):
+        spec = TypeSpec(
+            "TransformedValue",
+            fields={"value": "Component"},
+            preamble="const Component = Float64",
+            definitions="component(value::TransformedValue) = value.value",
+            init="() -> TransformedValue(0.0)",
+            sample="rng -> TransformedValue(1.0)",
+            mutate="(rng, value, temperature) -> value",
+        )
+        X = object_array_2d([[0.0], [1.0], [2.0], [3.0]])
+        y = object_array_1d([2.0, 4.0, 6.0, 8.0])
+        model = tiny_model(
+            spec,
+            operators={
+                1: [
+                    """
+                    transform(value::TransformedValue)::TransformedValue =
+                        TransformedValue(2 * (component(value) + 1))
+                    """
+                ]
+            },
+            elementwise_loss="""
+                transformed_loss(a::TransformedValue, b::TransformedValue)::Float64 =
+                    abs2(component(a) - component(b))
+            """,
+            guesses=["transform(x0)"],
+        )
+        model.fit(X, y)
+        np.testing.assert_array_equal(model.predict(X), y)
+
+    def test_definitions_are_private_to_their_specification(self):
+        type_name = "DefinitionIdentityValue"
+        for tag in ("first", "second"):
+            with self.subTest(tag=tag):
+                runtime = load_type_spec_runtime(
+                    compile_type_spec(
+                        string_spec(
+                            name=type_name,
+                            definitions=f'tag(::{type_name}) = "{tag}"',
+                        )
+                    )
+                )
+                value = runtime.module._sample(runtime.module.Random.default_rng())
+                self.assertEqual(str(runtime.module.tag(value)), tag)
+
     def test_repeated_runtime_load_does_not_mutate_child_module(self):
         spec = string_spec(name="RepeatedLoadValue")
         definition = compile_type_spec_runtime(
