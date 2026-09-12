@@ -56,6 +56,7 @@ jobs:
           import shutil
           import subprocess
           import sys
+          from pathlib import Path
           debugger = shutil.which("gdb")
           assert debugger, "Windows runner must provide gdb"
           child = subprocess.Popen([sys.executable, "-m", "pysr", "test", "main,startup"])
@@ -63,14 +64,15 @@ jobs:
           try:
               result = child.wait(timeout=1200)
           except subprocess.TimeoutExpired:
+              Path("canary.gdb").write_text("set pagination off\nthread apply all bt 30\ndetach\n")
               for command in (
+                  [debugger, "--batch", "-x", "canary.gdb", "-p", str(child.pid)],
                   ["py-spy", "dump", "--pid", str(child.pid)],
-                  [debugger, "--batch", "-ex", "set pagination off", "-ex", "thread apply all bt", "-ex", "detach", "-p", str(child.pid)],
               ):
                   print("Collecting stacks:", command, flush=True)
                   diagnostic = subprocess.run(command, timeout=120)
                   print("Diagnostic exit:", diagnostic.returncode, flush=True)
-              result = child.wait()
+              result = child.wait(timeout=600)
           sys.exit(result)
           PY
           else
