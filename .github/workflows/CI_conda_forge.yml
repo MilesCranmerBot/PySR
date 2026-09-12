@@ -37,6 +37,10 @@ jobs:
           auto-activate-base: true
           python-version: ${{ matrix.python-version }}
           activate-environment: pysr-test
+      - name: "Set up Julia"
+        uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
       - name: "Install pysr"
         run: |
           conda install -y pysr
