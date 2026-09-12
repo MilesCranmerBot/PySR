@@ -72,20 +72,11 @@ def get_runtests():
                 def test_ignored(self):
                     executed.append(self.id())
 
-                def test_selected_a(self):
-                    executed.append(self.id())
-
-                def test_selected_b(self):
-                    executed.append(self.id())
-
-                def test_selected_c(self):
-                    executed.append(self.id())
-
-                def test_selected_d(self):
-                    executed.append(self.id())
-
-                def test_selected_e(self):
-                    executed.append(self.id())
+                test_selected_a = test_ignored
+                test_selected_b = test_ignored
+                test_selected_c = test_ignored
+                test_selected_d = test_ignored
+                test_selected_e = test_ignored
 
             loader = unittest.TestLoader()
             selected = [
