@@ -130,7 +130,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Test regular CPython, not a free-threaded build.
         python-version: ['3.14']
         os: ['ubuntu-latest']
         shard-index: [0, 1, 2, 3]
