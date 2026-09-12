@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         julia-version: ['1']
-        python-version: ['3.13']
+        python-version: ['3.14']
         os: [macos-latest]
         shard-index: [0, 1, 2, 3]
     steps:
