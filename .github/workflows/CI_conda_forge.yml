@@ -50,5 +50,30 @@ jobs:
         run: |
           echo "Running tests"
           pip install pytest nbval
-          python -m pysr test main,startup
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            pip install py-spy
+            python - <<'PY'
+          import shutil
+          import subprocess
+          import sys
+          debugger = shutil.which("gdb")
+          assert debugger, "Windows runner must provide gdb"
+          child = subprocess.Popen([sys.executable, "-m", "pysr", "test", "main,startup"])
+          print("Canary Python PID:", child.pid, flush=True)
+          try:
+              result = child.wait(timeout=1200)
+          except subprocess.TimeoutExpired:
+              for command in (
+                  ["py-spy", "dump", "--pid", str(child.pid)],
+                  [debugger, "--batch", "-ex", "set pagination off", "-ex", "thread apply all bt", "-ex", "detach", "-p", str(child.pid)],
+              ):
+                  print("Collecting stacks:", command, flush=True)
+                  diagnostic = subprocess.run(command, timeout=120)
+                  print("Diagnostic exit:", diagnostic.returncode, flush=True)
+              result = child.wait()
+          sys.exit(result)
+          PY
+          else
+            python -m pysr test main,startup
+          fi
           echo "Finished."
