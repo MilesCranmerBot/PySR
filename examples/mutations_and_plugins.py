@@ -21,8 +21,6 @@ BASE_KWARGS = dict(
     binary_operators=["+", "-", "*"],
     unary_operators=["cos", "exp"],
     niterations=20,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

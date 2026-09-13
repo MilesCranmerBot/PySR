@@ -26,8 +26,6 @@ VARIABLE_NAMES = ["mass", "velocity"]
 MODEL_KWARGS = dict(
     operators={1: ["sqrt"], 2: ["+", "-", "*", "/"]},
     niterations=10,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

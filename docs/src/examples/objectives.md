@@ -207,7 +207,6 @@ model = PySRRegressor(
     niterations=120,
     populations=32,
     population_size=64,
-    parallelism="multithreading",
     random_state=0,
 )
 model.fit(X, y, variable_names=["x_n", "v_n", "s", "c", "omega_n"])
@@ -310,8 +309,6 @@ model = PySRRegressor(
     population_size=30,
     ncycles_per_iteration=30,
     niterations=800,
-    deterministic=True,
-    parallelism="serial",
     random_state=0,
     verbosity=0,
 )

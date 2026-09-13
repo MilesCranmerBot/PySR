@@ -61,8 +61,6 @@ model = PySRRegressor(
     },
     elementwise_loss="letter_loss(prediction::Letter, target::Letter)::Float64 = abs(prediction.code - target.code)",
     niterations=20,
-    deterministic=True,
-    parallelism="serial",
     random_state=0,
 )
 model.fit(X, y)
@@ -140,8 +138,6 @@ model = PySRRegressor(
     },
     elementwise_loss="cell_loss(prediction::Cell, target::Cell)::Float64 = prediction.v == target.v ? 0.0 : 1.0",
     niterations=160,
-    deterministic=True,
-    parallelism="serial",
     random_state=0,
 )
 model.fit(X, y, variable_names=["alive", "n"])
@@ -228,8 +224,6 @@ model = PySRRegressor(
     elementwise_loss="bit_loss(prediction::Word, target::Word)::Float64 = count_ones(xor(prediction.bits, target.bits)) / 32",
     maxsize=45,
     niterations=800,
-    deterministic=True,
-    parallelism="serial",
     random_state=0,
     verbosity=0,
 )
@@ -357,8 +351,6 @@ model = PySRRegressor(
     operators=OPERATORS,
     elementwise_loss=CHAMFER_LOSS,
     niterations=20,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
     random_state=0,
 )

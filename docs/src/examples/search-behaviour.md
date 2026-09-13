@@ -27,8 +27,6 @@ model = PySRRegressor(
     unary_operators=["cos", "exp"],
     batching="auto",
     niterations=40,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
     random_state=0,
 )
@@ -42,7 +40,7 @@ One recovered expression is:
 (cos(x3) * 2.5382) + ((x0 * x0) + -0.5)
 ```
 
-The fixed random state and deterministic serial settings make the example reproducible. For parallel search, omit `deterministic=True` and `parallelism="serial"`. Run the complete example with `examples/automatic_batching.py`.
+Run the complete example with `examples/automatic_batching.py`.
 
 ## Operators of any arity
 
@@ -104,8 +102,6 @@ model = PySRRegressor(
         "min4": lambda a, b, c, d: sympy.Min(a, b, c, d),
     },
     niterations=500,
-    deterministic=True,
-    parallelism="serial",
     random_state=0,
 )
 model.fit(X, y, variable_names=["x"])
@@ -162,8 +158,6 @@ model = PySRRegressor(
     binary_operators=["+", "-", "*"],
     unary_operators=["cos", "exp"],
     niterations=20,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
     mutations={BacksolveMutation(): 0.1},
     plugins=[AdaptiveMutationWeightsPlugin()],
@@ -210,8 +204,6 @@ model = PySRRegressor(
     niterations=300,
     populations=1,
     plugins=[AdaptiveMutationWeightsPlugin(smoothing=0.02, floor=0.05, reward="cost")],
-    deterministic=True,
-    parallelism="serial",
     random_state=0,
     verbosity=0,
 )
@@ -253,8 +245,6 @@ model = PySRRegressor(
     maxsize=30,
     precision=64,
     niterations=10,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
     random_state=0,
 )

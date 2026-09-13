@@ -55,8 +55,6 @@ y = 2.5382 * np.cos(X[:, 2]) + X[:, 0] ** 2 - 1.5
 y = y + rng.normal(0, 0.05 * y.std(), size=200)
 ```
 
-Serial execution prevents concurrent populations from interleaving their trace records.
-
 ```python
 from pysr import PySRRegressor
 
@@ -68,8 +66,6 @@ model = PySRRegressor(
     ncycles_per_iteration=90,
     maxsize=20,
     niterations=25,
-    parallelism="serial",
-    deterministic=True,
     random_state=0,
     use_tracing=True,
     tracing_file="search_trace.jsonl",
@@ -190,8 +186,6 @@ from pysr import PySRRegressor
 model_kwargs = dict(
     operators={1: ["sqrt"], 2: ["+", "-", "*", "/"]},
     niterations=10,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 ```

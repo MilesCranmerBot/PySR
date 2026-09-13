@@ -44,8 +44,6 @@ MODEL_KWARGS = dict(
     },
     elementwise_loss=LETTER_LOSS,
     niterations=20,
-    deterministic=True,
-    parallelism="serial",
 )
 
 

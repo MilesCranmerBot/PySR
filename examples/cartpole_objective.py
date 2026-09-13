@@ -169,7 +169,6 @@ MODEL_KWARGS = dict(
     niterations=120,
     populations=32,
     population_size=64,
-    parallelism="multithreading",
     verbosity=0,
 )
 

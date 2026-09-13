@@ -35,8 +35,6 @@ SETTINGS = dict(
     populations=8,
     ncycles_per_iteration=90,
     maxsize=20,
-    parallelism="serial",
-    deterministic=True,
     random_state=0,
 )
 

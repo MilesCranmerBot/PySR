@@ -25,8 +25,6 @@ MODEL_KWARGS = dict(
     unary_operators=["cos", "exp"],
     batching="auto",
     niterations=40,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

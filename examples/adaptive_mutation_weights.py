@@ -138,8 +138,6 @@ MODEL_KWARGS = dict(
         AdaptiveParsimonyPlugin(),
         TRACER,
     ],
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

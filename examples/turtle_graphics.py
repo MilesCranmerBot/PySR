@@ -328,8 +328,6 @@ MODEL_KWARGS = dict(
     operators=OPERATORS,
     elementwise_loss=CHAMFER_LOSS,
     niterations=20,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

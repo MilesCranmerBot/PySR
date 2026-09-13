@@ -45,8 +45,6 @@ MODEL_KWARGS = dict(
         "min4": lambda a, b, c, d: sympy.Min(a, b, c, d),
     },
     niterations=500,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

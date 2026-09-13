@@ -63,8 +63,6 @@ MODEL_KWARGS = dict(
     niterations=1000,
     maxsize=12,
     should_optimize_constants=False,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

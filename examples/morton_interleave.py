@@ -64,8 +64,6 @@ MODEL_KWARGS = dict(
     elementwise_loss="bit_loss(prediction::Word, target::Word)::Float64 = count_ones(xor(prediction.bits, target.bits)) / 32",
     maxsize=45,
     niterations=800,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

@@ -375,8 +375,6 @@ MODEL_KWARGS = dict(
     population_size=30,
     ncycles_per_iteration=30,
     niterations=800,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 

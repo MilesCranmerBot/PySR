@@ -35,8 +35,6 @@ MODEL_KWARGS = dict(
     },
     elementwise_loss="cell_loss(prediction::Cell, target::Cell)::Float64 = prediction.v == target.v ? 0.0 : 1.0",
     niterations=160,
-    deterministic=True,
-    parallelism="serial",
     verbosity=0,
 )
 
