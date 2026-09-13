@@ -9,9 +9,7 @@ running the documented search rather than by re-describing it here:
     MODEL_KWARGS          every PySRRegressor argument except random_state
     check(model) -> bool  the example's own definition of success
 
-Two examples cannot be driven that way and carry their own runner, so they get their
-own tests below. An example whose result stops reproducing fails here instead of
-rotting in the docs.
+Examples with their own runners are registered separately below.
 
 Wall times are single-seed measurements on a `genx` node, one thread, PySR 2.1.0.
 They pick the marker, not an assertion: timing a search on unknown CI hardware would
@@ -45,7 +43,7 @@ EXAMPLES = {
 }
 
 # Examples that cannot go through a single PySRRegressor fit and carry their own runner.
-SELF_DRIVEN = {"search_trace", "agent_loop_guesses"}
+SELF_DRIVEN = {"search_trace", "agent_loop_guesses", "hopper_controller"}
 
 # Examples whose search recovers its target on some seeds and not others. The measured
 # rate is reported in the docs; asserting recovery on one fixed seed would bake in a

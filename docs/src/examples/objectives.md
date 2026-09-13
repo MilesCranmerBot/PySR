@@ -1,35 +1,21 @@
 # Objectives and losses
 
-## Preamble
-
-```python
-import numpy as np
-
-from pysr import *
-```
-
 ## Custom objectives
 
-Use `loss_function` when scoring needs the expression tree, symbolic
-manipulation, or auxiliary data from the dataset. Use
-`loss_function_expression` when it needs the complete expression object rather
-than its underlying tree. Both accept Julia source defining one of these
-signatures:
+`loss_function` gives the objective the candidate's expression tree. Use it when the score needs to manipulate the tree or read dataset-level information. Use `loss_function_expression` when the score needs the complete expression object. Both modes accept Julia source with one of the signatures below.
 
 ```julia
 objective(tree_or_expression, dataset, options)
 objective(tree_or_expression, dataset, options, idx=nothing)
 ```
 
-With automatic batching, a three-argument objective receives a dataset already
-restricted to the active batch. A four-argument objective receives the full
-dataset and the selected row indices. This can be useful when needing to do
-custom batching operations.
+With three arguments, the objective sees the dataset given to the current evaluation. Automatic batching makes that dataset the active batch. A method with `idx=nothing` can receive the full dataset and the selected row indices, allowing the objective to slice the rows itself.
 
-The following batching-aware mean squared error is equivalent to the default
-objective for an unweighted scalar dataset:
+The following objective reproduces ordinary unweighted mean squared error, while retaining access to the optional batch indices:
 
 ```python
+from pysr import PySRRegressor
+
 objective = """
 function mse_objective(tree, dataset::Dataset{T,L}, options, idx=nothing)::L where {T,L}
     X = idx === nothing ? dataset.X : dataset.X[:, idx]
@@ -46,15 +32,15 @@ model = PySRRegressor(
 )
 ```
 
-Always check the completion flag returned by `eval_tree_array`; an incomplete
-evaluation must receive an infinite or suitably large loss. Return the
-dataset's loss type `L`, which needs to be real even when the data type `T` is
-complex.
+`eval_tree_array` returns a completion flag with the predictions. Check that flag before using the array and assign an infinite, or suitably large, loss to an incomplete evaluation. Return the dataset's loss type `L`; it must remain real even when the data type `T` is complex.
 
-A full objective can also reinterpret the tree. This example treats the two
-children of every binary root as a rational function $P(X)/Q(X)$:
+PySR imports `SymbolicRegression` into Julia before evaluating these source strings, making `Dataset` and `eval_tree_array` available without another import.
+
+A full objective can also attach a different meaning to the stored tree. Here the two children of a binary root supply the numerator and denominator, forming the rational function $P(X)/Q(X)$. The fully qualified `DE.get_child` calls below access the backend's tree interface.
 
 ```python
+from pysr import PySRRegressor
+
 objective = """
 function rational_objective(tree, dataset::Dataset{T,L}, options, idx=nothing)::L where {T,L}
     tree.degree == 2 || return L(Inf)
@@ -78,25 +64,11 @@ model = PySRRegressor(
 )
 ```
 
-The root operator is deliberately ignored in this objective. The equation
-table therefore prints the stored tree rather than the interpreted rational
-function, and automatic prediction or symbolic export cannot reproduce that
-reinterpretation. Keep the objective source and apply the same transformation
-when evaluating the selected equation.
+This objective ignores the root operator and interprets only its two children. The equation table displays the stored tree. `predict` and symbolic export likewise retain the raw tree and cannot automatically reconstruct the quotient. Keep the objective source and apply the child transformation yourself whenever you evaluate the selected equation.
 
 ## Writing the objective in Python
 
-This pattern requires the GIL-releasing search added in PySR versions newer
-than 2.1.0 (unreleased at the time of writing). On older versions, the search
-thread holds Python's global interpreter lock (GIL) for the whole fit, and a
-`loss_function` that calls back into Python will crash or deadlock.
-
-The other examples on this page keep the whole objective in Julia. You can
-instead write the objective in pure Python, and keep only a thin shim on the
-Julia side. The shim locks the GIL, calls the Python function, and converts
-the result to the loss type. The Python function receives the tree, dataset,
-and options as Julia objects, and may itself call back into Julia, including
-`eval_tree_array`:
+The objective itself can live in Python while Julia supplies a thin shim. The search releases Python's global interpreter lock (GIL) while it runs, so the shim reacquires the lock, calls the Python function, and converts its scalar result to the dataset's loss type. The Python function receives the tree, dataset, and options as Julia objects, and it can call back into Julia, including `eval_tree_array`:
 
 ```python
 import numpy as np
@@ -136,47 +108,19 @@ model = PySRRegressor(
 )
 ```
 
-Three details matter here:
+`precision=64` makes the data and loss use `Float64`, matching the Python float returned by this objective.
 
-- `PythonCall.GIL.@lock` is required. The search releases the GIL, so a shim
-  that calls Python without re-locking it crashes the process.
-- `precision=64` stores the data as `Float64`, so the Python float converts
-  exactly to the loss type `L`.
-- Always check the `completed` flag from `eval_tree_array`, and return an
-  infinite loss when it is false.
-
-This is an escape hatch rather than a fast path. Every objective evaluation
-crosses the language boundary, and concurrent evaluations serialise on the
-GIL. As a scale reference: a one-iteration search on a 12-point dataset called
-the Python objective 970 times with `parallelism="serial"` and 929 times with
-`parallelism="multithreading"` (one run each, Apple M1 Pro). A realistic
-search multiplies that by the iteration count. Objectives that need to run
-fast belong in Julia.
+Use this bridge when the objective needs Python-specific logic. Every evaluation crosses the Julia/Python boundary, and concurrent callbacks serialize on the GIL. Keep throughput-sensitive objectives in Julia.
 
 ## Swinging up a cart-pole with a rollout objective
 
-Every other example on this page has a target column: rows go in, predictions come
-out, and the loss compares them one row at a time. A control policy has no such
-column. Nobody can write down the correct force for a given cart-pole state,
-because what makes a force correct is what happens over the next ten seconds. What
-we can score is the behaviour of the whole expression in closed loop, and that is
-what `loss_function_expression` is for: it hands your Julia function the candidate
-expression itself, to call as often as you like before returning a number. Here it
-drives a cart-pole plant with the candidate for 500 steps from each of 16 starting
-states and returns minus the mean per-step reward. Most starts hang the pole
-straight down, so a policy has to pump energy in, catch the pole at the top and
-hold it there, all from one closed-form expression.
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/D11.mp4"></video>
+
+A supervised example gives a target for each row. A control policy has no label of that kind for its force: a force is good only if the subsequent trajectory is good. `loss_function_expression` provides the candidate expression to a rollout objective that can evaluate it throughout the closed loop. This example runs 500 steps from each of 16 training starts and returns the negative mean reward per step. Most of the starts leave the pole hanging down, so the expression must swing it up, catch it, and balance it with one closed-form policy.
 
 ### The plant and what the policy sees
 
-The plant is the textbook cart-pole: a 1.0 kg cart, a 0.1 kg pole of half-length
-0.5 m, gravity 9.8, integrated semi-implicitly at `dt = 0.02` s, so the 500-step
-horizon is 10 s of control. The expression returns a force in units of the 10 N
-actuator cap: its output is clamped to `[-1, 1]` and multiplied by 10. The policy
-sees five numbers rather than the four physical coordinates: scaled cart offset and
-speed, the pole angle as a unit vector `(s, c)`, and scaled pole rate. Splitting the
-angle into sine and cosine removes the wrap at $\pm\pi$ and hands the search `c` as
-a measure of uprightness.
+The implemented plant uses a $1.0\,\mathrm{kg}$ cart and a $0.1\,\mathrm{kg}$ pole with half-length $0.5\,\mathrm{m}$, gravity $9.8$, and semi-implicit Euler integration with $dt=0.02\,\mathrm{s}$. Its 500-step horizon is therefore $10\,\mathrm{s}$. The policy output is clipped to `[-1, 1]` and multiplied by $10\,\mathrm{N}$. The five inputs are scaled cart position, scaled cart speed, $\sin\theta$, $\cos\theta$, and scaled pole rate. The sine/cosine pair avoids the wrap discontinuity at $\pm\pi$, while the cosine input `c` supplies a direct uprightness signal.
 
 <details>
 <summary>Constants and the plant step</summary>
@@ -203,23 +147,17 @@ def step(state, force):
 
 </details>
 
-The 16 training starts are two exactly hanging states at cart positions 0.0 and
-0.25, six more scattered around hanging, two around each horizontal pole angle, and
-four near upright. The 64 held-out starts use the same recipe with every range
-widened: cart offset and speed up to 0.55 instead of 0.35, angle spread 0.70
-instead of 0.35, pole rate up to 1.0 instead of 0.5. `X` holds the five
-observations of the training starts; `y` is zeros the objective never reads.
+Use the initial-state arrays and `observe` helper in `examples/cartpole_objective.py` to construct `X`. Its columns contain the five policy observations, and `y` is a zero placeholder that the objective ignores. The 16 training starts cover hanging, horizontal, and near-upright states; the 64 held-out starts use wider ranges of position, speed, angle, and pole rate.
 
 ### The reward
 
-Each step pays
+At each step, the objective accumulates the reward
 
 $$ r = 2\cos\theta - 0.05\,x^2 - 0.01\left(\frac{F}{10}\right)^2 - 0.005\left(\frac{F - F_{\text{prev}}}{10}\right)^2 $$
 
-so the pole earns up to 2 per step for standing up and the other three terms charge
-for drifting along the rail, for motor effort, and for jerk. The loss is minus the
-mean of $r$ over all 500 steps and all 16 starts, so a policy that holds the pole
-upright and motionless scores about $-2$, and a constant one about $+1.046$.
+The upright term contributes up to 2 per step. The remaining terms penalize, in order, cart displacement, normalized actuator force, and normalized force changes. Here $F$ is the clipped force and $F_{\mathrm{prev}}$ is the preceding force. The objective returns the negative mean of $r$ over 500 steps and 16 starts, so an upright stationary policy has loss near $-2$.
+
+The complete objective source is defined in `examples/cartpole_objective.py` as the Python string `CARTPOLE_REWARD`. The block below shows its Julia function body and abbreviates the state unpacking, observation-buffer setup, integration step, and divergence check supplied by that script. Treat it as a behavior excerpt, not a standalone definition.
 
 ```julia
 function cartpole_reward(ex, dataset::Dataset{T,L}, options)::L where {T,L}
@@ -243,13 +181,15 @@ function cartpole_reward(ex, dataset::Dataset{T,L}, options)::L where {T,L}
 end
 ```
 
-Two escape hatches matter. An expression that fails to evaluate, or returns the
-wrong count or anything non-finite, scores `Inf`; a rollout that leaves the
-numerical box, 20 m off the rail or either rate past 100, scores `1e12`.
+Invalid evaluations and divergent trajectories receive a penalty.
 
 ### The search
 
 ```python
+import sympy
+
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     operators={
         1: ["square", "abs", "tanh"],
@@ -273,79 +213,27 @@ model = PySRRegressor(
 model.fit(X, y, variable_names=["x_n", "v_n", "s", "c", "omega_n"])
 ```
 
-`loss_scale="linear"` is the one setting you cannot omit: PySR's default complexity
-scaling is logarithmic in the loss, which a reward-shaped objective breaks the
-moment the loss goes negative. The operators are plain arithmetic plus `max`, `min`
-and a ternary `ifelse`, enough to express a switch between a swing-up law and a
-balancing law; `ifelse` is user-defined, so `extra_sympy_mappings` supplies the
-SymPy equivalent that lets the champion be exported. The search runs multithreaded
-and is not reproducible seed for seed.
+`loss_scale="linear"` is required here because logarithmic scaling accepts nonnegative losses, including zero, while this reward can make the loss negative. The operator set supplies arithmetic, `max`, and `min`; the user-defined ternary `ifelse` can switch between swing-up and balancing behavior. `extra_sympy_mappings` translates that custom operator to a SymPy `Piecewise` expression for export. The search uses multithreading, so repeated fits can differ even with the same nominal seed.
 
-### What the runs found
+### Evaluating a policy
 
-Five seeds of the script as written land champions between loss -0.956 and -1.640
-at complexity 16 to 23, each taking 5831.6 to 7244.8 seconds, so budget about two
-hours per run:
-
-| seed | wall (s) | complexity | loss | all 64 held-out positive |
-|---:|---:|---:|---:|:--|
-| 0 | 6866.26 | 20 | -1.0682108 | yes |
-| 1 | 6580.95 | 16 | -0.95603234 | yes |
-| 2 | 5831.59 | 16 | -1.5824542 | yes |
-| 3 | 7244.76 | 22 | -1.5051432 | no |
-| 4 | 6289.25 | 23 | -1.6398351 | no |
-
-Three of the five champions earn positive mean reward on all 64 held-out starts, so
-that claim holds on three runs in five and no single run can be relied on for it.
-
-Training loss does not order the held-out outcome, and it inverts it here. The two
-seeds with the best training losses, 4 at -1.6398351 and 3 at -1.5051432, are the
-two that fail; seed 1, the worst of the five at -0.95603234, holds all 64. Sixteen
-starts is a small training set for a policy, and a law can exploit them while
-staying fragile at the wider angles and rates of the held-out set. To make the
-held-out property reliable, widen or enlarge the training starts rather than
-lengthen the search. Seed 2 gets both: complexity 16, the second-best training
-loss, and all 64 held-out starts positive.
+One controller returned by the search is:
 
 ```
 (tanh(((0.46341985 * v_n) + (omega_n + (s + omega_n))) / 0.00043365502) - v_n) / 0.97654253
 ```
 
-Dividing by 0.00043365502 before the `tanh` makes it a smooth sign function, so the
-law is close to bang-bang: drive the actuator to one rail or the other by the sign
-of $0.463\,v_n + 2\,\omega_n + s$, damp with `v_n`, scale by 1.024.
+A low training loss alone does not establish successful swing-up from new initial states. In `examples/cartpole_objective.py`, `mean_rewards(model, HELD_OUT_STARTS, index=...)` evaluates a selected equation on the wider held-out set, and `check(model)` requires positive mean reward on every start. Use these rollout checks when choosing a policy.
 
-Five seeds at `niterations=50` and nothing else changed finish in 1779.5 to 3379.4
-seconds, land champions from -0.96431893 to -1.437396 at complexity 16 to 25, and
-hold all 64 held-out starts on two of five:
-
-| seed | wall (s) | complexity | loss | all 64 held-out positive |
-|---:|---:|---:|---:|:--|
-| 0 | 3379.40 | 22 | -0.96431893 | no |
-| 1 | 2454.43 | 17 | -1.12998 | yes |
-| 2 | 1849.11 | 17 | -1.386335 | no |
-| 3 | 1779.51 | 16 | -1.2796379 | no |
-| 4 | 2365.11 | 25 | -1.437396 | yes |
-
-The Pareto fronts agree closely on the way up. Every seed at either budget starts
-from a constant at loss about 1.046, the do-nothing policy that lets the pole hang,
-then passes `omega_n - x_n` at complexity 3 and `tanh(omega_n) - x_n` at complexity
-4 with identical losses of 0.648032 and 0.281043, and first goes negative between
-complexity 4 and 7. The film clip shows this front filling in, rolling its rungs
-out from one shared hanging start.
-
-The full runnable script is `examples/cartpole_objective.py`.
+Allow roughly two hours for the search configuration above. The complete runnable example is `examples/cartpole_objective.py`.
 
 ## Inventing a pseudorandom generator with no target
 
-Every other example here fits a target: you have `y`, and the loss measures how close a
-candidate gets to it. This search has nothing to fit. We want a 32-bit state update
-`x -> f(x)` that behaves like a pseudorandom generator, and no array of correct answers
-exists, because what is being asked for is a property of the map rather than a value at
-each row. The definition of a good expression lives entirely in the loss function.
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/D7.mp4"></video>
 
-The inputs are 32 random nonzero seed states, one per row, and `y` is a column of zeros
-that the objective never reads:
+Ordinary regression supplies `y` and compares every candidate output with a target. This example instead searches for a 32-bit state update $x \mapsto f(x)$ whose iterates have specified properties. Its score comes from how the map behaves, so the objective defines what counts as a good generator without consulting a target array.
+
+The data rows provide 32 random nonzero seeds. `y` is a zero column retained for the estimator interface; the objective never reads it.
 
 ```python
 import numpy as np
@@ -360,13 +248,11 @@ for i, seed in enumerate(SEEDS):
 y = np.zeros(len(SEEDS), dtype=object)
 ```
 
-Values are unsigned 32-bit words wrapped in a Julia type, so shifts wrap and truncate the
-way a real generator does. The `sample` hook is biased toward small values, since shift
-distances are the common case for a constant here, and the `mutate` hook flips single bits
-half the time so evolution can adjust one bit of a tap constant without discarding it. The
-`string` hook prints small words as decimals and everything else as eight hex digits:
+Each state is an unsigned 32-bit word, wrapped in a Julia type. The `shl` and `shr` operators below pass their `UInt32` shift count directly; this example does not mask counts into `0:31`, so arbitrary sampled counts follow Julia's shift semantics and bits shifted out of the 32-bit word are discarded. The operations do not rotate the state. The `sample` hook favors values from 0 through 31 because those are common shift distances, while still sampling arbitrary `UInt32` values. Half of mutations flip a single bit, allowing a local change to a tap constant; the other half adds either 1 or `typemax(UInt32)`. The `string` hook displays values below 32 in decimal and larger words as eight hexadecimal digits.
 
 ```python
+from pysr import TypeSpec
+
 SPEC = TypeSpec(
     "Word",
     fields={"bits": "UInt32"},
@@ -377,72 +263,34 @@ SPEC = TypeSpec(
 )
 ```
 
-The operator set is the instruction set of a shift-register generator: complement, xor,
-and, or, and the two shifts. No arithmetic and no floating point.
+The operators form a restricted bitwise instruction set: complement, XOR, AND, OR, left shift, and right shift. The search excludes arithmetic and floating-point operations.
 
 ### What the objective scores
 
-The loss iterates each candidate for 256 steps from every seed and scores the generator
-that walk describes. It is a sum of six terms, each of which is 0 exactly when its
-requirement is met:
+`examples/prng_period.py` defines the objective as a Julia source string named `PRNG_LOSS`. It includes the period-certificate implementation used below.
 
-- `period`, `1 - log2(proven) / 32`, where `proven` is the certified orbit length.
-- `balance`, the mean squared bias of each of the 32 bit columns away from half ones.
-- `autocorr`, the mean squared correlation of each bit column with itself at lags 1, 2, 3
-  and 5.
-- `diffusion`, a penalty when flipping one input bit moves fewer than four output bits.
-- `edge`, a penalty when some output bit depends on fewer than two input bits.
-- `shear`, the correlation of bit `b` at one step with bit `b + d` a step or two later, for
-  shifts `d` from -3 to 3, which is what stops a plain shift from scoring well.
+For every candidate, the objective walks 256 steps from each seed and adds six terms that penalize departures from their desired properties:
+
+- `period` is $1 - \log_2(\mathrm{proven})/32$, with `proven` equal to the certified orbit length when certification succeeds.
+- `balance` is the mean squared bias of each bit column away from one half.
+- `autocorr` is the mean squared normalized self-correlation of each bit column at lags 1, 2, 3, and 5.
+- `diffusion` penalizes an average of fewer than four changed output bits when each input bit is flipped on a fixed probe set.
+- `edge` penalizes output bits that respond to fewer than two distinct input-bit flips across that probe set.
+- `shear` measures correlations between bit `b` and shifted bit `b + d` at one- and two-step lags, for nonzero shifts `d` from -3 to 3. It keeps a plain shift from receiving a good score.
 
 ### Certifying a period of four billion without walking it
 
-The interesting term is the period, because the orbit we are asking for is 4294967295
-states long and nothing may iterate that far. The certificate is linear algebra over
-GF(2). The objective evaluates the candidate on 0, on the 32 basis states and on 32 fixed
-probe states. If the output is zero at zero and the probe images agree with the matrix
-read off the basis images, the map is GF(2)-linear on that evidence, and that matrix is
-its columns. It then builds the minimal polynomial of the first seed's Krylov sequence
-and tests it for irreducibility; if it is irreducible, the orbit length is exactly the
-multiplicative order of `x` modulo that polynomial, found by dividing the prime factors
-out of `2^deg - 1`. A candidate whose period cannot be certified is credited only with
-the orbit it was seen to walk in 256 steps, so a map is paid for what it can prove.
+The requested nonzero orbit contains $2^{32}-1 = 4{,}294{,}967{,}295$ states, so a direct walk is impractical. The certificate evaluates the candidate at three groups of inputs: zero, all 32 basis states, and 32 fixed probes. It requires zero to map to zero and the image of each probe to agree with the matrix assembled from the basis images. These finite checks only screen for GF(2) linearity on the supplied evidence; they do not prove global linearity for an arbitrary expression.
 
-<details><summary>The certificate entry point</summary>
-
-```julia
-function _prng_certified(tree, options, seed::UInt32)
-    m = 33 + length(PRNG_PROBES)
-    grid = Matrix{Word}(undef, 1, m)
-    grid[1, 1] = Word(UInt32(0))
-    for b in 0:31
-        grid[1, 2 + b] = Word(UInt32(1) << b)
-    end
-    for (i, p) in enumerate(PRNG_PROBES)
-        grid[1, 33 + i] = Word(p)
-    end
-    out, ok = eval_tree_array(tree, grid, options)
-    ok || return UInt64(0)
-    out[1].bits == 0 || return UInt64(0)
-
-    cols = [out[2 + b].bits for b in 0:31]
-    for (i, p) in enumerate(PRNG_PROBES)
-        _prng_matvec(cols, p) == out[33 + i].bits || return UInt64(0)
-    end
-
-    f = _prng_minpoly(cols, seed)
-    f == 0 && return UInt64(0)
-    deg = _prng_deg(f)
-    _prng_irreducible(f, deg) || return UInt64(0)
-    return _prng_order(f, deg)
-end
-```
-
-</details>
+A successful certificate gives the candidate's period provided the expression is globally GF(2)-linear. If certification fails, the objective uses the orbit length observed during the finite walk. The period-checking implementation is in `examples/prng_period.py`.
 
 ### Settings
 
+The settings below pass the source-defined `PRNG_LOSS` objective to PySR:
+
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     type_spec=SPEC,
     operators={
@@ -470,43 +318,18 @@ model = PySRRegressor(
 model.fit(X, y, variable_names=["x"])
 ```
 
-`batching=False` matters: the objective walks every seed and indexes the sample axis, so a
-minibatch would score a different problem. The layout is eight small populations evolved
-deeply, because each candidate costs a 256-step walk of all 32 seeds, which makes
-generations worth more than members. `deterministic=True`, `parallelism="serial"` and a
-fixed `random_state` make a run reproducible.
+Keep `batching=False` because the objective walks every seed; a minibatch would score a different problem. Each candidate requires a 256-step walk over all 32 seeds. Allow about an hour for this search.
 
 ### Results
 
-Success is a property of the front, and it is re-derived in Python by a different route
-than the loss uses: `check` reads each candidate's GF(2) matrix out of `predict`, confirms
-the map is linear on 256 random states, and computes the order of that matrix by repeated
-squaring. Order 4294967295 forces the period, since that order divides a power of two
-times a product of `2^d - 1` over the degrees of the minimal polynomial's irreducible
-factors, and 65537 divides it only when 32 divides `d`.
+The script's `check(model)` looks for a front member that passes a separate finite linearity screen and whose inferred GF(2) matrix has order $2^{32}-1$. As with the objective's certificate, this establishes the candidate's period only if the expression is globally GF(2)-linear.
 
-On PySR 2.1.0, all 5 of 5 seeds put a certified full-period generator on the front, at
-complexities 15, 17, 17, 19 and 19, with losses between 0.000326609973347 and
-0.0315960661365118. Once the period is certified its term is essentially zero, so the
-residual loss is the statistical terms: how balanced, uncorrelated and diffusive the
-generator is beyond having the right orbit length. The film clip quotes fifteen nodes,
-which is the smallest of the five certified winners; the others land two or four nodes
-larger on the same kind of expression. Different seeds settle at different sizes, and a
-spread of 15 to 19 nodes at comparable loss is the ordinary shape of that.
-
-The smallest one, from the seed that reached complexity 15 at loss 0.0060682148590457, is
+One recovered expression is:
 
 ```
 bxor(shl(x, 1), bxor(shr(bxor(shr(x, 1), x), 1), band(x, 0xffffffe3)))
 ```
 
-which is a linear-feedback shift register in the form an evolutionary search finds: a left
-shift for the state advance, a right-shifted xor of the state feeding taps back in, and a
-mask selecting which low bits are fed.
+Fixed shifts, XOR, and AND with a constant mask make this expression globally linear by construction. For such a map, matrix order $2^{32}-1$ implies that every nonzero word lies on one orbit of that length. The remaining score terms assess the generator's finite-sample balance, correlations, and diffusion.
 
-This is the slowest example in the set, at roughly 54 minutes per seed, measured at
-3214.45 to 3248.18 seconds. The cost sits in the objective rather than the certificate:
-every candidate evaluation is a 256-step walk of 32 seeds plus 32 single-bit flip probes,
-while the algebraic period test is a few dozen 32-bit operations.
-
-The full runnable script is `examples/prng_period.py`.
+The complete runnable example is `examples/prng_period.py`.

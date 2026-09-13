@@ -1,23 +1,10 @@
 # Physics and units
 
-## Preamble
-
-```python
-import numpy as np
-
-from pysr import *
-```
-
 ## Dimensional constraints
 
-One other feature we can exploit is dimensional analysis.
-Say that we know the physical units of each feature and output,
-and we want to find an expression that is dimensionally consistent.
+Dimensional constraints let PySR use physical units during symbolic search. When the units of the features and target are known, pass a unit expression for each feature and one for the target so candidates with mismatched dimensions receive a penalty.
 
-We can do this as follows, using `DynamicQuantities.jl` to assign units,
-passing a string specifying the units for each variable.
-First, let's make some data on Newton's law of gravitation, using
-astropy for units:
+The fit interface follows the unit syntax of `DynamicQuantities.jl`. The following example uses Astropy to sample a mass $M$, a test mass $m$, and a separation $r$, then evaluates Newton's inverse-square law $F = GMm/r^2$.
 
 ```python
 import numpy as np
@@ -31,12 +18,7 @@ G = const.G
 F = G * M * m / r**2
 ```
 
-We can see the units of `F` with `F.unit`.
-
-Now, let's create our model.
-Since this data has such a large dynamic range,
-let's also create a custom loss function
-that looks at the error in log-space:
+The force values span a wide range. This loss compares their magnitudes in logarithmic space and penalizes a wrong sign:
 
 ```python
 elementwise_loss = """function loss_fnc(prediction, target)
@@ -47,9 +29,11 @@ end
 """
 ```
 
-Now let's define our model:
+`dimensional_constraint_penalty` adds a cost when a candidate fails dimensional analysis:
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     binary_operators=["+", "-", "*", "/"],
     unary_operators=["square"],
@@ -63,10 +47,11 @@ model = PySRRegressor(
 )
 ```
 
-and fit it, passing the unit information.
-To do this, we need to use the format of [DynamicQuantities.jl](https://symbolicml.org/DynamicQuantities.jl/dev/#Usage).
+Pass numeric values to `fit`, with matching units in column order through `X_units` and the target unit through `y_units`. Unit strings follow the Julia syntax documented by [DynamicQuantities.jl](https://symbolicml.org/DynamicQuantities.jl/dev/#Usage).
 
 ```python
+import pandas as pd
+
 # Get numerical arrays to fit:
 X = pd.DataFrame(dict(
     M=M.to("M_sun").value,
@@ -83,36 +68,19 @@ model.fit(
 )
 ```
 
-You can observe that all expressions with a loss under
-our penalty are dimensionally consistent!
-(The `"[⋅]"` indicates free units in a constant, which can cancel out other units in the expression.)
-For example,
+The loss is nonnegative, and the dimensional penalty is additive. A candidate with total loss below that penalty therefore did not receive the dimensional-violation charge and is dimensionally consistent for the supplied units. The marker `"[⋅]"` denotes a constant whose units remain free. The unit-aware form below illustrates this notation: `M[kg]` supplies mass, so the constant supplies the acceleration units needed for the target:
 
 ```julia
 "y[m s⁻² kg] = (M[kg] * 2.6353e-22[⋅])"
 ```
 
-would indicate that the expression is dimensionally consistent, with
-a constant `"2.6353e-22[m s⁻²]"`.
-
-Note that this expression has a large dynamic range so may be difficult to find. Consider searching with a larger `niterations` if needed.
-
-Note that you can also search for exclusively dimensionless constants by settings
-`dimensionless_constants_only` to `true`.
+Set `dimensionless_constants_only=True` to restrict fitted constants to dimensionless quantities.
 
 ## Using differential operators
 
-As part of the [`TemplateExpressionSpec`](/examples/expression-specifications),
-you can also use differential operators within the template.
-The operator for this is `D` which takes an expression as the first argument,
-and the argument _index_ we are differentiating as the second argument.
-This lets you compute integrals via evolution.
+A [`TemplateExpressionSpec`](/examples/expression-specifications) can include differential operators in its `combine` string. `D` takes the expression to differentiate and an argument index. Here, `D(f, 1)` differentiates the learned function `f` with respect to its first argument, and `df(x)` evaluates that derivative. Matching those values to data turns antiderivative discovery into regression.
 
-For example, let's say we wish to find the integral of $\frac{1}{x^2 \sqrt{x^2 - 1}}$
-in the range $x > 1$.
-We can compute the derivative of a function $f(x)$, and compare that
-to numerical samples of $\frac{1}{x^2\sqrt{x^2-1}}$. Then, by extension,
-$f(x)$ represents the indefinite integral of it with some constant offset!
+The regression target is the integrand $1/(x^2\sqrt{x^2 - 1})$ on $x > 1$. The template searches for a function $f$ whose derivative matches samples of the integrand, leaving an additive constant undetermined.
 
 ```python
 import numpy as np
@@ -137,22 +105,13 @@ model = PySRRegressor(
 model.fit(x[:, np.newaxis], y)
 ```
 
-If everything works, you should find something that simplifies to $\frac{\sqrt{x^2 - 1}}{x}$.
-
-Here, we write out a full function in Julia.
+The target antiderivative is $f(x) = \frac{\sqrt{x^2 - 1}}{x}$, up to an additive constant.
 
 ## Discovering a PDE
 
-Suppose we have data in the form of a field `u(x, t)`: measurements of
-some quantity on a grid of positions, repeated over time. We can
-discover the PDE `u_t = f(u, u_x, u_xx, ...)` by turning this into a
-normal regression problem: every grid point is one sample, the input
-features are the field and its spatial derivatives, and the target is
-the time derivative.
+For a field $u(x,t)$ sampled on a space-time grid, each point becomes one regression row: its field value and spatial derivatives are features, and its time derivative is the target. PySR then searches for the right-hand side in $u_t = f(u, u_x, u_{xx}, \ldots)$.
 
-Let's simulate the viscous Burgers equation,
-`u_t = -u*u_x + 0.1*u_xx`, on a periodic domain
-(in practice you would use measured data instead):
+The following example simulates the viscous Burgers equation $u_t = -u\,u_x + 0.1\,u_{xx}$ on a periodic domain. Measurements of the field can replace the simulation when they are arranged into the same feature and target arrays.
 
 <details>
 <summary>Data generation code</summary>
@@ -189,11 +148,11 @@ t = np.arange(U.shape[0]) * 0.1
 
 </details>
 
-Now we build the feature matrix and target. The spatial derivatives are
-computed with a Savitzky-Golay filter, which smooths the data while
-differentiating it; the time derivative is a finite difference:
+Estimate spatial derivatives with the smoothing differentiator `savgol_filter` and time derivatives with `np.gradient`. Supply the coordinate spacings and keep each space-time point aligned across the feature columns and target:
 
 ```python
+import numpy as np
+
 from scipy.signal import savgol_filter
 
 ux = savgol_filter(U, 21, 3, deriv=1, delta=dx, axis=-1)
@@ -204,10 +163,11 @@ X = np.stack([U, ux, uxx], axis=-1).reshape(-1, 3)
 y = ut.reshape(-1)
 ```
 
-Now let's fit. The `complexity_of_variables` list makes higher
-derivatives cost more, which biases the search toward low-order terms:
+`complexity_of_variables=[1, 2, 3]` makes higher spatial derivatives more expensive, biasing the search toward lower-order terms when candidate fits compete. A successful low-complexity search should place $0.1\,u_{xx} - u\,u_x$ on the Pareto front, matching the right-hand side that generated the snapshots.
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     binary_operators=["+", "-", "*"],
     complexity_of_variables=[1, 2, 3],
@@ -218,14 +178,6 @@ model.fit(X, y, variable_names=["u", "u_x", "u_xx"])
 print(model)
 ```
 
-If all goes well, you should see an equation like `0.1 * u_xx - u * u_x`
-on the Pareto front at low complexity, which is the PDE we put in!
-This setup also survives noise well: at 1% Gaussian noise,
-finite-difference features fail completely, but the Savitzky-Golay
-features above still recover the right terms (coefficients ~13% low),
-and even at 5% noise the structure survives. Before trusting the
-constants, simulate the discovered PDE forward from a held-out initial
-condition.
+The regression uses estimated derivatives, so simulate the discovered PDE forward from a held-out initial condition before relying on its coefficients.
 
-Finally, if you know the physical units, pass them to `fit` with
-`X_units=["m/s", "s^-1", "m^-1*s^-1"]` and `y_units="m*s^-2"`.
+If the field $u$ has units $\mathrm{m\,s^{-1}}$, then $u_x$ has units $\mathrm{s^{-1}}$, $u_{xx}$ has units $\mathrm{m^{-1}\,s^{-1}}$, and $u_t$ has units $\mathrm{m\,s^{-2}}$. For this feature order, pass the corresponding strings through `X_units=["m/s", "s^-1", "m^-1*s^-1"]` and `y_units="m*s^-2"`.

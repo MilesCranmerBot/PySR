@@ -1,18 +1,8 @@
 # Instrumentation and workflow
 
-## Preamble
-
-```python
-import numpy as np
-
-from pysr import *
-```
-
 ## Using TensorBoard for logging
 
-You can use TensorBoard to visualize the search progress, as well as
-record hyperparameters and final metrics (like `min_loss` and `pareto_volume` - the latter of which
-is a performance measure of the entire Pareto front).
+Pass `TensorBoardLoggerSpec` through `logger_spec` to write search progress to TensorBoard. `TensorBoardLoggerSpec` records the model's search hyperparameters and writes scalar summaries for the run. The example uses `min_loss`, which tracks the current best loss, and `pareto_volume`, which summarizes the Pareto front.
 
 ```python
 import numpy as np
@@ -38,7 +28,7 @@ model = PySRRegressor(
 model.fit(X, y)
 ```
 
-You can then view the logs with:
+Start TensorBoard with the directory that contains the run logs:
 
 ```bash
 tensorboard --logdir logs/
@@ -46,21 +36,15 @@ tensorboard --logdir logs/
 
 ## Recording the genealogy of a search
 
-The animation of an evolving population, with dots for evaluated expressions and edges
-for the mutations and crossovers between them, is built from a trace file that
-SymbolicRegression.jl can write during a search. Turning on tracing gives you one JSONL
-record per (iteration, island), holding the live population plus every mutation,
-crossover, tuning and death event. Joining those events on member references gives the
-full parent-to-child graph, and the ancestry of the winning expression is then a walk
-back up the parent edges.
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/D8.mp4"></video>
 
-One setup detail is worth stating up front: the trace writer lives in a JSON3
-weak-dependency extension, and `use_tracing` loads it on demand, installing it into the
-PySR Julia environment the first time a search asks for it. There is nothing to add by
-hand, and a search that leaves tracing off never pays for it.
+The complete recorder and post-processing workflow is in `examples/search_trace.py`. `load_trace` and `ancestry` are example-local helpers, not PySR API methods.
 
-Now the data. Two hundred rows, three features, one quadratic term and one cosine term,
-with Gaussian noise at five percent of the target's spread:
+Tracing records how a symbolic-regression population changes. Setting `use_tracing=True` activates the optional recorder. PySR loads the required JSON dependency lazily on first use. It then writes JSONL records to `tracing_file`, one for each population at each iteration, with the live members and their mutation, crossover, tuning, and death events. These recorded fields supply the members and parent relationships that the helpers need to reconstruct a graph and one selected path. The helpers work from recorded events and do not expose every historical branch.
+
+With tracing disabled, PySR does not request any trace output or load the tracing dependency.
+
+The target combines one quadratic term, one cosine term, and an offset. The added Gaussian noise has standard deviation equal to $5\%$ of the target's spread:
 
 ```python
 import numpy as np
@@ -71,13 +55,7 @@ y = 2.5382 * np.cos(X[:, 2]) + X[:, 0] ** 2 - 1.5
 y = y + rng.normal(0, 0.05 * y.std(), size=200)
 ```
 
-The noise puts a floor under the loss. The realized mean squared error of the noise
-itself is 0.0266, so nothing the search can find will score below roughly that.
-
-Eight islands of twenty-seven members, ninety cycles per iteration, twenty-five
-iterations. The `deterministic=True`, `random_state=0` and `parallelism="serial"` settings
-make the trace reproducible, since tracing across threads would interleave records from
-concurrent islands.
+Serial execution prevents concurrent populations from interleaving their trace records.
 
 ```python
 from pysr import PySRRegressor
@@ -99,16 +77,7 @@ model = PySRRegressor(
 model.fit(X, y)
 ```
 
-Be aware of the volume before you point this at a long run. Twenty-five iterations across
-eight islands take about half a minute and leave two hundred iteration records and close
-to 20 MB of JSONL, holding roughly 48,000 expressions. Tracing is a debugging and
-visualization tool, so keep the searches short and delete the files when you are done.
-
-Reading the trace back means walking the `iteration` records: their `members` give you
-each expression by reference, and their `mutations` map gives the event list for each
-parent. A crossover event is pushed onto both parents' event lists, so we read it from
-`parent1` only. Each child records which of its two parents it descends from, so the edge
-is oriented onto that parent and the other is carried alongside it as `mate`:
+Keep tracing runs short: the files grow with the search, and this `load_trace` helper reads the entire file into memory.
 
 <details>
 <summary>Trace-reading code</summary>
@@ -162,8 +131,7 @@ def load_trace(trace_path):
 
 </details>
 
-With the graph in hand, the lit path in the animation is the lowest-loss expression
-followed back up its parent edges:
+`ancestry` selects the lowest-loss recorded member and follows the first edge for each child. It returns one path, which ends when no edge remains or a reference repeats.
 
 ```python
 def ancestry(nodes, edges):
@@ -183,45 +151,17 @@ def ancestry(nodes, edges):
     return winner, chain
 ```
 
-Across five seeds the shape of the trace is stable. Each run recorded between 48,573 and
-48,741 distinct expressions and between 51,578 and 51,865 parent-to-child edges, split
-into 28,707 to 28,917 mutations, 17,288 to 17,758 crossovers, and exactly 5,400 tuning
-events, one per member per island per iteration. Between 9,311 and 10,148 of those edges
-were rejected proposals, and between 10,546 and 11,078 carried a distinct second parent.
-The winner's ancestry ran 70 to 186 steps, of which 22 to 59 were crossovers and 18 to 38
-of those crossovers brought in a second parent. So all four things the animation draws,
-the evaluated expressions, the mutation and crossover edges, the path back to the winner,
-and the second parents feeding into it, come out of the trace directly.
+Trace records label features `x1`, `x2`, and so on by column order, independently of any `variable_names` passed to the search. Thus `x1` refers to `X[:, 0]`, and `x3` refers to `X[:, 2]` in this example.
 
-Each search takes about 32 seconds on one core.
-
-Recovery is another matter, and twenty-five iterations is not many. Two of the five seeds
-reached the noise floor, at losses 0.0263 and 0.0263. The other three finished at 0.031,
-0.275 and 0.439. Raise `niterations` if you want the answer; the trace is the same shape
-either way, just larger.
-
-One naming detail: trace records label features `x1`, `x2`, ... in column order and ignore
-any `variable_names` you pass to the search, so `x1` in a trace record is `X[:, 0]` and
-`x3` is `X[:, 2]`.
-
-The full runnable script is `examples/search_trace.py`.
+Use `examples/search_trace.py` for the complete tracing workflow.
 
 ## Closing an agent loop with `guesses=`
 
-`guesses=` lets you hand PySR a starting expression, which means one search can be
-driven by whatever looked at the results of the previous one. In the release film
-that driver is a coding agent working in a scratch directory: it is given a CSV,
-runs a cold search, reads the whole Pareto front, writes one candidate equation,
-and runs the search again with that candidate in `guesses=`. The example on this
-page is that session with one part replaced. A docs page cannot call a live model
-and still reproduce, so the model call returns the expression the agent actually
-replied with, and everything else is the filmed search: same data, same operators,
-same two rounds, same `guesses=` handoff.
+The `guesses=` keyword accepts a list of expression strings to seed a fit. An external workflow can inspect `model.equations_`, propose an expression, and pass it into a later search. PySR can then optimize its numeric constants.
 
-The measurements are 160 rows of kinetic energy against mass and velocity in
-natural units, with velocities up to 0.88 c, so the Newtonian form is only the
-low-velocity limit. Noise is 0.15 percent of the median energy, which puts the
-best achievable loss at 5.127e-08:
+This example replays a recorded coding-agent proposal from `PROPOSALS`. The custom `agent(front, tried)` helper returns stored expressions; it does not call a live agent or model service. The complete implementation is in `examples/agent_loop_guesses.py`.
+
+The target is relativistic kinetic energy in natural units, with $c=1$ and speeds up to $0.88c$. Gaussian noise has standard deviation $0.15\%$ of the median exact energy. `NOISE_FLOOR` stores its variance for the loop's training-loss stopping rule.
 
 <details>
 <summary>Data generation code</summary>
@@ -244,10 +184,6 @@ VARIABLE_NAMES = ["mass", "velocity"]
 
 </details>
 
-The target is $E = m\left(\left(1 - v^2\right)^{-1/2} - 1\right)$, and the search
-is never told that. Its vocabulary is the four arithmetic operators plus `sqrt`,
-which is exactly enough to write the Lorentz factor:
-
 ```python
 from pysr import PySRRegressor
 
@@ -260,30 +196,7 @@ model_kwargs = dict(
 )
 ```
 
-Those are the same settings the film pinned, and nothing beyond the problem is
-configured. `deterministic=True` with `parallelism="serial"` and a fixed
-`random_state` is what lets a drop in loss be attributed to the guess that was
-fed in rather than to a different random draw.
-
-A cold search at these settings gets close and stops. On seed 3 it ends at loss
-5.664e-05, three orders of magnitude above the noise floor, and the front it
-hands over reads as a ladder of polynomials in velocity:
-
-```
- complexity     loss                                                            equation
-          1 0.161396                                                            velocity
-          3 0.157968                                                 velocity * 1.112165
-          4 0.111584                                               sqrt(mass) * velocity
-          5 0.021796                                        mass * (velocity * velocity)
-          7 0.018648                       ((velocity * velocity) * mass) + -0.056107998
-          9 0.004324             (velocity * 1.3305349) * ((velocity * velocity) * mass)
-         11 0.003208 ((velocity * ((velocity * 1.6953516) * velocity)) * mass) * velocity
-```
-
-The ladder continues in the same style up to complexity 30 at loss 5.664e-05. The
-complexity-5 row is $mv^2$, the Newtonian energy up to a factor, and every row
-above it is a correction series bolted onto that term. This is the reading the
-filmed agent made, and its reply was one expression:
+The proposal uses the known relativistic structure:
 
 ```python
 PROPOSALS = ["(mass / sqrt(1 - (velocity * velocity))) - mass"]
@@ -298,16 +211,11 @@ def agent(front, tried):
     return PROPOSALS[len(tried)] if len(tried) < len(PROPOSALS) else None
 ```
 
-That function is the stand-in. A real loop puts the printed front and the list of
-expressions already tried into a prompt and parses one expression out of the
-reply, which is what the film recorded; here the reply is a constant so the page
-reproduces. Everything the stand-in stands for is the model call itself.
-
-The loop around it is a few lines. `guesses` takes a plain list of expression
-strings for a single-output problem, and the loop stops when the best loss is at
-the measurement noise floor or the driver has nothing left to propose:
+The loop begins with `guesses=None` and passes each proposal as a one-element list to the next fit. It stops when the minimum training loss reaches `2 * NOISE_FLOOR` or the helper has no proposal left. This threshold is an example-specific stopping rule, not a lower bound on achievable loss.
 
 ```python
+from pysr import PySRRegressor
+
 guesses, tried = None, []
 while True:
     model = PySRRegressor(**model_kwargs, guesses=guesses, random_state=0)
@@ -322,27 +230,4 @@ while True:
     guesses = [proposal]
 ```
 
-Round one starts from that guess and reaches the floor on all five seeds tested.
-The cold round lands between 5.664e-05 and 4.972e-04 depending on the seed; the
-seeded round lands between 5.148e-08 and 5.211e-08, against a floor of 5.127e-08.
-On seed 3 the front reduces to the law in closed form:
-
-```
- complexity         loss                                                equation
-          8 1.112200e-02              (mass / sqrt(1.1663519 - velocity)) - mass
-          9 4.324070e-03 velocity * ((velocity * (velocity * 1.3304913)) * mass)
-         10 5.210982e-08       (mass / sqrt(1.0 - (velocity * velocity))) - mass
-```
-
-That is the filmed session's own result, 5.210982e-08 at complexity 10,
-reproduced on PySR 2.1.0. Other seeds reach the same loss carrying redundant
-structure around it, complexity 14 to 28 at losses indistinguishable from the
-floor, since once the fit is at the noise level extra terms cost nothing. Both
-searches together take 5.2 to 5.6 seconds per seed, after about 21 seconds of
-one-time Julia compilation in the first process.
-
-Note that the guess only has to be right about structure. PySR optimizes
-constants itself, and the guess above writes `1` where the search later prefers
-`1.0` to eight digits.
-
-The full runnable script is `examples/agent_loop_guesses.py`.
+Use `examples/agent_loop_guesses.py` for the complete handoff workflow.

@@ -1,21 +1,15 @@
 # Value types
 
-## Preamble
-
-```python
-import numpy as np
-
-from pysr import *
-```
-
 ## Complex numbers
 
-PySR can also search for complex-valued expressions. Simply pass
-data with a complex datatype (e.g., `np.complex128`),
-and PySR will automatically search for complex-valued expressions:
+To fit complex-valued expressions, pass feature and target arrays with a complex NumPy dtype.
+
+The code constructs a complex cosine target and restricts the search to `+`, `-`, `*`, and `cos`:
 
 ```python
 import numpy as np
+
+from pysr import PySRRegressor
 
 X = np.random.randn(100, 1) + 1j * np.random.randn(100, 1)
 y = (1 + 2j) * np.cos(X[:, 0] * (0.5 - 0.2j))
@@ -27,64 +21,58 @@ model = PySRRegressor(
 model.fit(X, y)
 ```
 
-You can see that all of the learned constants are now complex numbers.
-We can get the sympy version of the best equation with:
+The fitted constants belong to the complex-valued expression domain. Use `model.sympy()` to inspect the selected equation in SymPy form:
 
 ```python
 model.sympy()
 ```
 
-We can also make predictions normally, by passing complex data:
+Pass an equation-row index to `predict`; `-1` selects the final row of `equations_`:
 
 ```python
 model.predict(X, -1)
 ```
 
-to make predictions with the most accurate expression.
 ## Julia packages and types
 
-PySR uses [SymbolicRegression.jl](https://github.com/astroautomata/SymbolicRegression.jl)
-as its search backend. This is a pure Julia package, and so can interface easily with any other
-Julia package.
-For some tasks, it may be necessary to load such a package.
+PySR delegates its symbolic-regression search to the pure Julia package [SymbolicRegression.jl](https://github.com/astroautomata/SymbolicRegression.jl). A custom operator can call functionality from another Julia package through that backend.
 
-For example, let's say we wish to discovery the following relationship:
+Load the package that supplies the prime lookup before defining the operator. The target in this example is
 
 $$ y = p_{3x + 1} - 5, $$
 
-where $p_i$ is the $i$th prime number, and $x$ is the input feature.
+where $p_i$ denotes the $i$th prime and $x$ is the input feature. The lookup comes from [Primes.jl](https://github.com/JuliaMath/Primes.jl).
 
-Let's see if we can discover this using
-the [Primes.jl](https://github.com/JuliaMath/Primes.jl) package.
-
-First, let's get the Julia backend:
+First, import the handle to PySR's Julia runtime:
 
 ```python
 from pysr import jl
 ```
 
-`jl` stores the Julia runtime.
-
-Now, let's run some Julia code to add the Primes.jl
-package to the PySR environment:
+`jl` is the juliacall runtime object, and `jl.seval` evaluates Julia source from Python. Use it to add `Primes.jl` to the active PySR environment:
 
 ```python
+from pysr import jl
+
 jl.seval("""
 import Pkg
 Pkg.add("Primes")
 """)
 ```
 
-This imports the Julia package manager, and uses it to install
-`Primes.jl`. Now let's import `Primes.jl`:
+Adding a package and importing its namespace are separate steps. Import `Primes` before defining `p`:
 
 ```python
+from pysr import jl
+
 jl.seval("import Primes")
 ```
 
-Now, we define a custom operator:
+With the package available, define the unary operator used by the search:
 
 ```python
+from pysr import jl
+
 jl.seval("""
 function p(i::T) where T
     if (0.5 < i < 1000)
@@ -96,20 +84,17 @@ end
 """)
 ```
 
-We have created a a function `p`, which takes an arbitrary number as input.
-`p` first checks whether the input is between 0.5 and 1000.
-If out-of-bounds, it returns `NaN`.
-If in-bounds, it rounds it to the nearest integer, compures the corresponding prime number, and then
-converts it to the same type as input.
+The operator rounds inputs within `0.5 < i < 1000` to prime indices and preserves the input type `T`. Outside that domain it returns `T(NaN)` to reject invalid evaluations.
 
-Next, let's generate a list of primes for our test dataset.
-Since we are using juliacall, we can just call `p` directly to do this:
+Call the Julia function through `jl.p` to build the prime values used by the synthetic data:
 
 ```python
+from pysr import jl
+
 primes = {i: jl.p(i*1.0) for i in range(1, 999)}
 ```
 
-Next, let's use this list of primes to create a dataset of $x, y$ pairs:
+Use the lookup table to generate noisy samples of the target:
 
 ```python
 import numpy as np
@@ -118,9 +103,7 @@ X = np.random.randint(0, 100, 100)[:, None]
 y = [primes[3*X[i, 0] + 1] - 5 + np.random.randn()*0.001 for i in range(100)]
 ```
 
-Note that we have also added a tiny bit of noise to the dataset.
-
-Finally, let's create a PySR model, and pass the custom operator. We also need to define the sympy equivalent, which we can leave as a placeholder for now:
+Register `p` with the regular PySR operator interface. The `sympy_p` subclass and `extra_sympy_mappings` give SymPy a symbolic form for the custom function:
 
 ```python
 from pysr import PySRRegressor
@@ -137,14 +120,13 @@ model = PySRRegressor(
 )
 ```
 
-We are all set to go! Let's see if we can find the true relation:
+Fit the model on the generated pairs:
 
 ```python
 model.fit(X, y)
 ```
 
-if all works out, you should be able to see the true relation (note that the constant offset might not be exactly 1, since it is allowed to round to the nearest integer).
-You can get the sympy version of the best equation with:
+Since `p` rounds its argument, different real offsets can produce the same integer prime index, so the offset in a fitted expression need not equal `1` exactly. Inspect the selected equation in SymPy with:
 
 ```python
 model.sympy()
@@ -152,30 +134,26 @@ model.sympy()
 
 ## Custom value types
 
-`TypeSpec` lets you specify a custom type for values flowing through your expressions.
-Vectors, tensors, strings, structs, or anything else,
-can be defined with a `TypeSpec` and enable PySR to search for expressions
-that are compatible with that type.
+`TypeSpec` declares a custom Julia value that can flow through an expression tree. Vectors, tensors, strings, structs, and other Julia value types can serve as payloads when their behavior is described by the type's hooks, operators, and loss.
 
-Searches with a `type_spec=TypeSpec(...)` specified requires a few additional arguments
-to be set:
+A model configured with `type_spec=TypeSpec(...)` needs three pieces:
 
-1. There are various hooks that must be defined as part of the type spec. These tell PySR how to sample and mutate your type, and also how to unpack it into a vector of constants (for optimization).
-2. You must define a custom loss function that can handle your type and produce a real-valued loss. This can be done with `elementwise_loss`, `loss_function`, or `loss_function_expression`. (You can declare the return type as, e.g., `loss_type=Float64` in your type spec, or this will be inferred automatically).
-3. You must define custom operators that accept and return your type. PySR will perform a check that the operators are type-stable, and will raise an error if they are not. Add an explicit return annotation such as `::Vec2` when Julia cannot infer it.
+1. Define hooks that sample and change values. For continuously optimized constants, `scalar_constants` exposes scalar coordinates and `with_scalar_constants` rebuilds the value. A custom `mutate` hook handles changes that need a discrete or structural operation.
+2. Choose exactly one of `elementwise_loss`, `loss_function`, or `loss_function_expression`. The selected loss must accept the custom values and return a real-valued score. Elementwise-loss return types are inferred; a full objective requires an explicit `loss_type`.
+3. Supply operators through `operators={...}`, grouped by arity. Each operator must accept and return the declared value type so the type-stability check succeeds. Add an explicit return annotation such as `::Vec2` when Julia cannot infer it.
 
-We will look at some examples below.
+The examples below combine these pieces for vector values, strings as discrete constants, and payloads with several shapes.
 
 ### Vector-valued expression trees
 
-This example searches for a program over two-dimensional vectors:
+This example searches for an expression whose values are two-dimensional vectors:
 
 $$
 y = \operatorname{rotate90}(x_1) + 2x_2 +
 \begin{bmatrix}0.5 \\ -1.0\end{bmatrix}.
 $$
 
-Each cell of `X` and `y` contains one vector. We are not treating this as a higher-dimensional array, but rather as a normal 2D/1D array with vectors _as values_.
+The 128-by-2 DataFrame has two vector-valued features per row, and each entry of `y` is one target vector. The table dimensions describe samples and features, while each cell of the object array holds a single logical vector value.
 
 ```python
 import numpy as np
@@ -192,13 +170,11 @@ offset = np.array([0.5, -1.0])
 y[:] = [np.array([-a[1], a[0]]) + 2 * b + offset for a, b in zip(x1, x2)]
 ```
 
-PySR will each vector in a private Julia `Vec2` type that we define below.
-`scalar_constants` extracts the continuous values from this type (to be optimized by BFGS),
-and `with_scalar_constants` rebuilds the constant after optimization. PySR derives
-initialization, mutation, validation, counting, packing, and unpacking from
-this pair:
+Declare `Vec2` with one `Vector{Float64}` field. `sample` creates a random payload of length two, while `scalar_constants` and `with_scalar_constants` expose and rebuild the entries used by continuous constant optimization:
 
 ```python
+from pysr import TypeSpec
+
 type_spec = TypeSpec(
     "Vec2",
     fields={"data": "Vector{Float64}"},
@@ -210,9 +186,9 @@ type_spec = TypeSpec(
 )
 ```
 
-This is the minimal set of hooks needed. There are a few others that you could optionally define, necessary to get faster speeds, such as `init` and `mutate` (and if we want to customize the printing, `string`). PySR will try to derive these automatically from the provided `sample` hook, but it will not be as fast.
+PySR derives how values are initialized, mutated, validated, counted, packed, and unpacked from these hooks. Add `init` or `mutate` for specialized search behavior, or `string` for custom display, when the derived defaults are insufficient.
 
-In Julia, this would give us a type definition of
+`TypeSpec` generates the Julia value type from that declaration. Its equivalent Julia struct has one vector field:
 
 ```julia
 struct Vec2
@@ -220,7 +196,7 @@ struct Vec2
 end
 ```
 
-Once you have defined your type, you need to define the operators that accept and return this type. For example, we can define a `rotate90` operator that rotates a vector by 90 degrees, and a `double` operator that doubles the vector. We also define an `add_vectors` operator that adds two vectors together:
+Define operators that consume and return `Vec2` values:
 
 ```python
 operators = {
@@ -232,9 +208,14 @@ operators = {
 }
 ```
 
+The elementwise loss compares vector payloads by summing squared differences, which gives the real-valued score the search requires:
+
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     type_spec=type_spec,
+    operators=operators,
     elementwise_loss="vector_loss(a::Vec2, b::Vec2) = sum(abs2, a.data - b.data)",
     niterations=40,
     populations=4,
@@ -245,18 +226,13 @@ model.fit(X, y)
 print(model.equations_)
 ```
 
-The target can be represented as
-`add_vectors(add_vectors(rotate90(x1), double(x2)), [0.5, -1.0])`, including a
-learned vector-valued constant. PySR searches over both the program structure
-and the two components of that constant.
+The search space can represent the target as `add_vectors(add_vectors(rotate90(x1), double(x2)), Vec2([0.5, -1.0]))`. The vector constant carries both offset components, which the scalar hook pair exposes for joint optimization.
 
 
 <details>
 <summary>String-valued expressions and discrete constants</summary>
 
-Strings demonstrate a value type whose constants are evolved discretely rather
-than optimized with BFGS. This search learns to join two transformed strings
-with a sampled separator:
+This example treats each string as a value and chooses a separator from a finite set during mutation. It lowercases the first input, uppercases the second, and joins them with the selected separator:
 
 ```python
 import numpy as np
@@ -305,26 +281,22 @@ model.fit(X, y)
 print(model.equations_)
 ```
 
-Because this type has no scalar-constant hook pair, PySR does not run BFGS on
-its constants. The explicit `mutate` hook resamples separators during
-evolution.
+The `sample` and `mutate` hooks choose discrete separator constants. Without a
+`scalar_constants` and `with_scalar_constants` pair, BFGS leaves them unchanged.
+Edit distance provides the real-valued loss for string outputs.
 
 </details>
 
 <details>
 <summary>Advanced: recovering a neural network with tensor constants</summary>
 
-`TypeSpec` can place scalar, vector, and matrix constants in one Julia value
-type. The scalar-constant hooks flatten each constant for BFGS and rebuild its
-original shape.
+A `TypeSpec` can place scalar, vector, and matrix payloads in the same Julia value type. Its scalar-constant hooks flatten each payload for BFGS and rebuild its original shape.
 
-Here we recover a two-layer neural network
+The advanced example searches for this two-layer neural network:
 
 $$ y = W_2\operatorname{relu}(W_1x + b_1) + b_2 $$
 
-from vector-valued data. Safe operators return an invalid value for shape
-mismatches, so arbitrary expressions from the search cannot throw dimension
-errors:
+The targets are vectors. `safe_matmul` and `safe_add` return `NaN` for incompatible shapes, so expressions using those helpers receive an invalid value instead of a dimension error:
 
 ```python
 import numpy as np
@@ -380,9 +352,16 @@ type_spec = TypeSpec(
 )
 ```
 
-Generate training data from fixed $2\times2$ weights and two-element biases:
+`preamble` makes the payload union and helpers available before the generated type is
+defined. Mutation can change a constant's rank; continuous optimization preserves its
+shape through the scalar hook pair.
+
+Generate vector-valued targets from fixed weights and biases:
 
 ```python
+import numpy as np
+import pandas as pd
+
 rng = np.random.default_rng(0)
 x_values = rng.normal(size=(64, 2))
 W1 = np.array([[1.2, -0.7], [0.5, 1.1]])
@@ -395,10 +374,11 @@ X = pd.DataFrame({"x": list(x_values)})
 y = pd.Series(list(y_values), dtype=object)
 ```
 
-Search with matrix multiplication, elementwise ReLU, and addition. BFGS is the
-default constant optimizer:
+Register the neural-network operations and score matching vector outputs with mean squared error. The loss penalizes other output shapes:
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     type_spec=type_spec,
     operators={
@@ -423,12 +403,11 @@ model.fit(X, y)
 print(model.equations_)
 ```
 
-The search recovers a two-layer form such as
-`nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. Both biases
-are absorbed into the fitted constants, through $b_1 = W_1c$ and $b_2 = W_2b$;
-each displayed constant contains the fitted matrix or vector payload.
+A recovered expression can have the form `nn_matmul(W2, nn_add(b, nn_relu(nn_matmul(W1, nn_add(x, c)))))`. The inner constant `c` represents the first bias through $b_1 = W_1c$, and the outer constant `b` represents the second through $b_2 = W_2b$. Each displayed constant is an `NNValue` containing its fitted scalar, vector, or matrix payload.
 
 </details>
 
-`TypeSpec` can also be used with `guesses`. Write them with the TypeSpec
-constructor, for example `guesses=["add_vectors(x0, Vec2([1.0, 2.0]))"]`.
+The same custom-value interface can seed a search with `guesses`. In the vector example above,
+`Vec2` is the generated constructor from its `TypeSpec`, `add_vectors` is the declared binary
+operator, and `x1` is the first named feature column. A matching guess is
+`guesses=["add_vectors(x1, Vec2([1.0, 2.0]))"]`.

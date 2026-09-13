@@ -276,7 +276,7 @@ PATH = TypeSpec(
     # resample it outright. Constant folding can hand this hook a value of
     # several commands, so it moves a command in place.
     mutate="""(rng, value, temperature) -> begin
-        turns = findall(==(Int8(1)), value.kind)
+        turns = findall(isone, value.kind)
         isempty(turns) && return Path(Int8[1], [_real(rng)])
         i = rand(rng, turns)
         val = copy(value.val)

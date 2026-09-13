@@ -1,24 +1,16 @@
 # Beyond numeric values
 
-Every example on this page searches over a value that is not a number: letters,
-cell states, machine words, and drawings. They all rest on the same mechanism,
-so read [Custom value types](/examples/value-types#custom-value-types) first if
-you want the rules a `TypeSpec` has to satisfy.
+These examples carry values that have their own structure: letters, cell states, machine words, and pen programs. A `TypeSpec` supplies each value's representation and hooks such as sampling, mutation, and printing; typed operators define how values combine and transform; and the loss determines what counts as agreement on the scored domain. Read [Custom value types](/examples/value-types#custom-value-types) first for the contract that a custom type must satisfy.
 
 ## Breaking an affine cipher with a letter type
 
-Breaking a cipher is a good place to start with custom value types, because the
-only thing this example customizes is the value type itself: `type_spec`, the
-`operators` that act on that type, the loss, and `niterations`. Everything else
-is a default.
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/D1.mp4"></video>
 
-The cipher is the classic affine map on the 26-letter alphabet,
+The data comes from the affine cipher
 
 $$ E(p) = (5p + 8) \bmod 26, $$
 
-where each letter is identified with its position in `A` to `Z`. The search
-never sees that formula. It sees only pairs of (ciphertext letter, plaintext
-letter) and has to find the decryption law itself.
+where each letter is represented by its position from `A` through `Z`. The search receives only pairs of ciphertext and plaintext codes. It must infer the inverse relation from those examples instead of being handed the displayed formula.
 
 <details>
 <summary>Data generation code</summary>
@@ -36,11 +28,7 @@ y = np.array([ALPHABET.index(c) for c in PLAIN], dtype=object)
 
 </details>
 
-A letter is an integer code in `0:25`. Mutation walks one letter up or down so
-that evolution explores the alphabet locally, and the `string` hook is what
-makes the Pareto front readable: a constant prints as `V` rather than `21`.
-Without that hook you would recover the same law and then have to translate it
-back into letters by hand.
+`Letter` stores a code in `0:25`. Its `string` hook displays constants as letters, such as `V` for code `21`.
 
 ```python
 from pysr import PySRRegressor, TypeSpec
@@ -54,18 +42,14 @@ spec = TypeSpec(
 )
 ```
 
-The operators are modular letter arithmetic, so every intermediate value stays
-inside the alphabet and no expression the search writes can leave the type. Note
-that the modulus 26 lives in the operator definitions here, which is what makes
-this the easy version of the problem.
 
-The loss is the distance in letter codes between prediction and target, which PySR
-averages over the rows. It is zero exactly when all 52 letters are right, and a
-hit-or-miss count would score a candidate one letter off the same as one twenty
-off. Because it looks at one row at a time it goes in `elementwise_loss`, and the
-backend handles evaluation and invalid candidates:
+The three operators implement addition, subtraction, and multiplication modulo $26$. Every result remains a `Letter`, and the modulus appears directly in each operator. That built-in alphabet size makes this the easier cipher search.
+
+Use absolute code distance as `elementwise_loss` to reward partial improvements. Zero loss means every ciphertext/plaintext pair matches:
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     type_spec=spec,
     operators={
@@ -85,60 +69,30 @@ model.fit(X, y)
 print(model.equations_[["complexity", "loss", "equation"]].to_string(index=False))
 ```
 
-A full `loss_function` is for objectives that need the whole dataset at once, like
-the rollout in [Swinging up a cart-pole](/examples/objectives#swinging-up-a-cart-pole-with-a-rollout-objective)
-or the period certificate in
-[Inventing a pseudorandom generator](/examples/objectives#inventing-a-pseudorandom-generator-with-no-target).
-Row-at-a-time scoring does not need it.
 
-Every example in this group pins `deterministic=True`, `parallelism="serial"`,
-and `random_state`, so a rerun reproduces the same front.
+A `loss_function` is useful when scoring needs the dataset as a whole, as in the rollout in [Swinging up a cart-pole](/examples/objectives#swinging-up-a-cart-pole-with-a-rollout-objective) or the period certificate in [Inventing a pseudorandom generator](/examples/objectives#inventing-a-pseudorandom-generator-with-no-target).
 
-The search reaches loss 0 at complexity 5 on all 8 seeds we ran, in 4.0 to 4.6
-seconds each once Julia has compiled, which the first fit of a session pays at
-about 37 seconds. The recovered expression is `mix(V, shift(S, x0))`. Reading the
-letters as codes, `V` is 21 and `S` is 18, so this is $21(x_0 + 18) \bmod 26$,
-and 21 is the multiplicative inverse of 5 modulo 26. Decoding the ciphertext
-through the champion returns all 52 letters of the plaintext.
+One recovered expression is `mix(V, shift(S, x0))`: `V` has code $21$ and `S` has code $18$, giving $21(x_0 + 18) \bmod 26$. Since $21$ is the multiplicative inverse of $5$ modulo $26$, this expression decodes the ciphertext.
 
 ### Learning the modulus too
 
-The variant in the film withholds the modulus. Instead of modular letter
-operators it gives the search plain integer add, multiply, and modulo over a
-value type spanning `0:51`, so 26 has to be discovered as a constant rather than
-declared in the operators. That is a harder search over a larger space, and it
-is the version to reach for if you want the law and its modulus recovered
-together.
+The harder variant removes the alphabet size from the operators. It uses values in `0:51` with integer addition, multiplication, and modulo, so the search must discover the constant $26$ along with the decryption law. This removes a strong structural hint and enlarges the constant search.
 
-Withholding the modulus makes the search much harder, and the outcome is
-all-or-nothing: either all 52 letters come back or the message is garbage. At
-`niterations=1000`, about three minutes, the law comes back on roughly three
-runs in five, usually at complexity 7, as
+One recovered decryption law is:
 
 ```
 modulo(mul(add(18, x0), 47), 26)
 ```
 
-which is $47(x_0 + 18) \bmod 26$, and since $47 \cdot 18 = 846 \equiv 14$, the
-same as $47x_0 + 14 \bmod 26$. Runs that miss settle around loss 0.25 to 1.77
-and stay there rather than closing in.
-
-The full runnable script for the section above is `examples/affine_cipher.py`.
-The withheld-modulus variant is `examples/affine_freemod.py`, the harder search
-described here, where a single run may or may not land the law.
+Run `examples/affine_cipher.py` for the first search or `examples/affine_freemod.py` for the full type, operator, and loss setup of this variant. Allow several minutes for the latter.
 
 ## Rediscovering Conway's Game of Life
 
-Conway's Game of Life is usually stated as a rule: a cell is born when it has
-exactly three live neighbours, and a live cell survives with two or three. Let's
-throw that statement away and hand PySR only the transition table, then see
-whether it can write the rule back down.
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/D3.mp4"></video>
 
-There are 18 distinct transition states, one for every combination of a cell state
-and a neighbour count from 0 to 8. Eight copies of that table give the search 144
-rows to score against, so a rule that misses one transition state pays a loss of
-1/18. The values are stored as `object` arrays because each entry will be wrapped
-in a custom Julia type:
+Conway's Game of Life can be written as a rule about a cell and its live-neighbour count. This example withholds that rule and supplies only its transition table, asking PySR to reconstruct the logical expression.
+
+The table has $18$ distinct states: two current cell states, each paired with every neighbour count from $0$ through $8$. Repeating the table $8$ times produces $144$ rows for scoring without introducing new cases. A zero-one loss therefore charges $1/18$ for a rule that misses one distinct state. The arrays use `dtype=object` so each value can be wrapped in the custom Julia type.
 
 <details>
 <summary>Data generation code</summary>
@@ -154,12 +108,7 @@ y = np.array([t for _, _, t in TABLE] * REPLICAS, dtype=object)
 
 </details>
 
-Both the cell state and the neighbour count are small integers, and so is the
-output, so a single type covers every value flowing through the expression. We
-define it with a `TypeSpec` whose payload is one `Int`. The `sample` hook draws a
-count in `0:8`, and `mutate` nudges an existing constant up or down by one, wrapping
-modulo 9. That keeps the search moving through neighbouring integers instead of
-resampling blindly, which is what makes finding the thresholds cheap:
+The `Cell` type wraps a single `Int`, which is enough for the current state, the neighbour count, and the output code. Its hooks propose small counts, move existing constants locally modulo $9$, and print the integer payload.
 
 ```python
 from pysr import PySRRegressor, TypeSpec
@@ -173,13 +122,12 @@ spec = TypeSpec(
 )
 ```
 
-The vocabulary is deliberately logical: `not`, `and`, `or`, plus an integer
-equality test `eq`. There is no arithmetic and no comparison against a threshold,
-so the only way to talk about a neighbour count is to compare it to a constant
-the search has to discover. The loss is zero-one on exact agreement, since a
-truth table has no notion of being close:
+
+The operator vocabulary contains `not`, `and`, `or`, and the equality test `eq`. Arithmetic and threshold comparisons are absent, so a neighbour threshold can enter an expression only as a constant in a call such as `eq(n, 3)`. The loss is zero-one equality on each table row. It records exact agreement, which suits a discrete truth table where the numerical distance between cell codes carries no meaning.
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     type_spec=spec,
     operators={
@@ -200,45 +148,24 @@ model.fit(X, y, variable_names=["alive", "n"])
 print(model.equations_[["complexity", "loss", "equation"]].to_string(index=False))
 ```
 
-Nothing else is customized. `deterministic=True` with `parallelism="serial"` and a
-fixed `random_state` makes the run reproducible; the other examples on this page
-use the same three settings for the same reason.
 
-Across five seeds, all five recover the rule exactly at complexity 9, taking
-between 37 and 73 seconds each. Up to the argument order of the commutative
-operators, every seed lands on the same expression:
+A recovered rule is:
 
 ```
 or(eq(n, 3), and(eq(n, 2), alive))
 ```
 
-It reads as the textbook statement: born when the neighbour count is 3, survives
-when the cell is alive and the count is 2. The `eq` calls carry the integer
-constants 3 and 2 that the search had to locate on its own, and it agrees with the
-target on all 18 transition states, which is all 144 rows.
+The first branch allows birth or survival at three neighbours. The second adds survival of a live cell at two neighbours. It agrees with all 18 possible input states, so the transition table fully checks this local rule.
 
-The front shows the rule arriving in two pieces. At complexity 3 the best
-expression is `eq(n, 3)`, the birth condition alone, already correct on 17 of the
-18 states at a loss of 1/18. The state it misses is the live cell with two
-neighbours, and the survival clause that appears at complexity 9 is what closes
-that gap.
-
-One note on `niterations`. The count is not comparable across population layouts,
-since one iteration is a fixed number of cycles over every population. With PySR's
-population and cycle defaults left alone each iteration does a lot of work, and 160
-of them close the search on every seed.
-
-The full runnable script is `examples/game_of_life.py`.
+Run `examples/game_of_life.py` to reproduce the Game of Life search.
 
 ## Searching over machine words
 
-This example searches for a bit-exact interleave of two 4-bit integers, the operation at
-the heart of Morton (Z-order) indexing. The value flowing through every expression is a
-machine word rather than a float, and the vocabulary is the integer instruction set: xor,
-and, or, not, shift left, shift right. Shift distances are ordinary `Word` constants that
-the search has to find for itself.
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/S3.mp4"></video>
 
-The target comes from a reference interleave, evaluated on all 256 pairs of 4-bit inputs.
+This search targets the bit interleave used by Morton, or Z-order, indexing. It gives every expression a `Word` value and restricts the vocabulary to machine instructions: xor, and, or, not, left shift, and right shift. Shift distances are ordinary `Word` constants, so the search must find them as part of the expression.
+
+The reference interleave is evaluated on all $256$ pairs of $4$-bit inputs.
 
 <details><summary>Data generation code</summary>
 
@@ -266,14 +193,11 @@ y = np.array([morton(a, b) for a, b in PAIRS], dtype=object)
 
 </details>
 
-The `TypeSpec` declares a `Word` wrapping a `UInt32`. The `sample` hook is biased toward
-small values, because most useful constants here are shift distances below 32, while the
-rest of the range still has to be reachable for masks. The `mutate` hook either flips a
-single bit or steps the word by a random amount, which is how a mask gets refined one bit
-at a time. The `string` hook prints small words as decimals and everything else as
-zero-padded hex, so shift distances and masks read differently:
+The `Word` type wraps a `UInt32`. Its `sample` hook favors small values because useful shift distances are small while mask constants still need to reach across the full word. `mutate` either flips a single bit or takes a random unsigned step. This lets a mask change one bit at a time. The `string` hook renders small values as decimals and larger values as zero-padded hexadecimal, keeping shift constants and masks easy to distinguish. The `shl` and `shr` definitions below pass `b.bits` directly; this example does not mask the shift count into `0:31`, so arbitrary sampled `UInt32` counts follow the underlying Julia shift semantics.
 
 ```python
+from pysr import TypeSpec
+
 spec = TypeSpec(
     "Word",
     fields={"bits": "UInt32"},
@@ -283,11 +207,12 @@ spec = TypeSpec(
 )
 ```
 
-Each operator is one machine instruction lifted to `Word`. The loss is the fraction of the
-32 bits that differ between prediction and target, so a loss of exactly zero means the
-expression reproduces every scored output bit for bit:
+
+Each operator lifts one machine instruction to `Word`. The loss counts the set bits in the xor of prediction and target and divides by $32$. A zero loss therefore means that every output bit agrees for every scored pair.
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     type_spec=spec,
     operators={
@@ -312,49 +237,27 @@ model = PySRRegressor(
 model.fit(X, y, variable_names=["x", "y"])
 ```
 
-`maxsize=45` is chosen to fit the answer rather than to be generous. Written as a tree in
-this vocabulary with no shared subexpressions, the textbook interleave kernel (two
-shift-mask spread stages per input, then one shift and an or) is 41 nodes at width 4, so
-the budget has to clear that. Every script in this section pins `deterministic=True`,
-`parallelism="serial"`, and `random_state`, which makes a run reproducible at the cost of
-using one thread.
 
-On PySR 2.1.0 this recovers an exact interleaver on 5 of 5 seeds, taking 189 to 222 s per
-seed, at complexity 37 to 41. Complexity 37 is smaller than the 41-node reference form, so
-the size of the answer is not bloat. Neither are the hex masks a defect: the hand-written
-kernel carries `0x33` and `0x55`, and here the high bits of a 32-bit mask are simply
-unconstrained, since no scored pair depends on them.
+Set `maxsize` large enough for the intended computation. A four-bit reference interleaver uses 41 tree nodes because repeated subexpressions each count toward its size; `maxsize=45` leaves room for that construction.
 
-The important caveat is what "exact" covers. The score only ever sees the 256 four-bit
-pairs, and on that domain the recovered expression agrees with Morton everywhere. It is a
-width-specific interleaver that coincides with Z-order on the scored domain, and not the
-width-independent Z-order algorithm. Replaying the winner on all 1024 pairs of 5-bit
-inputs makes the difference measurable: a width-4 winner scores 256 of 256 at width 4 and
-256 of 1024 at width 5. That number is the one to quote, since it supports the claim that
-the search recovered a 4-bit interleaver and refutes the stronger reading that it found the
-general algorithm.
+An expression that matches all four-bit pairs need not work at larger widths: the training domain leaves parts of the masks unconstrained. Use the script's `exact_front_rows` helper to check four-bit agreement and `wider_agreement(model, index)` to test a selected expression on five-bit inputs.
 
-Width 5 is out of reach here for a structural reason. The kernel needs three spread stages
-at that width, 89 nodes, and `maxsize=45` excludes it, so no exact solution exists anywhere
-in the search space. Getting there requires `maxsize >= 89`.
-
-The full runnable script is `examples/morton_interleave.py`.
+Run `examples/morton_interleave.py` to reproduce this machine-word search.
 
 ## Turtle graphics: searching over drawings
 
-Usually the value flowing through the expression tree is a number, a vector, or a
-string. Here it is a drawing. A value is a list of pen commands, `forward` and
-`turn`, and the operators move the pen, reflect it, and glue command lists
-together. That makes every expression a program, and its value is the picture that
-program draws, as the film clip shows.
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/D4.mp4"></video>
 
-A drawing is carried as two parallel vectors: `kind`, where `0` means forward and
-`1` means turn, and `val`, holding either a length or an angle in radians. The
-target is the outline of a plus sign, four copies of a three-edge arm. The data is
-one row whose only feature is `f`, one unit step forward, so everything else a
-program needs comes from the operators and from turns the search invents:
+The excerpts below come from `examples/turtle_graphics.py`. Run that script for the complete example; it supplies the Python `path` converter and the Julia `PREAMBLE` containing the underscore-prefixed drawing, mutation, and scoring helpers and constants.
+
+Here the value is a drawing program. A `Path` is a list of pen commands, `forward` and `turn`; operators repeat a path, reflect it, and concatenate command lists. Each expression therefore evaluates to a program, and the value of that program is the picture it draws.
+
+The drawing uses two parallel vectors. `kind=0` marks forward motion. `kind=1` marks a turn. `val` stores the forward length or the turn angle in radians. The `ARM` list below writes turn angles in degrees, and the Python `path` helper converts those entries to radians before storing `y`; the custom `string` hook prints stored turns back in degrees. The target is a plus-sign outline made from four copies of an arm with three edges. The dataset has one row and one feature, `f`, containing a unit forward step. Turns and the path operators must supply the rest of the program.
 
 ```python
+import numpy as np
+from pysr import PySRRegressor, TypeSpec
+
 ARM = [("F", 1.0), ("T", 90.0), ("F", 1.0), ("T", -90.0), ("F", 1.0), ("T", 90.0)]
 TARGET = ARM * 4
 
@@ -365,20 +268,12 @@ y[0] = path(TARGET)
 VARIABLE_NAMES = ["f"]
 ```
 
+
 ### Scoring a picture
 
-Two programs that draw the same figure need not agree command by command, so the
-loss compares pictures rather than command lists. Both drawings are rasterised
-onto a 96 by 96 grid after their bounding boxes are centred and their larger
-extent is scaled to the grid, which leaves the comparison sensitive to shape and
-blind to position and size. The score is the symmetric chamfer distance between
-the two lit pixel sets, in pixels, divided by the grid width, so a loss of
-exactly zero means the two drawings lit the same pixels. The distances come from
-an exact squared Euclidean distance transform, and the target's raster and
-transform are computed once and cached. The grid is offset by `0.1373` of a
-pixel, because an axis-aligned figure otherwise lands exactly on rounding ties,
-where a one-ulp change in an angle flips a pixel and the loss stops being
-reproducible.
+Two programs can trace the same outline in different orders, so the loss compares rasterized pictures instead of command lists. Each drawing is placed on a $96\times96$ grid after its bounding box is centered and its larger extent is scaled to the grid. The comparison therefore responds to shape while ignoring translation and overall size.
+
+The score is a symmetric chamfer distance between the two sets of lit pixels, measured in pixels and divided by the grid width. The score averages the distance from candidate pixels to the target and from target pixels to the candidate, so zero means the raster masks coincide.
 
 <details><summary>The chamfer loss and the raster</summary>
 
@@ -403,23 +298,20 @@ end
 
 ### The pen program type
 
-The `TypeSpec` wraps the two vectors in a `Path`. A sampled constant is one turn
-at any real angle in the interval from -180 to 180 degrees, and `mutate` either
-perturbs one of a value's turns by a Gaussian step of 30 degrees scaled by the
-temperature or resamples that turn outright. Every turn is also exposed to the
-constant optimiser through the scalar-constant hook pair, which lets BFGS polish
-an angle that is nearly right. Constant folding can collapse an all-constant
-subtree into a value of several commands, so `mutate` and `string` both work
-command by command, and a folded constant prints as `p[...]`:
+The `TypeSpec` for `Path` stores the two vectors and supplies hooks for continuous turns. `sample` creates one turn at an angle in the interval from $-180$ to $180$ degrees. `mutate` selects a turn and either perturbs it by a Gaussian step with scale $30$ degrees times the temperature or resamples it. The scalar-constant hooks expose every turn to BFGS, which can polish an angle after evolution has placed it near a good value.
+
+Constant folding can collapse an all-constant subtree into a multi-command path. `mutate` and `string` therefore handle values command by command, and the printer represents a folded multi-command constant as `p[...]`.
 
 ```python
+from pysr import TypeSpec
+
 PATH = TypeSpec(
     "Path",
     fields={"kind": "Vector{Int8}", "val": "Vector{Float64}"},
     preamble=PREAMBLE,
     sample="rng -> Path(Int8[1], [_real(rng)])",
     mutate="""(rng, value, temperature) -> begin
-        turns = findall(==(Int8(1)), value.kind)
+        turns = findall(isone, value.kind)
         isempty(turns) && return Path(Int8[1], [_real(rng)])
         i = rand(rng, turns)
         val = copy(value.val)
@@ -433,12 +325,8 @@ PATH = TypeSpec(
 )
 ```
 
-The vocabulary is five operators, all of them program combinators. `seq` runs one
-sub-program after another. `dup` and `tri` run a sub-program twice and three
-times. `mir` negates every turn, reflecting a sub-program. `nest` is an L-system
-substitution: it replaces every forward by a copy of the whole path, scaled so
-the copy's net displacement equals that forward. Repetition and reflection let a
-short program draw a figure with many strokes:
+
+The five operators form a small program algebra. `seq` runs one path after another. `dup` and `tri` repeat a path twice and three times. `mir` negates every turn, reflecting the path. `nest` performs an L-system substitution: it replaces each forward command with a copy of the full path. Each copy is scaled so its net displacement matches the forward command it replaces. Repetition and reflection let a short expression draw many strokes.
 
 ```python
 OPERATORS = {
@@ -456,13 +344,14 @@ OPERATORS = {
 CHAMFER_LOSS = "chamfer(prediction::Path, target::Path)::Float64 = _chamfer(prediction.kind, prediction.val, target.kind, target.val)"
 ```
 
+
 ### The search
 
-`niterations` is the only budget knob set; `maxsize` is left at PySR's default.
-The reproducibility settings are the same three the other examples on this page
-use:
+Pass the path type, operators, and picture loss to the estimator:
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     type_spec=PATH,
     operators=OPERATORS,
@@ -478,37 +367,95 @@ model.fit(X, y, variable_names=["f"])
 print(model.equations_[["complexity", "loss", "equation"]].to_string(index=False))
 ```
 
-Twenty iterations is a small count next to the other examples here, and it is
-enough because each candidate is expensive: scoring one program means rasterising
-it and distance-transforming 9216 pixels.
 
-On PySR 2.1.0, four of the five seeds found a program that draws the target with
-a loss of exactly `0.0`, at complexity 11, 9, 8 and 9. The fifth stopped at a
-best loss of 0.0029226382607225 at complexity 16, a drawing that is close to the
-cross without matching its pixels. Wall time was 2413.45, 1749.41, 2253.99,
-6630.48 and 1699.49 seconds for seeds 0 to 4, so the seed that ran longest is
-almost four times the seed that ran shortest. Complexity 9 is the middle of the
-exact range and the value two of the four exact seeds reach: because the loss
-only counts lit pixels, several tracing orders of the same outline score zero,
-and which one a seed reaches decides whether the winner comes out at 8, 9 or 11
-nodes.
+Scoring each candidate requires rasterization and a distance transform, so even this 20-iteration search can take tens of minutes to hours. Zero loss means the raster masks match; it does not require identical command order or exact turn angles.
 
-The spread is the search being stochastic: angles are continuous and the score is
-a pixel comparison, so a seed refining a near-miss arm can finish without an
-exact program, as seed 4 did.
-
-The complexity-9 winner is
+One recovered drawing program is:
 
 ```
 dup(dup(mir(seq(t-179.6493032061754, tri(seq(p[t-270.04570985370526,t-270.04570985370526,t-270.04570985370526], f))))))
 ```
 
-Read from the inside out. The folded constant is three equal turns that compose
-to a single quarter turn, and `tri` repeats that turn-then-forward pair three
-times, giving three unit edges at right angles. The turn of nearly 180 degrees in
-front of it sets up the join, `mir` reflects the arm, and the two `dup`s give four
-copies of it, one per arm of the cross. Angles print unrounded because turns here
-are continuous values BFGS has polished, and -270.0457 degrees is the same heading
-change as 89.9543 degrees.
+The complete drawing search is in `examples/turtle_graphics.py`.
 
-The full runnable script is `examples/turtle_graphics.py`.
+## Evolving a hopping controller
+
+<video controls muted playsinline preload="metadata" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/38b98e49200ee5e1629a62fb7e0b811d64286154/clips/Hopper.mp4"></video>
+
+Each value in this search is a motor command with three numbers, one for each joint of MuJoCo's hopper. The objective measures performance in simulation. Each candidate expression controls the robot for a fixed-horizon rollout, and its loss is the negated reward from that rollout. The search uses no expert policy, demonstration data, or distilled network; it optimises locomotion directly.
+
+The snippets below describe the recorded search. The runnable script, `examples/hopper_controller.py`, replays its saved controller.
+
+The controller is a `Vec3`, three `Float64` components carried through the tree together:
+
+```python
+from pysr import TypeSpec
+
+TypeSpec(
+    "Vec3",
+    fields={"data": "Vector{Float64}"},
+    sample="rng -> Vec3(randn(rng, 3))",
+    scalar_constants="value -> Float64[value.data[1], value.data[2], value.data[3]]",
+    with_scalar_constants="(value, constants) -> Vec3(collect(constants))",
+    is_valid="value -> length(value.data) == 3 && all(isfinite, value.data)",
+    string='value -> "Vec3([" * join(repr.(Float64.(value.data)), ", ") * "])"',
+    loss_type="Float64",
+)
+```
+
+Each sampled constant contains three independent Gaussian draws, giving each
+motor its own bias. The scalar-constant hooks expose all three components to the
+optimiser so it can tune each motor separately.
+
+The operators are componentwise addition, subtraction and multiplication, and nothing else. No control-specific primitive was supplied:
+
+```python
+{
+    2: [
+        'vadd(x, y) = Vec3(x.data .+ y.data)',
+        'vsub(x, y) = Vec3(x.data .- y.data)',
+        'vmul(x, y) = Vec3(x.data .* y.data)',
+    ]
+}
+```
+
+### Scoring a controller by simulating it
+
+The eleven features encode the hopper state as vectors. They include the three
+joint angles, angular velocities clipped to $[-10, 10]$ and divided by $10$, and two cyclic permutations
+of each. The torso height, pitch, forward velocity, vertical velocity and
+angular velocity are each broadcast across all three components. The three torso velocities are divided by $5$. A single tree
+computes all three motor commands, so the permuted copies allow each joint to use
+other joints' angles. Before reaching the motors, the final value passes through
+a componentwise `tanh` that limits each command to the actuator range.
+
+Each rollout accumulates the standard Hopper-v5 reward, a survival term plus forward velocity minus a small control cost, and divides by the full horizon, so a fall contributes zero for every step it did not survive. That single number, averaged over eight frozen training starts and negated, is the loss. The Julia loss function is a thin call into the rollout evaluator:
+
+```python
+LOSS_SOURCE = "hopper_rollout_loss(tree, dataset, options) = Main.HopperObjective.loss(tree, dataset, options)"
+```
+
+Because the objective never reads the dataset, `X` and `y` are one row of zero vectors and batching is off. All the information comes from the simulator.
+
+### The recovered controller
+
+Here `A` denotes joint angles, `V` scaled joint angular velocities, and `P` the cyclic permutation `(x0, x1, x2) -> (x1, x2, x0)`. The scalars `p`, `f`, `u`, and `w` denote torso pitch and scaled forward, vertical, and angular velocities:
+
+```
+D = A - 2 P(A) + P(V) - 2 (f + w) + c0
+L = -A - (p + w (P(V) - w)) D - c1
+R = -P(A) - u + w + c2
+action = tanh(P(A) - w + L R)
+```
+
+All products are componentwise, with scalars broadcast. The constant vectors are `c0 = (-0.2477, -4.2268, 8.8397)`, `c1 = (0.0645, 0.6181, 0.3969)`, and `c2 = (0.4974, -1.1921, 1.1808)`, rounded here; the replay script retains their full precision.
+
+### Reproducing the result
+
+Replay the controller on twenty held-out starts with twice the training reset noise.
+
+The replay checks whether the hopper stays upright for eight seconds, travels five metres, and completes at least four contact/liftoff cycles. These criteria check sustained hopping beyond the reward used during training.
+
+The result covers small perturbations of one starting pose in simulation. The evaluation does not test obstacles, hardware, or indefinite hopping.
+
+The saved controller was evaluated with Gymnasium 1.2.2 and MuJoCo 3.3.7. Install `gymnasium[mujoco]==1.2.2` and `mujoco==3.3.7`, then run `python examples/hopper_controller.py`.

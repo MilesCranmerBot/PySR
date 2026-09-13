@@ -1,19 +1,16 @@
 # Getting started
 
-## Preamble
+## Simple search
+
+This target combines a cosine term, a square term, and a constant.
+
+The model searches with `+`, `-`, `*`, and `/`. To include the cosine used in the target, add `unary_operators=["cos"]`.
 
 ```python
 import numpy as np
 
-from pysr import *
-```
+from pysr import PySRRegressor
 
-## Simple search
-
-Here's a simple example where we
-find the expression `2 cos(x3) + x0^2 - 2`.
-
-```python
 X = 2 * np.random.randn(100, 5)
 y = 2 * np.cos(X[:, 3]) + X[:, 0] ** 2 - 2
 model = PySRRegressor(binary_operators=["+", "-", "*", "/"])
@@ -23,9 +20,13 @@ print(model)
 
 ## Custom operator
 
-Here, we define a custom operator and use it to find an expression:
+A custom operator has a definition for the symbolic search and a callable for SymPy export and for evaluating equations. Here `inv(x) = 1/x` defines the Julia-side reciprocal operator, while `extra_sympy_mappings` gives that name its Python implementation.
 
 ```python
+import numpy as np
+
+from pysr import PySRRegressor
+
 X = 2 * np.random.randn(100, 5)
 y = 1 / X[:, 0]
 model = PySRRegressor(
@@ -37,17 +38,17 @@ model.fit(X, y)
 print(model)
 ```
 
-Operators are not limited to one or two arguments. Passing `operators` as a
-dictionary keyed by number of arguments lets you define an operator of any
-arity, which [Operators of any arity](/examples/search-behaviour#operators-of-any-arity)
-works through.
+The generic `operators` parameter replaces the separate `unary_operators` and `binary_operators`. Its integer keys specify arity, so a dictionary can describe unary, binary, and higher-arity operators. See the [Operators of any arity](/examples/search-behaviour#operators-of-any-arity) section for this form.
 
 ## Multiple outputs
 
-Here, we do the same thing, but with multiple expressions at once,
-each requiring a different feature.
+A two-dimensional target makes the model multi-output. Here each column of `y` is the reciprocal of a different input feature, so the fitted model supplies one selected equation for each output.
 
 ```python
+import numpy as np
+
+from pysr import PySRRegressor
+
 X = 2 * np.random.randn(100, 5)
 y = 1 / X[:, [0, 1, 2]]
 model = PySRRegressor(
@@ -60,16 +61,15 @@ model.fit(X, y)
 
 ## Plotting an expression
 
-For now, let's consider the expressions for output 0.
-We can see the LaTeX version of this with:
+After fitting the multi-output model, `model.latex()[0]` returns the LaTeX form of the selected equation for output 0.
 
 ```python
 model.latex()[0]
 ```
 
-or output 1 with `model.latex()[1]`.
+Use `model.latex()[1]` for output 1.
 
-Let's plot the prediction against the truth:
+The plot below compares the target and prediction for output 0.
 
 ```python
 from matplotlib import pyplot as plt
@@ -79,40 +79,28 @@ plt.ylabel('Prediction')
 plt.show()
 ```
 
-Which gives us:
-
 ![Truth vs Prediction](/images/example_plot.png)
 
-We may also plot the output of a particular expression
-by passing the index of the expression to `predict` (or
-`sympy` or `latex` as well)
+The `index` argument chooses a candidate equation from `model.equations_`. Pass it to `predict`, `sympy`, or `latex` to inspect or evaluate another candidate. For multiple outputs, provide one equation index per output in output order, then select the desired output column from the predictions.
 
 ## Feature selection
 
-PySR and evolution-based symbolic regression in general performs
-very poorly when the number of features is large.
-Even, say, 10 features might be too much for a typical equation search.
+Feature selection reduces the candidate input columns before symbolic regression. Set `select_k_features=5` to use a random-forest preprocessor that retains up to five candidates. For structured high-dimensional data, the paper [2006.11287](https://arxiv.org/abs/2006.11287) discusses breaking the problem into smaller pieces before applying PySR.
 
-If you are dealing with high-dimensional data with a particular type of structure,
-you might consider using deep learning to break the problem into
-smaller "chunks" which can then be solved by PySR, as explained in the paper
-[2006.11287](https://arxiv.org/abs/2006.11287).
-
-For tabular datasets, this is a bit trickier. Luckily, PySR has a built-in feature
-selection mechanism. Simply declare the parameter `select_k_features=5`, for selecting
-the most important 5 features.
-
-Here is an example. Let's say we have 30 input features and 300 data points, but only 2
-of those features are actually used:
+The target in this example uses features 3 and 19.
 
 ```python
+import numpy as np
+
 X = np.random.randn(300, 30)
 y = X[:, 3]**2 - X[:, 19]**2 + 1.5
 ```
 
-Let's create a model with the feature selection argument set up:
+Configure feature selection in the model:
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     binary_operators=["+", "-", "*", "/"],
     unary_operators=["exp"],
@@ -120,54 +108,41 @@ model = PySRRegressor(
 )
 ```
 
-Now let's fit this:
+Fit the model to select the input columns before the search:
 
 ```python
 model.fit(X, y)
 ```
 
-Before the Julia backend is launched, you can see the string:
+PySR prints the selected feature names before starting the search, for example:
 
 ```text
 Using features ['x3', 'x5', 'x7', 'x19', 'x21']
 ```
 
-which indicates that the feature selection (powered by a gradient-boosting tree)
-has successfully selected the relevant two features.
-
-This fit should find the solution quickly, whereas with the huge number of features,
-it would have struggled.
-
-This simple preprocessing step is enough to simplify our tabular dataset,
-but again, for more structured datasets, you should try the deep learning
-approach mentioned above.
+The names use zero-based column indices. This selection includes both target features, `x3` and `x19`, plus three other candidates. The symbolic search uses only these retained columns.
 
 ## Denoising
 
-Many datasets, especially in the observational sciences,
-contain intrinsic noise. PySR is noise robust itself, as it is simply optimizing a loss function,
-but there are still some additional steps you can take to reduce the effect of noise.
+When per-observation weights are available, pass `weights` to `fit` and define `elementwise_loss` with the matching signature. Without weights, the function accepts `(prediction, target)`. With weights, it accepts `(prediction, target, weight)`. The weighted example uses `elementwise_loss="myloss(x, y, w) = w * (x - y)^2"`. Pass a full custom objective as `loss_function`.
 
-One thing you could do, which we won't detail here, is to create a custom log-likelihood
-given some assumed noise model. By passing weights to the fit function, and
-defining a custom loss function such as `elementwise_loss="myloss(x, y, w) = w * (x - y)^2"`,
-you can define any sort of log-likelihood you wish. (However, note that it must be bounded at zero)
+The `denoise=True` option preprocesses the targets with a Gaussian process before symbolic regression. Its predictions become the targets searched by PySR. Because this example passes no `Xresampled`, the predictions are made at the original rows in `X`.
 
-However, the simplest thing to do is preprocessing, just like for feature selection. To do this,
-set the parameter `denoise=True`. This will fit a Gaussian process (containing a white noise kernel)
-to the input dataset, and predict new targets (which are assumed to be denoised) from that Gaussian process.
-
-For example:
+The target combines an exponential term, two linear terms, and random noise:
 
 ```python
+import numpy as np
+
 X = np.random.randn(100, 5)
 noise = np.random.randn(100) * 0.1
 y = np.exp(X[:, 0]) + X[:, 1] + X[:, 2] + noise
 ```
 
-Let's create and fit a model with the denoising argument set up:
+Create and fit the denoising model:
 
 ```python
+from pysr import PySRRegressor
+
 model = PySRRegressor(
     binary_operators=["+", "-", "*", "/"],
     unary_operators=["exp"],
@@ -176,5 +151,3 @@ model = PySRRegressor(
 model.fit(X, y)
 print(model)
 ```
-
-If all goes well, you should find that it predicts the correct input equation, without the noise term!
