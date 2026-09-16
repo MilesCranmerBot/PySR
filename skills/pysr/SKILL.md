@@ -7,7 +7,7 @@ description: Use when fitting equations to data with PySR or SymbolicRegression.
 
 PySR discovers symbolic expressions (readable equations) that fit data, using an evolutionary search over expression trees with a Julia backend (SymbolicRegression.jl). You get a Pareto front of equations trading accuracy against complexity, not a single black-box model.
 
-This guide is distilled from the PySR documentation and several hundred real user threads, checked against PySR 2.0.0. Full docs: https://ai.damtp.cam.ac.uk/pysr/
+This guide is distilled from the PySR documentation and several hundred real user threads. Full docs: https://ai.damtp.cam.ac.uk/pysr/
 
 ## Quick start
 
@@ -62,6 +62,8 @@ model = PySRRegressor(
 For single-output regression, pass a list of candidates. For multiple outputs, pass one candidate list per output in target-column order: `guesses=[["x0 + x1"], ["x0 * x1"]]`. For templates, use dictionaries keyed by component and parameter names. In component formulas, `#1`, `#2`, and so on refer to the component's arguments.
 
 Guesses are mixed into populations throughout the search. With `should_optimize_constants=True`, their constants and template parameters are optimized before insertion. `fraction_replaced_guesses` controls the fraction replaced from guesses at the end of each cycle; its default is `0.001`.
+
+Every guess is pushed into the hall of fame before the first generation, so an accepted guess shows up in `model.equations_` (and in `hall_of_fame.csv` as soon as the run starts) at its own complexity. Read that row to confirm the seed landed and to see its optimized constants. Rejection is quiet: a guess whose complexity exceeds `maxsize` produces only a Julia warning (`Guess expression '...' has complexity 23 > maxsize (10)`, printed with default `x1, x2, ...` names whatever you called the variables), is never recorded in the hall of fame, and although it still migrates into populations, nothing derived from it is recorded until mutations bring it within `maxsize`. A guess that violates `constraints`, `nested_constraints`, or `maxdepth` is dropped with no message at all. So set `maxsize` at least as large as the largest guess (the warning tells you its complexity) and keep the constraints compatible with every seed. A seed can also vanish from the table later because the hall of fame keeps one expression per complexity: a same-complexity candidate with lower loss replaces it. Do not react to an oversize seed by pushing `maxsize` far past the seed: search cost climbs steeply with `maxsize` (PySR warns above 40), and a run with `maxsize` several times the seed size can fail to complete a single generation inside its time budget while looking alive. Set `maxsize` a little above the largest seed, and use `warmup_maxsize_by` if early populations bloat.
 
 Set guesses on the estimator, never on `.fit()`. Between fits, `model.set_params(guesses=[...], warm_start=True)` replaces the guesses while continuing the existing search. Keep the data representation and search space fixed for continuation.
 
@@ -363,11 +365,41 @@ The count-then-penalize shape (violations counted, multiplied by a large finite 
 - `nested_constraints={"sin": {"sin": 0, "cos": 0}, "cos": {"sin": 0, "cos": 0}}`: forbids nested trig. General form: how many times each inner operator may appear inside each outer one.
 - `complexity_of_operators={"exp": 3}`: make disliked operators expensive. `complexity_of_constants=2`: discourage free constants. `complexity_of_variables`: per-feature or global cost.
 - These constraints apply to every intermediate expression during evolution, not just final answers; overly tight settings silently make the target unreachable. Leave slack (e.g. want final size 30, set `maxsize=35`).
-- `maxsize` counts every node (operator, constant, variable). A 7-feature linear model is already complexity ~29. The default 30 is too small for anything with many terms.
+- `maxsize` counts every node (operator, constant, variable), or is measured in the units of `complexity_mapping` if you set one. A 7-feature linear model is already complexity ~29. The default 30 is too small for anything with many terms.
 - `warmup_maxsize_by=0.5` (fraction of the run over which maxsize ramps up): useful when the search dives into complex expressions early and gets stuck.
 - `parsimony` and `adaptive_parsimony_scaling` are already well-tuned by default in 1.5+; old advice to set them manually is mostly obsolete.
 - Known constants (pi, G, ...): just let it fit floats and recognize them afterwards, or pass the constant as an extra constant-valued feature if it must appear exactly.
 - Integer-only constants: pass candidate integers as constant features and raise `complexity_of_constants`, or round inside a custom operator; do not expect the continuous optimizer to land on integers.
+
+### Complexity in your own units (`complexity_mapping`)
+
+`complexity_of_operators` charges a fixed price per operator use. When the budget the user actually cares about is something else (characters of emitted source, evaluation cost, a token count, a depth penalty), pass `complexity_mapping`: a string of Julia code defining a function from the expression to an `Int`. It replaces node counting everywhere complexity is used: the Pareto front, `maxsize`, parsimony, and `constraints`. Price each node by what it will cost in the final artifact:
+
+```python
+complexity_mapping = """
+function source_chars(ex)
+    tree_mapreduce(
+        leaf -> leaf.constant ? length(string(leaf.val)) : 2,   # "x0" is 2 chars
+        branch -> branch.degree == 1 ? 6 : 5,                    # "sin(" + ")" / " + " with parens
+        (parent, children...) -> parent + sum(children),
+        get_tree(ex),
+    )
+end
+"""
+model = PySRRegressor(
+    binary_operators=["+", "-", "*"],
+    complexity_mapping=complexity_mapping,
+    maxsize=280,
+)
+```
+
+On a test problem this mapping tracked `len(equation)` of every `model.equations_` row to within a constant offset of 2 (the outer parentheses), which is what you want: rank by your real cost, then calibrate the small residual against a few emitted candidates.
+
+- The function receives an `AbstractExpression`; `get_tree(ex)` gives the node tree. Node fields are the same as in the tree-walking section above: `degree`, `constant`, `val`, `feature`, `op`. `tree_mapreduce` and `get_tree` are already in scope.
+- Do not use `length(string_tree(ex))` as a character count. Inside the mapping, operators render as `binary_operator[3](...)` placeholders and variables as `x1, x2`, so the length has nothing to do with the equation you will export.
+- `maxsize` and the hall of fame switch to the mapping's units. With a character mapping and the default `maxsize=30`, the run finishes with an **empty** `equations_` because nothing fits. Set `maxsize` to the real budget. The hall of fame allocates one slot per unit up to `maxsize`, so a fine-grained mapping yields a long front; filter it.
+- Complexity is computed on every candidate. Keep the function cheap and type-stable, no Python callbacks.
+- Combine with `guesses` to seed under the same pricing; the guess acceptance rules above apply in mapping units.
 
 ## Dimensional constraints
 
