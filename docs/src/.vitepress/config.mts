@@ -1,7 +1,20 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitepress'
 import { tabsMarkdownPlugin } from 'vitepress-plugin-tabs'
 import mathjax3 from "markdown-it-mathjax3";
 import footnote from "markdown-it-footnote";
+
+export function symbolicRegressionDocsSubfolder(pkg: { version?: unknown; rev?: unknown }): string {
+  const version = typeof pkg.version === 'string' ? pkg.version.match(/\d+\.\d+\.\d+/)?.[0] : undefined
+  if (version) return `v${version}`
+  return typeof pkg.rev === 'string' && /^v\d+\.\d+\.\d+$/.test(pkg.rev) ? pkg.rev : 'dev'
+}
+
+const configDirectory = path.dirname(fileURLToPath(import.meta.url))
+const juliaPkg = JSON.parse(readFileSync(path.resolve(configDirectory, '../../../pysr/juliapkg.json'), 'utf8'))
+const symbolicRegressionDocsVersion = symbolicRegressionDocsSubfolder(juliaPkg.packages.SymbolicRegression)
 
 function getBaseRepository(base: string): string {
   if (!base || base === '/') return '/';
@@ -29,7 +42,7 @@ const nav = [
     text: 'Python',
     items: [
       { text: 'Python', link: '/' },
-      { text: 'Julia', link: 'https://ai.damtp.cam.ac.uk/symbolicregression/dev/' }
+      { text: 'Julia', link: `https://ai.damtp.cam.ac.uk/symbolicregression/${symbolicRegressionDocsVersion}/` }
     ]
   },
   {
