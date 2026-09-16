@@ -6,9 +6,17 @@ import { tabsMarkdownPlugin } from 'vitepress-plugin-tabs'
 import mathjax3 from "markdown-it-mathjax3";
 import footnote from "markdown-it-footnote";
 
+// Maps the juliapkg.json pin to the SymbolicRegression.jl docs folder covering
+// every version the pin admits, following Julia Pkg compat semantics:
+// `=X.Y.Z` is exact, `~X.Y.Z` allows patch bumps, `^X.Y.Z` (or bare) allows minor bumps.
 export function symbolicRegressionDocsSubfolder(pkg: { version?: unknown; rev?: unknown }): string {
-  const version = typeof pkg.version === 'string' ? pkg.version.match(/\d+\.\d+\.\d+/)?.[0] : undefined
-  if (version) return `v${version}`
+  const compat = typeof pkg.version === 'string' ? pkg.version.trim().match(/^([=~^]?)(\d+)(?:\.(\d+))?(?:\.(\d+))?$/) : null
+  if (compat) {
+    const [, op, major, minor, patch] = compat
+    if (op === '=' && patch !== undefined) return `v${major}.${minor}.${patch}`
+    if ((op === '~' || op === '=' || major === '0') && minor !== undefined) return `v${major}.${minor}`
+    return `v${major}`
+  }
   return typeof pkg.rev === 'string' && /^v\d+\.\d+\.\d+$/.test(pkg.rev) ? pkg.rev : 'dev'
 }
 
