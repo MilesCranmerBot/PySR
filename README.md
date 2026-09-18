@@ -38,24 +38,17 @@ an explicit and powerful way to interpret deep neural networks.
 
 ## Installation
 
-### Pip
-
-You can install PySR with pip:
+You can install PySR with pip or conda:
 
 ```bash
 pip install pysr
 ```
 
-Julia dependencies will be installed at first import.
-
-### Conda
-
-Install PySR with conda:
-
 ```bash
 conda install -c conda-forge pysr
 ```
 
+Julia dependencies will be installed at first import.
 
 ### AI Agent Skill
 
