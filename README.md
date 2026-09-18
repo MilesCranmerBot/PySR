@@ -1,4 +1,4 @@
-<h1><img align="left" height="171" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/master/images/pysr-logo.png" alt="">PySR<br><sub><sub>Symbolic Regression in Python and Julia</sub></sub><br><sub><sub><a href="https://ai.damtp.cam.ac.uk/pysr/">Docs</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/examples">Examples</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/api">API</a> &nbsp;×&nbsp; <a href="https://github.com/astroautomata/PySR/discussions">Forum</a> &nbsp;×&nbsp; <a href="#for-ai-agents">Agents</a></sub></sub><br><sub><a href="https://pypi.org/project/pysr/"><img src="https://img.shields.io/pypi/v/pysr" alt="PyPI"></a> <a href="https://anaconda.org/conda-forge/pysr"><img src="https://img.shields.io/conda/vn/conda-forge/pysr" alt="conda-forge"></a> <a href="https://arxiv.org/abs/2305.01582"><img src="https://img.shields.io/badge/arXiv-2305.01582-b31b1b" alt="arXiv"></a></sub><br clear="all"></h1>
+<h1><img align="left" height="171" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/master/images/pysr-logo.png" alt="">PySR<br><sub><sub>Symbolic Regression in Python and Julia</sub></sub><br><sub><sub><a href="https://ai.damtp.cam.ac.uk/pysr/">Docs</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/examples">Examples</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/api">API</a> &nbsp;×&nbsp; <a href="https://github.com/astroautomata/PySR/discussions">Forum</a> &nbsp;×&nbsp; <a href="#ai-agent-skill">Agents</a></sub></sub><br><sub><a href="https://pypi.org/project/pysr/"><img src="https://img.shields.io/pypi/v/pysr" alt="PyPI"></a> <a href="https://anaconda.org/conda-forge/pysr"><img src="https://img.shields.io/conda/vn/conda-forge/pysr" alt="conda-forge"></a> <a href="https://arxiv.org/abs/2305.01582"><img src="https://img.shields.io/badge/arXiv-2305.01582-b31b1b" alt="arXiv"></a></sub><br clear="all"></h1>
 
 ```bash
 pip install pysr
@@ -12,7 +12,6 @@ If you've finished a project with PySR, please submit a PR to showcase your work
 - [Why PySR?](#why-pysr)
 - [Installation](#installation)
 - [Quickstart](#quickstart)
-  - [For AI agents](#for-ai-agents)
 - [→ Documentation](https://ai.damtp.cam.ac.uk/pysr)
 - [Contributors](#contributors-)
 
@@ -56,6 +55,18 @@ Install PySR with conda:
 ```bash
 conda install -c conda-forge pysr
 ```
+
+
+### AI Agent Skill
+
+Install the [PySR skill](skills/pysr/SKILL.md) to provide your coding
+agents guidance using PySR as part of a larger agentic loop:
+
+```bash
+npx skills add astroautomata/PySR
+```
+
+Add `--global` to install the skill globally.
 
 <details>
 <summary>
@@ -233,21 +244,6 @@ For examples of these and other features, see the [examples page](https://ai.dam
 For a detailed look at more options, see the [options page](https://ai.damtp.cam.ac.uk/pysr/options).
 You can also see the full API at [this page](https://ai.damtp.cam.ac.uk/pysr/api).
 There are also tips for tuning PySR on [this page](https://ai.damtp.cam.ac.uk/pysr/tuning).
-
-### For AI agents
-
-The [PySR skill](skills/pysr/SKILL.md) gives coding agents guidance on configuring
-searches, fitting equations, and troubleshooting PySR, distilled from the
-documentation and hundreds of forum threads. To install it for Claude Code,
-Codex, or another [supported agent](https://github.com/vercel-labs/skills#supported-agents),
-run this from your project directory (requires [Node.js](https://nodejs.org/)):
-
-```bash
-npx skills add astroautomata/PySR --skill pysr
-```
-
-Select your agent when prompted. Add `--global` to install the skill for all your
-projects. Install the PySR package separately using the [installation instructions](#installation).
 
 ### Detailed Example
 
