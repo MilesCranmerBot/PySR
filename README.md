@@ -1,4 +1,4 @@
-<h1><img align="left" height="171" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/master/images/pysr-logo.png" alt="">PySR<br><sub><sub>Symbolic Regression in Python and Julia</sub></sub><br><sub><sub><a href="https://ai.damtp.cam.ac.uk/pysr/">Docs</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/examples">Examples</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/api">API</a> &nbsp;×&nbsp; <a href="https://github.com/astroautomata/PySR/discussions">Forum</a> &nbsp;×&nbsp; <a href="https://github.com/astroautomata/PySR/blob/master/skills/pysr/SKILL.md">Agents</a></sub></sub><br><sub><a href="https://pypi.org/project/pysr/"><img src="https://img.shields.io/pypi/v/pysr" alt="PyPI"></a> <a href="https://anaconda.org/conda-forge/pysr"><img src="https://img.shields.io/conda/vn/conda-forge/pysr" alt="conda-forge"></a> <a href="https://arxiv.org/abs/2305.01582"><img src="https://img.shields.io/badge/arXiv-2305.01582-b31b1b" alt="arXiv"></a></sub><br clear="all"></h1>
+<h1><img align="left" height="171" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/master/images/pysr-logo.png" alt="">PySR<br><sub><sub>Symbolic Regression in Python and Julia</sub></sub><br><sub><sub><a href="https://ai.damtp.cam.ac.uk/pysr/">Docs</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/examples">Examples</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/api">API</a> &nbsp;×&nbsp; <a href="https://github.com/astroautomata/PySR/discussions">Forum</a> &nbsp;×&nbsp; <a href="#ai-agent-skill">Agents</a></sub></sub><br><sub><a href="https://pypi.org/project/pysr/"><img src="https://img.shields.io/pypi/v/pysr" alt="PyPI"></a> <a href="https://anaconda.org/conda-forge/pysr"><img src="https://img.shields.io/conda/vn/conda-forge/pysr" alt="conda-forge"></a> <a href="https://arxiv.org/abs/2305.01582"><img src="https://img.shields.io/badge/arXiv-2305.01582-b31b1b" alt="arXiv"></a></sub><br clear="all"></h1>
 
 ```bash
 pip install pysr
@@ -38,23 +38,28 @@ an explicit and powerful way to interpret deep neural networks.
 
 ## Installation
 
-### Pip
-
-You can install PySR with pip:
+You can install PySR with pip or conda:
 
 ```bash
 pip install pysr
 ```
 
-Julia dependencies will be installed at first import.
-
-### Conda
-
-Similarly, with conda:
-
 ```bash
 conda install -c conda-forge pysr
 ```
+
+Julia dependencies will be installed at first import.
+
+### AI Agent Skill
+
+Install the [PySR skill](skills/pysr/SKILL.md) to provide your coding
+agents guidance using PySR as part of a larger agentic loop:
+
+```bash
+npx skills add astroautomata/PySR
+```
+
+Add `--global` to install the skill globally.
 
 <details>
 <summary>
@@ -232,15 +237,6 @@ For examples of these and other features, see the [examples page](https://ai.dam
 For a detailed look at more options, see the [options page](https://ai.damtp.cam.ac.uk/pysr/options).
 You can also see the full API at [this page](https://ai.damtp.cam.ac.uk/pysr/api).
 There are also tips for tuning PySR on [this page](https://ai.damtp.cam.ac.uk/pysr/tuning).
-
-### For AI agents
-
-If you are an AI agent (or want to teach yours how to use PySR well), there is a self-contained skill file at [`skills/pysr/SKILL.md`](skills/pysr/SKILL.md), distilled from the documentation and hundreds of forum threads. Point your agent at the file, or install it in the [Agent Skills](https://agentskills.io) format:
-
-```bash
-mkdir -p ~/.claude/skills/pysr && curl -o ~/.claude/skills/pysr/SKILL.md \
-    https://raw.githubusercontent.com/astroautomata/PySR/master/skills/pysr/SKILL.md
-```
 
 ### Detailed Example
 
