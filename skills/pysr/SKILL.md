@@ -5,9 +5,7 @@ description: Use when fitting equations to data with PySR or SymbolicRegression.
 
 # Using PySR Effectively
 
-PySR discovers symbolic expressions (readable equations) that fit data, using an evolutionary search over expression trees with a Julia backend (SymbolicRegression.jl). You get a Pareto front of equations trading accuracy against complexity, not a single black-box model.
-
-This guide is distilled from the PySR documentation and several hundred real user threads. Full docs: https://ai.damtp.cam.ac.uk/pysr/
+PySR evolves expression trees through the Julia backend SymbolicRegression.jl, returning readable equations on an accuracy/complexity Pareto front. This guide distills the documentation and several hundred real user threads. Full docs: https://ai.damtp.cam.ac.uk/pysr/
 
 ## Quick start
 
@@ -31,26 +29,20 @@ model.sympy()           # SymPy expression
 model.latex()           # LaTeX string
 ```
 
-`model.equations_` is a pandas DataFrame with `complexity`, `loss`, `score`, `equation`, `sympy_format`, `lambda_format`. Pass a row index to `predict`, `sympy`, `latex`, `jax`, `pytorch` to use any equation on the front, not just the selected one.
+`model.equations_` is a pandas DataFrame containing `complexity`, `loss`, `score`, `equation`, `sympy_format`, `lambda_format`. Select any front row by index in `predict`, `sympy`, `latex`, `jax`, `pytorch`; without an index, methods use the auto-selected equation. Indexing lets you inspect and export a specific Pareto candidate instead of only the default row.
 
-## Critical performance fact: keep the process alive
+## Keep the process alive
 
-Julia is JIT-compiled. The first `.fit()` in a Python process pays Julia startup plus compilation (roughly a minute or two); every later fit in the *same process* starts almost instantly. The single most common agent mistake is running each experiment as a fresh `python script.py`, paying the full compile cost every time.
+The first `.fit()` pays Julia startup/JIT, roughly 1-2 minutes; subsequent same-process fits start almost instantly. Repeated fresh processes repay startup and compilation for every experiment, a common agent failure.
 
-Instead:
-
-- Keep one long-lived Python session (a background IPython/Jupyter kernel, a REPL tool, or any mechanism you already have) and run successive experiments in it. Creating a new `PySRRegressor` per experiment is cheap; the expensive state is the Julia runtime, which lives per-process.
-- If you must use scripts, structure iteration so parameter tweaks happen inside one process rather than via repeated relaunches.
-- Reuse an existing Python environment that already has `pysr` installed rather than creating a fresh environment per task (a new environment re-resolves and precompiles the Julia packages).
-- Do not misdiagnose the first-run compilation pause as a hang. "Compiling Julia backend..." taking a minute or two is normal.
-
-Running plain `python` scripts works fine; this is an optimization, not a requirement.
+- Keep a long-lived IPython/Jupyter kernel or REPL. New `PySRRegressor` instances are cheap; Julia runtime state lives per-process.
+- Scripts work. Iterate parameters inside one process instead of repeatedly relaunching `python script.py`. Process reuse is an optimization rather than a requirement.
+- Reuse an environment containing `pysr`; fresh environments re-resolve and precompile Julia packages.
+- Expect “Compiling Julia backend...” initially. Avoid treating normal compilation as a hang.
 
 ## Candidate equations with `guesses`
 
-Use `guesses` and template expressions as the main interfaces for injecting knowledge about the problem into a search. Use `guesses` to supply plausible equations that the search can modify or discard. Use template expressions to specify structure that every candidate must satisfy. They can be combined by supplying guesses for a template's components and parameters.
-
-Pass candidate expressions through the `PySRRegressor` constructor. Expression strings use Julia syntax, the model's input variable names, and its enabled operators:
+Inject knowledge through modifiable/discardable `guesses` or mandatory template structure. Combine both using component/parameter guesses. Constructor strings require Julia syntax, input variable names, and enabled operators:
 
 ```python
 model = PySRRegressor(
@@ -59,36 +51,38 @@ model = PySRRegressor(
 )
 ```
 
-For single-output regression, pass a list of candidates. For multiple outputs, pass one candidate list per output in target-column order: `guesses=[["x0 + x1"], ["x0 * x1"]]`. For templates, use dictionaries keyed by component and parameter names. In component formulas, `#1`, `#2`, and so on refer to the component's arguments.
+Single output: candidate list. Multiple outputs: lists in target-column order, `guesses=[["x0 + x1"], ["x0 * x1"]]`. Templates: dictionaries keyed by component/parameter names; `#1`, `#2`, etc. identify component arguments.
 
-Guesses are mixed into populations throughout the search. With `should_optimize_constants=True`, their constants and template parameters are optimized before insertion. `fraction_replaced_guesses` controls the fraction replaced from guesses at the end of each cycle; its default is `0.001`.
+Guesses enter populations throughout search. `should_optimize_constants=True` optimizes constants/template parameters before insertion. `fraction_replaced_guesses`, default `0.001`, controls the cycle-end replacement fraction.
 
-Every guess is pushed into the hall of fame before the first generation, so an accepted guess shows up in `model.equations_` (and in `hall_of_fame.csv` as soon as the run starts) at its own complexity. Read that row to confirm the seed landed and to see its optimized constants. Rejection is quiet: a guess whose complexity exceeds `maxsize` produces only a Julia warning (`Guess expression '...' has complexity 23 > maxsize (10)`, printed with default `x1, x2, ...` names whatever you called the variables), is never recorded in the hall of fame, and although it still migrates into populations, nothing derived from it is recorded until mutations bring it within `maxsize`. A guess that violates `constraints`, `nested_constraints`, or `maxdepth` is dropped with no message at all. So set `maxsize` at least as large as the largest guess (the warning tells you its complexity) and keep the constraints compatible with every seed. A seed can also vanish from the table later because the hall of fame keeps one expression per complexity: a same-complexity candidate with lower loss replaces it. Do not react to an oversize seed by pushing `maxsize` far past the seed: search cost climbs steeply with `maxsize` (PySR warns above 40), and a run with `maxsize` several times the seed size can fail to complete a single generation inside its time budget while looking alive. Set `maxsize` a little above the largest seed, and use `warmup_maxsize_by` if early populations bloat.
+Guesses are pushed into the hall of fame before generation one. Inspect accepted seeds at their complexity in `model.equations_` or immediate `hall_of_fame.csv`; confirm insertion and optimized constants. Oversize seeds produce only Julia warning `Guess expression '...' has complexity 23 > maxsize (10)`, using default `x1, x2, ...` names regardless of supplied names. They remain unrecorded but still migrate; descendants become recordable after mutations satisfy `maxsize`. Violations of `constraints`, `nested_constraints`, or `maxdepth` disappear silently. Lower-loss candidates replace seeds at the same complexity: only one expression survives per complexity.
 
-Set guesses on the estimator, never on `.fit()`. Between fits, `model.set_params(guesses=[...], warm_start=True)` replaces the guesses while continuing the existing search. Keep the data representation and search space fixed for continuation.
+Keep constraints compatible and set `maxsize` slightly above the largest seed; use the warning's complexity. Cost rises steeply, PySR warns above 40, and several-times-seed sizes can exhaust the budget without completing one generation despite appearing alive. Use `warmup_maxsize_by` against early bloat.
+
+Set guesses on the estimator, never `.fit()`. Continue with `model.set_params(guesses=[...], warm_start=True)`, replacing guesses while keeping data representation/search space fixed.
 
 ## Recommended workflow
 
-1. **Subsample the data.** Symbolic regression rarely needs more than a few thousand rows; ~1,000 to 5,000 representative rows often suffice even when millions are available. More rows help with many features, heavy noise, or rare regimes. PySR 2.0 uses automatic batching for larger datasets by default. Pass `batching=False` when you need every search evaluation to use the full dataset; with batching enabled, hall-of-fame candidates are still reevaluated on the full dataset. Fewer rows still mean proportionally faster search.
-2. **Choose the minimal operator set.** Only operators plausible for the domain. Redundant operators (e.g. `pow` alongside `square` and `cube`, or `-` alongside `neg`) blow up the search space. Fewer operators is better. If the target is a polynomial, use `["+", "-", "*"]` and skip `/` and `^` entirely.
-3. **Start from defaults otherwise.** The default hyperparameters (populations, parsimony, mutation weights, `ncycles_per_iteration`) were tuned by large-scale search in 2024-2025. Do not copy hyperparameter recipes from old forum threads or papers; most predate the retuning.
-4. **Short runs first.** Debug the setup with a few-minute run: check operators, loss, and that sensible equations appear. Then do one long run for the real search.
-5. **Long final run.** Evolution does not converge in the usual sense; a search that looks stalled can jump to a new expression family hours later. Set `niterations` very large and control the budget with `timeout_in_seconds` (wall clock), `max_evals` (cap on total expression evaluations, for compute-matched comparisons; note `niterations * populations * population_size` is NOT an evaluation count), or set `early_stop_condition` (e.g. `"stop_if(loss, complexity) = loss < 1e-6 && complexity < 10"`, a Julia function string of `(loss, complexity)`). Results stream to `outputs/<run_id>/hall_of_fame.csv`, so you can monitor progress and read partial results at any time. In IPython, pressing `q` then Enter stops the search gracefully.
-6. **Inspect the whole Pareto front, not just the auto-selected row.** See "Choosing an equation" below.
-
-`model_selection="best"` picks the equation with highest `score` among those with loss within 1.5x of the best loss; `"accuracy"` picks the lowest-loss row. The `score` column is the negative log-loss slope per unit complexity: a large score marks the "kink" where accuracy jumps for little added complexity. These are heuristics for `predict`'s default; report and examine the full table.
+1. **Subsample:** usually 1,000-5,000 representative rows suffice even from millions. Many features, heavy noise, or rare regimes benefit from more. PySR 2.0 automatically batches larger datasets; `batching=False` forces full-data search evaluations. Batching still reevaluates hall-of-fame candidates fully. Fewer rows proportionally accelerate search.
+2. **Minimize operators:** select domain-plausible operators. Redundant `pow`/`square`/`cube` or `-`/`neg` enlarge search. Polynomials: `["+", "-", "*"]`, omit `/` and `^`.
+3. **Use defaults:** populations, parsimony, mutation weights, and `ncycles_per_iteration` were tuned by large-scale search in 2024-2025. Avoid older forum/paper recipes.
+4. **Debug briefly:** check operators, loss, and sensible equations in a few-minute run before one long search.
+5. **Budget the final run:** evolution lacks conventional convergence and can jump families after hours. Set large `niterations`; control wall-clock with `timeout_in_seconds`, total evaluations with `max_evals`, or stopping with `early_stop_condition="stop_if(loss, complexity) = loss < 1e-6 && complexity < 10"` (Julia `(loss, complexity)` function). `max_evals` supports compute-matched comparisons; `niterations * populations * population_size` does not count evaluations. Monitor partial `outputs/<run_id>/hall_of_fame.csv`; stop gracefully with `q` then Enter in IPython.
+6. **Inspect the entire front:** validate candidates and report tradeoffs.
 
 ## Choosing an equation
 
-Print `model.equations_` and look at where loss drops sharply as complexity increases; that kink is usually the interesting equation. Evaluate the top few candidates on held-out data (`model.predict(X_test, index=i)`) when overfitting is plausible. Check limiting behavior (x -> 0, x -> inf) against domain expectations. Prefer presenting 2-3 candidates with the tradeoff to silently picking one.
+`model_selection="best"` maximizes `score` within 1.5x minimum loss; `"accuracy"` minimizes loss. Score is negative log-loss slope per complexity unit; a large score marks a sharp accuracy gain for little added complexity. These heuristics control default `predict`.
+
+Print `model.equations_`; inspect sharp loss drops, held-out `model.predict(X_test, index=i)` when overfitting is plausible, and limits x -> 0/inf against domain expectations. Present 2-3 candidates with tradeoffs.
 
 ## Losses and weights
 
-Default is MSE. Common expert moves:
+Default: MSE.
 
-- Robust to outliers: `elementwise_loss="L1DistLoss()"` (median-seeking rather than mean-seeking).
-- Known per-point uncertainty: `model.fit(X, y, weights=1/sigma**2)`; the built-in losses apply weights automatically. Custom weighted form: `elementwise_loss="myloss(x, y, w) = w * abs(x - y)^2"`.
-- Target spans many orders of magnitude: MSE is dominated by the largest values. Use a log-space loss, e.g.
+- Outliers: `elementwise_loss="L1DistLoss()"`, median-seeking versus mean-seeking.
+- Uncertainty: `model.fit(X, y, weights=1/sigma**2)`; built-ins apply weights automatically. Custom: `elementwise_loss="myloss(x, y, w) = w * abs(x - y)^2"`.
+- Wide target range: largest values dominate MSE; use log-space loss:
 
 ```python
 elementwise_loss = """function loss_fnc(prediction, target)
@@ -98,44 +92,33 @@ elementwise_loss = """function loss_fnc(prediction, target)
 end"""
 ```
 
-- Percentage/relative error: divide by the *target*, never the prediction (dividing by the prediction lets evolution win by sending predictions to infinity), and beware targets near zero.
-- Any loss from LossFunctions.jl works as a string: `"HuberLoss(1.0)"`, `"LPDistLoss{3}()"`, etc.
-- Binary classification: encode targets as +1/-1 and use a margin loss such as `"L2MarginLoss()"`; pass predictions through a sigmoid yourself afterwards if you need probabilities.
-- Known asymptotic or boundary behavior (y -> 0 as x -> inf, exact value at a boundary, a known limit): add a few synthetic data points along the asymptote or at the boundary with very large `weights`. This is the standard trick and usually beats a custom objective. For strict enforcement, numerically estimate the limit inside a `loss_function` and add a graded penalty.
-- Losses must be deterministic (results are cached) and non-negative unless `loss_scale="linear"`, which permits negative losses (e.g. log-likelihoods).
+- Relative/percentage error: divide by target; prediction denominators reward infinite predictions. Guard near-zero targets.
+- LossFunctions.jl strings work: `"HuberLoss(1.0)"`, `"LPDistLoss{3}()"`.
+- Binary classification: +1/-1 targets, margin loss `"L2MarginLoss()"`; apply sigmoid yourself for probabilities.
+- Asymptotes/boundaries, including y -> 0 as x -> inf, exact boundary values, and known limits: add synthetic points with very large `weights`, usually preferable to custom objectives. Strict enforcement: estimate limits numerically inside `loss_function`, add graded penalties.
+- Keep losses deterministic for caching and non-negative; `loss_scale="linear"` permits negatives, including log-likelihoods.
 
-`elementwise_loss` receives scalars `(prediction, target)` or `(prediction, target, weight)`. Never sum or broadcast inside it. Objectives needing the whole prediction vector or the expression tree use `loss_function` instead (see below).
+`elementwise_loss` receives scalar `(prediction, target)` or `(prediction, target, weight)`; never sum/broadcast. Whole-vector/tree objectives require `loss_function`.
 
-## Scaling and feature count
+## Scaling and features
 
-- Normalization is optional. Constants are sampled near N(0,1) and mutated multiplicatively, so wildly scaled features can slow the search, but normalizing inserts nuisance constants into the final equation and hides physical meaning. Prefer natural units; rescale only if the search visibly struggles.
-- Up to roughly 10 features: no special handling.
-- Tens of features: raise `maxsize`, provide more rows, and let the search select features itself; it is reasonably good at this. Automatic batching handles large datasets. An equation forced to contain all of 30+ features would need `maxsize` well above 100.
-- More than ~50 features: the primary fix is smarter features or structure. Engineer aggregate features from domain knowledge, or use a template expression over a sensible decomposition. For structured data (fields, images, sequences, graphs), a naive one-column-per-pixel tabular encoding is usually the wrong move; build physically meaningful features, or train a neural network with the right inductive bias and symbolically distill its components (see arXiv:2006.11287). If there is no smarter representation available, `select_k_features=k` (gradient-boosting pre-selection) is the fallback.
-- If the search omits a variable the user expected: PySR only optimizes accuracy and simplicity, so omission means the variable did not reduce loss enough to pay for its complexity. Forcing inclusion requires a custom loss that penalizes its absence.
+- Normalization is optional: constants sample near N(0,1), mutate multiplicatively; extreme scales slow search. Prefer natural units, avoiding nuisance constants and hidden physical meaning. Rescale visibly struggling searches.
+- Roughly 10 features or fewer need no special handling.
+- Tens: increase `maxsize` and rows; search selects features reasonably well, automatic batching handles volume. Requiring all 30+ features needs `maxsize` well above 100.
+- Above ~50: engineer domain aggregates or template decompositions. Fields/images/sequences/graphs need meaningful features rather than pixel columns, or appropriately biased neural networks followed by symbolic component distillation, arXiv:2006.11287. Fallback: gradient-boosting preselection, `select_k_features=k`.
+- Omitted variables failed to justify complexity through accuracy; force inclusion through an absence-penalizing custom loss.
 
-## PDE discovery (spatiotemporal data)
-
-To discover `u_t = f(u, u_x, u_xx, ...)` from field data `u(x, t)`, turn it into normal regression: every grid point is one sample, the columns are the field and its spatial derivatives, and the target is the time derivative. Unlike a fixed candidate library, PySR finds products like `u*u_x` itself.
-
-- Spatial derivatives: spectral differentiation on periodic clean grids; otherwise Savitzky-Golay, e.g. `savgol_filter(U, 21, 3, deriv=1, delta=dx, axis=-1)`. Plain finite differences are only safe on clean data, and spectral derivatives amplify noise catastrophically.
-- Target: central differences of the snapshots. If snapshots are sparse or noisy in time, smooth along the time axis first or sample more finely. Trim stencil margins on non-periodic grids.
-- Worth trying: `complexity_of_variables=[1, 2, 3, ...]`, one entry per feature in column order, so `u` costs 1, `u_x` costs 2, `u_xx` costs 3; this biases the front toward low-order terms. Units (`X_units=["m/s", "s^-1", ...]`) similarly prune dimensionally impossible terms.
-- Read the whole Pareto front for the elbow, not just the best loss. Fitted constants are approximate under noise; validate by simulating the discovered PDE forward from a held-out initial condition.
-
-## Template expressions: use when structure is known
-
-Plain search is the default. Escalate to `TemplateExpressionSpec` when the user knows structure that a free-form tree search would have to rediscover (or would violate). Users very often under-use this feature; suggest it whenever you see:
-
-- A known outer form: y = sin(f(x1, x2)) + g(x3), a rational function, a known envelope like x*(1-x)*g(x).
-- Per-category constants: same formula, different coefficients per class/object/condition (`parameters`).
-- Shared subexpressions across several outputs, or coupled multi-output problems.
-- Derivative or integral relations (differential operator `D`).
-- Hard requirements on which variables may appear where.
-
+## PDE discovery
+Regress `u_t = f(u, u_x, u_xx, ...)` from `u(x, t)`: grid points become samples, field/spatial derivatives become features, time derivative becomes target; PySR discovers products like `u*u_x` without a fixed library.
+- Spatial derivatives: spectral differentiation for clean periodic grids, otherwise Savitzky-Golay, `savgol_filter(U, 21, 3, deriv=1, delta=dx, axis=-1)`; finite differences require clean data, spectral derivatives catastrophically amplify noise.
+- Target: central snapshot differences; smooth noisy/sparse time samples along time or sample finer. Trim non-periodic stencil margins.
+- Bias low-order terms with column-ordered `complexity_of_variables=[1, 2, 3, ...]`, costing `u`, `u_x`, `u_xx` as 1, 2, 3; prune dimensional impossibilities with `X_units=["m/s", "s^-1", ...]`. Inspect the front elbow; noisy coefficients are approximate. Validate forward simulation from held-out initial conditions.
+## Template expressions
+Default to plain search; suggest `TemplateExpressionSpec` for known structure that free-form trees would rediscover or violate:
+- Outer forms: `sin(f(x1, x2)) + g(x3)`, rational functions, envelopes `x*(1-x)*g(x)`.
+- Per-category/class/object/condition coefficients through `parameters`; shared subexpressions/coupled outputs; derivative/integral relations through differential operator `D`; hard variable-placement requirements.
 ```python
 from pysr import PySRRegressor, TemplateExpressionSpec
-
 spec = TemplateExpressionSpec(
     combine="sin(f(x1, x2)) + g(x3)^2",
     expressions=["f", "g"],
@@ -144,9 +127,7 @@ spec = TemplateExpressionSpec(
 model = PySRRegressor(expression_spec=spec, binary_operators=["+", "-", "*", "/"])
 model.fit(X, y)
 ```
-
-With per-category parameters, pass the category as a column of `X`. Julia indexing is 1-based, so add one if your category IDs start at zero:
-
+Pass category as an X column; increment zero-based IDs for Julia's 1-based indexing:
 ```python
 spec = TemplateExpressionSpec(
     combine="p[class] * f(x1, x2) + q[class]",
@@ -164,123 +145,47 @@ model = PySRRegressor(
     }],
 )
 ```
+`parameters={"p": 3, "q": 3}` declares vector lengths; guesses initialize vectors and `f`. Declare disjoint component/parameter names and every guess key; supply every component formula. Match parameter lengths using Python lists/1D NumPy arrays; omit vectors for normal initialization. Values remain learnable, are copied without modifying caller arrays, and use model precision. Parameter guesses require SymbolicRegression.jl ≥2.3.0. `#1`/`#2` denote passed arguments, here `x1`/`x2`; with `combine="f(x, p[1])"`, `#2` denotes `p[1]`.
+`combine` accepts arbitrary Julia/multiple statements: reuse `fx = f(x); fx + fx^2`, change arguments `f(x1) - f(x2)`, differentiate `df = D(f, 1); df(x)`. Vector/multi-output problems: append extra targets to X, return per-row residuals, fit dummy y with `elementwise_loss="(p, t) -> p"` so output itself is loss.
+PySR 2.0 caveats: arbitrary Julia prevents `.sympy()`, `.latex()`, `.jax()`, `.pytorch()` export; manually reassemble component strings from `model.equations_`. Arguments print positionally as `#1, #2` because components may receive different inputs. Combine values are `ValidVector`s (`.x` data, `.valid` flag); arithmetic propagates validity, custom manipulation must unwrap/rebuild `ValidVector(raw, valid)`. Use Float32-safe `0.5f0` or explicit conversion; bare Float64 `0.5` risks type instability. Custom objectives require `loss_function_expression`. Learnable parameters use `TemplateExpressionSpec(parameters=...)`; pre-1.4 `function_symbols`/lambda-style combine API is removed in 2.0.
 
-`parameters={"p": 3, "q": 3}` declares the vector lengths. The guess supplies initial values for those vectors and a formula for `f`. Component and parameter names must be disjoint, and every key must be declared in the specification. Supply every component formula. Each parameter vector must match its declared length and can be a Python list or one-dimensional NumPy array. You can omit a parameter vector to keep its normal initialization.
-
-`#1` and `#2` refer to the arguments passed to the component, here `x1` and `x2`. A template can also pass a parameter into a component. With `combine="f(x, p[1])"`, `#2` refers to `p[1]`.
-
-Supplied parameter values remain learnable. PySR copies them into the candidate, so optimization does not modify the caller's array. Numeric parameter values use the model's precision. Template parameter guesses require SymbolicRegression.jl 2.3.0 or later.
-
-The combine string is arbitrary Julia: multiple statements, reuse of a subexpression (`fx = f(x); fx + fx^2`), evaluating the same f at different arguments (`f(x1) - f(x2)`), derivatives (`df = D(f, 1); df(x)`). Multi-output/vector problems: put the extra targets in X as columns, return the per-row residual from the template, fit against dummy y with `elementwise_loss="(p, t) -> p"` (the template output is then the loss itself).
-
-Template caveats (PySR 2.0):
-
-- No `.sympy()`, `.latex()`, `.jax()`, `.pytorch()` export; `combine` can contain arbitrary Julia, so read component strings from `model.equations_` and reassemble manually. Component arguments print as `#1, #2` (argument positions, since f may be called at different inputs).
-- Values inside the combine string are `ValidVector`s: raw data in `.x`, validity flag in `.valid`. Ordinary arithmetic propagates validity automatically; custom manipulations must unwrap and rebuild (`ValidVector(raw, valid)`).
-- Write Float32-safe literals in the combine string (`0.5f0`, not `0.5`) or convert explicitly; a bare Float64 literal can break type stability.
-- Combining a template with a custom objective requires `loss_function_expression` (not `loss_function`).
-- Use `TemplateExpressionSpec` with `parameters` for learnable parameters. The pre-1.4 template API (`function_symbols`, lambda-style combine) was removed in PySR 2.0.
-
-## Custom value types with `TypeSpec`
-
-`TypeSpec` makes expression-tree nodes hold generated Julia structs. It is independent of `expression_spec`, so custom values can also use a fixed structure.
-
-Python values supply fields in declaration order. Here `((1.0, 2.0, 3.0), np.uint32(7))` supplies `triple` and `code`; the inner tuple remains one field. Keep `X` two-dimensional and `y` one-dimensional; assign object cells individually so NumPy does not create extra axes.
+## Custom value types: `TypeSpec`
+`TypeSpec` generates Julia structs for nodes, independently of `expression_spec`, including fixed structures. Supply fields in declaration order: `triple`, then `code`; the nested tuple remains one field. Keep X 2D/y 1D and assign object cells individually to prevent extra NumPy axes:
 ```python
 import numpy as np
 from pysr import PySRRegressor, TemplateExpressionSpec, TypeSpec
-
 value = ((1.0, 2.0, 3.0), np.uint32(7))
 X = np.empty((1, 1), dtype=object)
 y = np.empty(1, dtype=object)
 X[0, 0] = value
 y[0] = value
-
 packet = TypeSpec(
     "Packet",
     fields={"triple": "NTuple{3,Float64}", "code": "UInt32"},
     sample="rng -> Packet(ntuple(_ -> randn(rng), 3), rand(rng, UInt32))",
-    mutate="""function (rng, value::Packet, temperature::Float64)  # note annotation isn't required; shown for documentation purposes
+    mutate="""function (rng, value::Packet, temperature::Float64)
         triple = ntuple(i -> value.triple[i] + temperature * randn(rng), 3)
         bit = UInt32(1) << rand(rng, 0:31)
         Packet(triple, xor(value.code, bit))
     end""",
     scalar_constants="value -> collect(value.triple)",
-    with_scalar_constants=(
-        "(value, c) -> Packet((c[1], c[2], c[3]), value.code)"
-    ),
+    with_scalar_constants="(value, c) -> Packet((c[1], c[2], c[3]), value.code)",
     is_valid="value -> all(isfinite, value.triple)",
 )
-
-operators = {
-    1: [
-        "negate_packet(x::Packet)::Packet = "
-        "Packet(ntuple(i -> -x.triple[i], 3), x.code)"
-    ],
-    2: [
-        "combine_packets(x::Packet, y::Packet)::Packet = "
-        "Packet(ntuple(i -> x.triple[i] + y.triple[i], 3), "
-        "xor(x.code, y.code))",
-        """
-        choose_parameter(a::Packet, b::Packet) = a
-        choose_parameter(a::Packet, b::ValidVector) =
-            ValidVector(map(_ -> a, b.x), b.valid)
-        """,
-    ],
-}
-loss = """
-packet_loss(p::Packet, y::Packet)::Float64 =
-    sum((p.triple[i] - y.triple[i])^2 for i in 1:3) +
-    Float64(count_ones(xor(p.code, y.code)))
-"""
-
-model = PySRRegressor(
-    type_spec=packet,
-    operators=operators,
-    elementwise_loss=loss,
-)
 ```
-
-Typed constants can use the generated constructor in ordinary or template-component guess strings:
-
-`ordinary_guess = ["combine_packets(x0, Packet((1.0, 2.0, 3.0), UInt32(7)))"]`
-
-`template_component_guess = [{"f": "combine_packets(#1, Packet((1.0, 2.0, 3.0), UInt32(7)))"}]`
-
-PySR parses these strings in the generated `TypeSpec` configuration module, where `Packet` and its operators are already defined. They need no parser closure or extra import.
-
-Template parameter values use the same `TypeSpec` as the data. A Python list preserves `value` as one logical `Packet`; a one-dimensional object array does the same explicitly:
-
-```python
-packet_parameter_array = np.empty(1, dtype=object)
-packet_parameter_array[0] = value
-
-packet_template = TemplateExpressionSpec(
-    combine="choose_parameter(p[1], f(x))",
-    expressions=["f"],
-    variable_names=["x"],
-    parameters={"p": 1},
-)
-packet_guess_from_list = [{"f": "#1", "p": [value]}]
-packet_guess_from_array = [{"f": "#1", "p": packet_parameter_array}]
-model = PySRRegressor(
-    type_spec=packet,
-    expression_spec=packet_template,
-    operators=operators,
-    elementwise_loss=loss,
-    guesses=packet_guess_from_array,
-)
-```
-
-`sample(rng) -> Packet` creates constant leaves. `mutate(rng, value, temperature) -> Packet` perturbs continuous fields and evolves the discrete field. `scalar_constants(Packet) -> Vector{Float64}` exposes only optimizable scalars; `with_scalar_constants(Packet, Vector{Float64}) -> Packet` rebuilds the value after optimization and must preserve non-optimized fields. `is_valid(Packet) -> Bool` rejects invalid intermediate values. The extraction and reconstruction hooks must be supplied together.
-
-Optional hooks: `init` is a Julia callable `() -> Packet` for initialization; `string` is `Packet -> AbstractString` for printing; `preamble` is Julia source evaluated before the generated type and hooks; `definitions` is Julia source evaluated right after the generated type, for constructors and methods that mention it; `loss_type` names the concrete `AbstractFloat` returned by a full custom objective. Elementwise losses cannot take `loss_type`; their return type is inferred, so the example annotates `packet_loss` as `Float64` to keep it concrete.
-
-When adapting this pattern, check that Python values match the declared field count and order; each field converts to its Julia type; every searched operator is type-stable and returns `Packet`; and the loss returns one real scalar per pair; reserve `Inf` for invalid evaluations.
+- `sample(rng) -> Packet`: constant leaves; `mutate(rng, value, temperature) -> Packet`: continuous/discrete mutation; annotations are optional.
+- Supply `scalar_constants(Packet) -> Vector{Float64}` and `with_scalar_constants(Packet, Vector{Float64}) -> Packet` together; expose optimizable scalars, preserve other fields when rebuilding.
+- `is_valid(Packet) -> Bool`: reject invalid intermediates; optional `init`: `() -> Packet`; `string`: `Packet -> AbstractString`.
+- `preamble`: Julia before generated type/hooks; `definitions`: Julia immediately after type, including constructors/type-specific methods.
+- `loss_type`: concrete `AbstractFloat` for full objectives; unavailable for elementwise losses, whose return type is inferred.
+Configure `PySRRegressor(type_spec=packet, operators=operators, elementwise_loss=loss)`. In arity-keyed `operators`, unary `negate_packet(x::Packet)::Packet = Packet(ntuple(i -> -x.triple[i], 3), x.code)` preserves code; binary `combine_packets(x::Packet, y::Packet)::Packet = Packet(ntuple(i -> x.triple[i] + y.triple[i], 3), xor(x.code, y.code))` sums triples/XORs codes. Include binary `choose_parameter(a::Packet, b::Packet) = a` and `choose_parameter(a::Packet, b::ValidVector) = ValidVector(map(_ -> a, b.x), b.valid)`. Define `loss` as `packet_loss(p::Packet, y::Packet)::Float64 = sum((p.triple[i] - y.triple[i])^2 for i in 1:3) + Float64(count_ones(xor(p.code, y.code)))`; annotation keeps return type concrete.
+Typed constructors work in `ordinary_guess = ["combine_packets(x0, Packet((1.0, 2.0, 3.0), UInt32(7)))"]` and `template_component_guess = [{"f": "combine_packets(#1, Packet((1.0, 2.0, 3.0), UInt32(7)))"}]`. Parsing uses the generated configuration module with Packet/operators defined; no parser closure/import needed.
+Template parameters share the data's `TypeSpec`. Define `packet_template = TemplateExpressionSpec(combine="choose_parameter(p[1], f(x))", expressions=["f"], variable_names=["x"], parameters={"p": 1})`. Preserve one logical Packet with `packet_guess_from_list = [{"f": "#1", "p": [value]}]`, or assign `packet_parameter_array = np.empty(1, dtype=object)` and `packet_parameter_array[0] = value`, then `packet_guess_from_array = [{"f": "#1", "p": packet_parameter_array}]`. Configure the estimator above with additional `expression_spec=packet_template`, `guesses=packet_guess_from_array`.
+Verify field count/order, conversion to declared Julia types, type-stable Packet-returning operators, and one real scalar per loss pair; reserve `Inf` for invalid evaluations.
 
 ## Custom operators
 
-Pass Julia definitions as strings, and always provide the SymPy mapping (with *SymPy* functions, never numpy/scipy, or export and `predict` will break):
+Supply Julia strings and SymPy mappings using SymPy functions, never numpy/scipy; incorrect mappings break export/prediction:
 
 ```python
 model = PySRRegressor(
@@ -293,17 +198,15 @@ model = PySRRegressor(
 )
 ```
 
-Rules that prevent most operator bugs:
+- Accept all reals, including probes beyond data. Guard domains: `my_sqrt(x) = x >= 0 ? sqrt(x) : convert(typeof(x), NaN)`; any data-point NaN discards candidates with infinite loss. Prefer protected built-ins `sqrt`, `log`, `acosh`.
+- Preserve types: `T(2.5)` with `where {T}`, or default-Float32 `2.5f0`; bare `2.5`/`0` introduce Float64/Int64 and break Float32 pipelines.
+- One/two scalar inputs, scalar output; ≥3 arguments require arity-keyed `operators` or templates.
+- Julia packages: `from pysr import jl; jl.seval("import Pkg; Pkg.add(\"SpecialFunctions\")"); jl.seval("using SpecialFunctions")`; safely wrap any importable function.
+- No closed SymPy form: map to `class myop(sympy.Function): pass`; symbolic export works, `predict` requires numeric mapping. Call `model.refresh()` after mapping changes.
 
-- The operator must accept *any* real input (PySR probes far outside your data range). Return a typed NaN for invalid inputs: `my_sqrt(x) = x >= 0 ? sqrt(x) : convert(typeof(x), NaN)`. Candidates producing NaN anywhere on the data are discarded with infinite loss, which is exactly how domain restrictions should be handled. Built-ins (`sqrt`, `log`, `acosh`, ...) are already protected this way; prefer them over hand-rolled versions.
-- Preserve the input type: write constants as `T(2.5)` with a `where {T}` signature, or `2.5f0` for Float32 (the default precision). A bare `2.5` or `0` is Float64/Int64 and breaks Float32 pipelines.
-- One or two scalar arguments in, one scalar out. For three or more arguments, use the arity-keyed `operators` dictionary or a template.
-- For a function from a Julia package: `from pysr import jl; jl.seval("import Pkg; Pkg.add(\"SpecialFunctions\")"); jl.seval("using SpecialFunctions")`, wrap it safely, then use it as an operator. Anything importable in Julia works.
-- Operators with no closed sympy form: map to a `class myop(sympy.Function): pass` placeholder; export then works symbolically, though `predict` needs a numeric mapping (call `model.refresh()` after changing mappings).
+## Custom objectives: `loss_function`
 
-## Custom objectives (loss_function)
-
-When the loss needs the whole prediction vector, the expression tree, derivatives, or auxiliary data, write a full Julia objective:
+Use full objectives for vectors, trees, derivatives, auxiliary data:
 
 ```python
 objective = """
@@ -317,28 +220,24 @@ end
 model = PySRRegressor(loss_function=objective, binary_operators=["+", "*", "-"])
 ```
 
-Hard-won rules from the issue tracker:
+- Check `completed` before accessing predictions; failure leaves garbage. Return `L(Inf)` for numerical invalidity; use graded finite structural penalties such as `L(1e6 * n_violations)` so intermediate mutations survive. All-or-nothing structural rejection can make targets unreachable.
+- `dataset.X`: features × samples, transposed from Python; `dataset.y`: vector; `dataset.n`: sample count. Three-argument objectives receive active batches; `(tree, full_dataset, options, idx)` exposes full data/selected indices.
+- Millions of calls: type-stable, vectorized, no printing/Python callbacks (GIL serialization). Use `const` globals or string interpolation, Distances.jl/standard packages; diagnose with `@code_warntype`/BenchmarkTools in separate Julia. Avoid internal-name collision `eval_loss`.
+- Append auxiliary targets/derivatives/group IDs to X and slice, or interpolate literal arrays. Appended columns remain searchable unless templates exclude them or penalties discourage use.
+- Candidate derivatives: `eval_diff_tree_array` for one feature, `eval_grad_tree_array` for all; support monotonicity/physics-informed losses. Templates use `D(f, i)`.
+- Reinterpreted trees, including split subtrees/recursion, print raw equations requiring manual decoding; symbolic manipulation generally breaks `.sympy()`/`.predict()`, requiring manual extraction.
 
-- **Always check the `completed` flag** from `eval_tree_array` before using predictions; on failure the array contains garbage.
-- Return `L(Inf)` for invalid evaluations, but use *graded finite penalties* for structural preferences (e.g. `L(1e6 * n_violations)`), so evolution gets a gradient toward compliance. All-or-nothing `Inf` for structure makes the target unreachable, because intermediate mutations must survive.
-- `dataset.X` is features x samples (transposed relative to Python!). `dataset.n` is the number of samples. `dataset.y` is a vector.
-- With automatic batching, a three-argument objective receives the active-batch dataset. Use `(tree, full_dataset, options, idx)` when the objective needs the full dataset and selected row indices.
-- Performance: this function runs millions of times. Keep it type-stable (no untyped globals; make globals `const` or interpolate values into the string), no printing, no Python callbacks (the GIL serializes everything), vectorize, and prefer `Distances.jl`/standard packages. Diagnose with `@code_warntype` or BenchmarkTools in a separate Julia session. Do not name it `eval_loss` (collides with an internal function).
-- Auxiliary data (extra targets, derivative observations, group ids): append as columns of X and slice inside the objective, or interpolate literal arrays into the objective string. Note appended columns are visible to the search as features unless the search cannot use them (template) or you penalize their use.
-- Derivatives of candidates: `eval_diff_tree_array` (one feature) / `eval_grad_tree_array` (all features), useful for monotonicity penalties and physics-informed losses. For templates use `D(f, i)` inside the combine string instead.
-- With a custom objective that reinterprets the tree (split subtrees, recursion), the *printed* equation is the raw tree, not your interpretation; you must decode it yourself.
-- Custom objectives that manipulate the tree symbolically generally break `.sympy()`/`.predict()`; extract what you need manually.
+### Structural tree constraints
 
-### Symbolic constraints by walking the tree
+Before writing a traversal, check whether the rule is already an option. Operator placement rules are `nested_constraints`: "no sin inside cos and no cos inside sin" is `nested_constraints={"sin": {"cos": 0}, "cos": {"sin": 0}}`; "exponent must be a bare constant or variable" is `constraints={"^": (-1, 1)}` (keys are the names used in the operator lists, so `"pow"` if that is the name given). Both reject a violating mutation before it is evaluated, which is cheaper than a loss penalty and never lets a violator into the hall of fame. Use traversal only for what they cannot express: required features, constant value ranges, rules that depend on position or on several operators at once.
 
-Any structural rule that `constraints`/`nested_constraints` cannot express (required features, forbidden variable placements, restrictions on constant values, operator-specific rules) is implemented by traversing the expression tree inside the objective. Trees support Julia's standard collection functions: `any(f, tree)`, `all(f, tree)`, `count(f, tree)`, `sum(f, tree)`, `foreach(f, tree)`, `collect(tree)`, and `for node in tree` (depth-first). Prefer the functional forms; `for node in tree` allocates a stack while `count`/`sum`/`any` traverse directly. Node fields:
+Implement those by traversal. Supported: `any(f, tree)`, `all(f, tree)`, `count(f, tree)`, `sum(f, tree)`, `foreach(f, tree)`, `collect(tree)`, depth-first `for node in tree`. Prefer functional traversal: loops allocate stacks; `count`/`sum`/`any` traverse directly.
 
-- `node.degree`: 0 = leaf, 1 = unary, 2 = binary
-- `node.l`, `node.r`: children (subtrees, themselves traversable)
-- `node.constant` (leaves only): constant vs variable; `node.val`: the constant's value; `node.feature`: 1-based feature index
-- `node.op`: 1-based index into the operator list *you passed*, per arity
+- `node.degree`: leaf 0/unary 1/binary 2; `node.l`, `node.r`: traversable children.
+- Leaves: `node.constant` distinguishes constants/variables; `node.val`: constant value; `node.feature`: 1-based feature index.
+- `node.op`: 1-based supplied operator-list index, per arity.
 
-Worked example: allow `^` only with a lone constant exponent in [0, 1]:
+Allow `^` only with a lone constant exponent in [0,1]:
 
 ```python
 objective = """
@@ -357,23 +256,23 @@ end
 model = PySRRegressor(binary_operators=["+", "*", "^"], loss_function=objective)
 ```
 
-The count-then-penalize shape (violations counted, multiplied by a large finite constant, returned *before* evaluation) is the canonical pattern: cheap structural check first, graded penalty so evolution has a direction, `Inf` reserved for failed numerical evaluation. Requiring a feature is the mirror image: `any(n -> n.degree == 0 && !n.constant && n.feature == 2, tree) || return L(big)`. For template expressions, get the tree of a component via `get_tree(ex)` inside `loss_function_expression`. More traversal tools (`tree_mapreduce`, `NodeSampler`, node construction): https://ai.damtp.cam.ac.uk/dynamicexpressions/stable/examples/base_operations/
+Count violations before evaluation; multiply by a large finite penalty to guide evolution. Require feature 2: `any(n -> n.degree == 0 && !n.constant && n.feature == 2, tree) || return L(big)`. Templates: obtain component trees using `get_tree(ex)` inside `loss_function_expression`. `tree_mapreduce`, `NodeSampler`, construction: https://ai.damtp.cam.ac.uk/dynamicexpressions/stable/examples/base_operations/
 
-## Constraints and complexity shaping
+## Constraints and complexity
 
-- `constraints={"pow": (9, 1)}`: max complexity of each argument (here: any base, exponent must be a lone constant/variable). `-1` means unlimited. Strongly recommended whenever `^` is included; unconstrained exponentiation searches terribly.
-- `nested_constraints={"sin": {"sin": 0, "cos": 0}, "cos": {"sin": 0, "cos": 0}}`: forbids nested trig. General form: how many times each inner operator may appear inside each outer one.
-- `complexity_of_operators={"exp": 3}`: make disliked operators expensive. `complexity_of_constants=2`: discourage free constants. `complexity_of_variables`: per-feature or global cost.
-- These constraints apply to every intermediate expression during evolution, not just final answers; overly tight settings silently make the target unreachable. Leave slack (e.g. want final size 30, set `maxsize=35`).
-- `maxsize` counts every node (operator, constant, variable), or is measured in the units of `complexity_mapping` if you set one. A 7-feature linear model is already complexity ~29. The default 30 is too small for anything with many terms.
-- `warmup_maxsize_by=0.5` (fraction of the run over which maxsize ramps up): useful when the search dives into complex expressions early and gets stuck.
-- `parsimony` and `adaptive_parsimony_scaling` are already well-tuned by default in 1.5+; old advice to set them manually is mostly obsolete.
-- Known constants (pi, G, ...): just let it fit floats and recognize them afterwards, or pass the constant as an extra constant-valued feature if it must appear exactly.
-- Integer-only constants: pass candidate integers as constant features and raise `complexity_of_constants`, or round inside a custom operator; do not expect the continuous optimizer to land on integers.
+- `constraints={"pow": (9, 1)}` caps argument complexity: base 9, lone constant/variable exponent; `-1` unlimited. Strongly constrain `^`; unrestricted exponentiation searches poorly.
+- `nested_constraints={"sin": {"sin": 0, "cos": 0}, "cos": {"sin": 0, "cos": 0}}` prohibits nested trig; values cap inner occurrences within outer operators.
+- `complexity_of_operators={"exp": 3}`, `complexity_of_constants=2` discourage operators/constants; `complexity_of_variables` accepts global/per-feature costs.
+- Constraints affect every intermediate; excessive tightness silently excludes targets. Allow slack: final size 30, `maxsize=35`.
+- `maxsize` counts operator/constant/variable nodes or `complexity_mapping` units; seven-feature linear models cost ~29, default 30 excludes many-term formulas.
+- `warmup_maxsize_by=0.5` ramps maxsize over that run fraction, helping avoid early complex traps.
+- `parsimony`/`adaptive_parsimony_scaling`: defaults well-tuned in 1.5+.
+- Known pi/G: recognize fitted floats afterwards, or supply exact constant-valued features.
+- Integers: constant features plus increased `complexity_of_constants`, or custom-operator rounding; continuous optimization does not guarantee integers.
 
-### Complexity in your own units (`complexity_mapping`)
+### `complexity_mapping`
 
-`complexity_of_operators` charges a fixed price per operator use. When the budget the user actually cares about is something else (characters of emitted source, evaluation cost, a token count, a depth penalty), pass `complexity_mapping`: a string of Julia code defining a function from the expression to an `Int`. It replaces node counting everywhere complexity is used: the Pareto front, `maxsize`, parsimony, and `constraints`. Price each node by what it will cost in the final artifact:
+Replace fixed operator prices/node counts with a Julia expression-to-`Int` function for emitted characters, evaluation cost, tokens, or depth. Pricing applies to front, `maxsize`, parsimony, `constraints`.
 
 ```python
 complexity_mapping = """
@@ -393,77 +292,75 @@ model = PySRRegressor(
 )
 ```
 
-On a test problem this mapping tracked `len(equation)` of every `model.equations_` row to within a constant offset of 2 (the outer parentheses), which is what you want: rank by your real cost, then calibrate the small residual against a few emitted candidates.
+This mapping tracked every test-row `len(equation)` within offset 2 for outer parentheses; rank by actual cost and calibrate against emitted candidates.
 
-- The function receives an `AbstractExpression`; `get_tree(ex)` gives the node tree. Node fields are the same as in the tree-walking section above: `degree`, `constant`, `val`, `feature`, `op`. `tree_mapreduce` and `get_tree` are already in scope.
-- Do not use `length(string_tree(ex))` as a character count. Inside the mapping, operators render as `binary_operator[3](...)` placeholders and variables as `x1, x2`, so the length has nothing to do with the equation you will export.
-- `maxsize` and the hall of fame switch to the mapping's units. With a character mapping and the default `maxsize=30`, the run finishes with an **empty** `equations_` because nothing fits. Set `maxsize` to the real budget. The hall of fame allocates one slot per unit up to `maxsize`, so a fine-grained mapping yields a long front; filter it.
-- Complexity is computed on every candidate. Keep the function cheap and type-stable, no Python callbacks.
-- Combine with `guesses` to seed under the same pricing; the guess acceptance rules above apply in mapping units.
+- Input: `AbstractExpression`; `get_tree(ex)` exposes `degree`, `constant`, `val`, `feature`, `op`. `tree_mapreduce`/`get_tree` are in scope.
+- Avoid `length(string_tree(ex))`: internal rendering uses `binary_operator[3](...)` and `x1, x2` placeholders, unrelated to exported length.
+- Set real-budget `maxsize`; default 30 with character pricing leaves `equations_` empty when nothing fits. Hall of fame allocates one slot/unit through maxsize; filter long fine-grained fronts.
+- Every candidate incurs computation: cheap, type-stable, no Python callbacks.
+- `guesses` use identical pricing/acceptance rules.
 
 ## Dimensional constraints
 
-Physical units, checked during search:
+Check physical units during search:
 
 ```python
 model.fit(X, y, X_units=["Constants.M_sun", "kg", "m"], y_units="kg * m / s^2")
 ```
 
-- Uses DynamicQuantities.jl notation; `"1"` means explicitly dimensionless.
-- Violations are softly penalized via `dimensional_constraint_penalty` (default 1000). Do not crank it to 1e9; a graded penalty is what lets evolution route through slightly-wrong intermediates.
-- Fitted constants get wildcard units (printed `[⋅]` or `[?]`), so a lone constant can absorb any units and make an expression valid. Set `dimensionless_constants_only=True` to forbid that.
-- Radians count as dimensionless in SI, so units cannot force a variable to appear only inside trig.
+- DynamicQuantities.jl notation; `"1"` explicitly dimensionless.
+- Soft `dimensional_constraint_penalty`, default 1000; avoid 1e9, preserve graded paths through imperfect intermediates.
+- Fitted constants have wildcard `[⋅]`/`[?]` units; a lone constant can absorb any dimensions. Forbid with `dimensionless_constants_only=True`.
+- SI radians are dimensionless; units cannot restrict variables to trig.
 
 ## Parallelism
 
-- Default `parallelism="multithreading"` is right for laptops and single nodes. Thread count is set at Julia startup: set the env var `PYTHON_JULIACALL_THREADS=<n>` *before* importing pysr (`JULIA_NUM_THREADS` is not the right variable under juliacall).
-- Keep `populations` at ~2-3x the number of threads/cores so workers always have work (default `populations=31` already covers typical machines).
-- If the coordinating thread is saturated on many-core machines, raise `ncycles_per_iteration`; workers then communicate less often.
-- `parallelism="multiprocessing"` (with `procs=n`) has much higher startup cost per fit but can run faster steady-state and spans multiple nodes with `cluster_manager="slurm"` (or run SymbolicRegression.jl natively with SlurmClusterManager.jl, see https://ai.damtp.cam.ac.uk/symbolicregression/dev/slurm/). Only worth it for very long runs. Launch the script once, on one node, and let it spawn workers; do not wrap it in `srun`. Custom Julia packages needed on workers go in `worker_imports`.
-- Full reproducibility requires `deterministic=True, random_state=<seed>, parallelism="serial"`; parallel seeded runs are not deterministic, and even serial results can differ slightly across CPUs (use `precision=64` to reduce this).
+- Default `parallelism="multithreading"` suits laptops/single nodes. Thread count is fixed at Julia startup: set `PYTHON_JULIACALL_THREADS=<n>` before importing pysr; `JULIA_NUM_THREADS` is inappropriate under juliacall.
+- Keep `populations` ~2-3x threads/cores for worker utilization; default `populations=31` covers typical machines.
+- Saturated coordinating thread: increase `ncycles_per_iteration`, reducing communication.
+- Long runs: `parallelism="multiprocessing"`, `procs=n` costs substantially more startup/fit, potentially faster steady-state. Multiple nodes: `cluster_manager="slurm"` or native SlurmClusterManager.jl, https://ai.damtp.cam.ac.uk/symbolicregression/dev/slurm/. Launch once on one node, let it spawn workers, avoid `srun`; put worker packages in `worker_imports`.
+- Reproducibility: `deterministic=True, random_state=<seed>, parallelism="serial"`; parallel seeds remain nondeterministic. CPU differences can persist serially; reduce with `precision=64`.
 
 ## Saving, resuming, exporting
 
-- By default, each non-temporary fit writes `outputs/<run_id>/hall_of_fame.csv` (updated continuously; safe to read mid-run) and `checkpoint.pkl`. Reload with `PySRRegressor.from_file(run_directory=...)`. Pickles are version-locked: load with the same PySR version that wrote them. The CSV plus your construction code is the durable artifact; custom operators need their `extra_sympy_mappings` supplied again on reload.
-- `warm_start=True` continues evolution from the previous call's populations on the next `.fit()` in the same process. Search-space parameters (operators, `maxsize`, `expression_spec`, precision, feature count/order) must stay fixed; you can change the loss or weights between warm-started fits to implement staged objectives.
-- Exports: `model.sympy(i)`, `model.latex(i)`, `model.latex_table()`, `model.jax(i)` (returns `{'callable', 'parameters'}`, differentiable), `model.pytorch(i)` (trainable module). Custom operators need `extra_jax_mappings`/`extra_torch_mappings` for those backends. A common pattern: pick an equation, export to JAX/PyTorch, and fine-tune its constants by gradient descent on the full dataset.
-- Loss printed by Julia can differ from a Python recomputation (32-bit default vs numpy 64-bit); `precision=64` if it matters. Data with values beyond ~1e19 or below ~1e-19 also needs `precision=64` (Float32 overflow).
+- Non-temporary fits write continuously readable `outputs/<run_id>/hall_of_fame.csv` and `checkpoint.pkl`. Reload `PySRRegressor.from_file(run_directory=...)` with identical PySR version; pickles are version-locked. Preserve CSV/construction code durably; resupply custom `extra_sympy_mappings`.
+- `warm_start=True` resumes previous populations on next same-process `.fit()`. Fix operators, `maxsize`, `expression_spec`, precision, feature count/order; loss/weights may change for staged objectives.
+- Export `model.sympy(i)`, `model.latex(i)`, `model.latex_table()`, differentiable `model.jax(i)` returning `{'callable', 'parameters'}`, trainable `model.pytorch(i)`. Supply custom `extra_jax_mappings`/`extra_torch_mappings`; fine-tune selected equations' constants by full-data gradient descent.
+- Julia losses can differ from NumPy recomputation through default 32-bit versus 64-bit precision. Use `precision=64` when important or values exceed ~1e19/fall below ~1e-19, risking Float32 overflow.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| First `import pysr` or first `.fit` takes minutes | Normal: Julia download (first install) and JIT compile (each process). Keep the process alive. |
-| "Compiling Julia backend" apparently forever | On Apple Silicon: x86 Python under Rosetta; install a native arm64 Python env. In notebooks/embedded shells: stdin monitoring can wedge; pass `input_stream="devnull"`. |
-| Hang at startup with a `lock.pid` mentioned | Stale juliapkg lock from a killed process: verify nothing is installing, delete the lock file, `import pysr` once in a fresh process. Shared filesystems: pre-initialize once before launching many jobs. |
-| `UnicodeDecodeError` spam in Jupyter | Old PythonCall bug; set `PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION=no` before import, or upgrade. |
-| Cannot interrupt search in Jupyter | Known limitation; `q`+Enter works in IPython/terminal, not notebooks. Use `timeout_in_seconds` or run from IPython. |
-| Search finds nothing sensible | Loss mismatched to data scale (try log-space loss), operators missing or redundant, `maxsize` too small for the true equation, or constraints exclude it. Check in that order before adding compute. |
-| All equations are tiny/trivial | `maxsize` too small, or huge dynamic range with MSE (largest points dominate). |
-| `DomainError` from an operator | Custom operator not defined on all reals; add the typed-NaN guard. |
-| Fit OK but `.predict`/`.sympy` fails | Missing/wrong `extra_sympy_mappings` (must be sympy functions, not numpy). |
-| Equation uses a "forbidden" value like division by ~0 | Any-NaN-anywhere invalidates a candidate, so surviving equations are finite on *your data*; they can still blow up elsewhere in the domain. |
-| `ProcessExitedException` wall of text on early stop | Harmless worker teardown noise under multiprocessing. |
-| Memory grows across a long run | Mostly fixed in recent Julia; if hit, set `heap_size_hint_in_bytes` (multiprocessing) or upgrade Julia. |
-| Results differ run to run | Expected; evolution is stochastic. See determinism recipe under Parallelism. |
+| First import/fit takes minutes | Initial Julia download; per-process JIT. Retain process. |
+| Compilation hangs | Apple Silicon: replace Rosetta x86 Python with native arm64. Notebook/embedded stdin wedge: `input_stream="devnull"`. |
+| Startup `lock.pid` | Killed-process juliapkg lock: verify no installation, delete lock, import once freshly. Shared filesystems: pre-initialize before parallel jobs. |
+| Jupyter `UnicodeDecodeError` | Old PythonCall bug: upgrade or set `PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION=no` before import. |
+| Cannot interrupt notebook | Known limitation; IPython/terminal `q`+Enter only. Set `timeout_in_seconds` or use IPython. |
+| Nonsensical equations | Check scale/loss (log-space), missing/redundant operators, insufficient `maxsize`, excluding constraints, in order before more compute. |
+| Tiny equations | Insufficient `maxsize` or MSE dominated by largest points. |
+| `DomainError` | Guard custom operators with typed NaN. |
+| Prediction/SymPy fails | Correct `extra_sympy_mappings`; use SymPy functions. |
+| Division near zero | Any-NaN-anywhere rejects candidates; survivors remain finite only on supplied data, potentially diverging elsewhere. |
+| Early-stop `ProcessExitedException` | Harmless multiprocessing worker-teardown noise. |
+| Growing memory | Mostly fixed in recent Julia; upgrade or set multiprocessing `heap_size_hint_in_bytes`. |
+| Different results | Stochastic evolution; apply serial determinism recipe. |
 
 ## Dropping to Julia
 
-Everything above also exists natively in SymbolicRegression.jl (`SRRegressor` via MLJ), which is preferable when the whole pipeline is Julia or you need deep customization (custom expression types, mutation operators, per-component constraints). From Python, `from pysr import jl` gives the live Julia runtime: `jl.seval(...)` runs arbitrary code, and installed Julia packages can back custom operators and losses. The backend source is readable and small; `src/Options.jl` and `src/CheckConstraints.jl` are the usual extension points, and a dev checkout can be wired in via `pysr/juliapkg.json`.
+Use native SymbolicRegression.jl, `SRRegressor` via MLJ, for Julia pipelines/deep customization: expression types, mutation operators, per-component constraints. `from pysr import jl` exposes the runtime; `jl.seval(...)` executes arbitrary Julia, installed packages support operators/losses. Small readable backend extension points: `src/Options.jl`, `src/CheckConstraints.jl`; connect dev checkouts through `pysr/juliapkg.json`.
 
 ## Version notes
 
-Written against PySR 2.0.0 (backend SymbolicRegression.jl 2.x). Compared with 1.5.x, 2.0 adds n-ary operators via `operators={1: ["sin"], 2: ["+", "*"], 3: ["clamp"]}`, `guesses` for seeding initial equations, custom value types through `TypeSpec`, automatic batching, and autodiff plugins. Defaults also changed: `batching="auto"`, `batch_size=None`, `annealing=True`, `crossover_probability=0.2`, and a new mutation mix. Start from 2.0 defaults rather than copying 1.x tuning.
+Target: PySR 2.0.0, SymbolicRegression.jl 2.x. Relative to 1.5.x: n-ary `operators={1: ["sin"], 2: ["+", "*"], 3: ["clamp"]}`, `guesses`, `TypeSpec`, automatic batching, autodiff plugins. Defaults: `batching="auto"`, `batch_size=None`, `annealing=True`, `crossover_probability=0.2`, new mutation mix; use 2.0 defaults rather than 1.x tuning.
 
-Deprecated API you may know or find in old examples; write the current form instead:
-
-| Old | Current |
+| Deprecated | Current |
 |---|---|
-| `pysr.install()`, `python -m pysr install`, PyCall/`from julia import Main` | none needed; Julia installs automatically on import |
+| `pysr.install()`, `python -m pysr install`, PyCall/`from julia import Main` | Automatic Julia installation on import |
 | `pysr(...)`, `best()`, `get_hof()` | `PySRRegressor`, `.fit()`, `model.equations_`, `get_best()` |
 | `multithreading=True/False`, `procs=0` | `parallelism="multithreading"/"multiprocessing"/"serial"` |
-| `full_objective=` | `loss_function` (`loss_function_expression` for templates) |
+| `full_objective=` | `loss_function`; templates: `loss_function_expression` |
 | `loss=` | `elementwise_loss` |
 | `equation_file=` | `output_directory=` + `run_id=` |
 | `npop`, `ncyclesperiteration`, camelCase args | `population_size`, `ncycles_per_iteration`, snake_case |
-| positional `TemplateExpressionSpec` or `function_symbols=...` | explicit `combine=`, `expressions=`, and `variable_names=` keywords |
+| Positional `TemplateExpressionSpec`, `function_symbols=...` | Explicit `combine=`, `expressions=`, `variable_names=` |
