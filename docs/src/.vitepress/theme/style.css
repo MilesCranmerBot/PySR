@@ -108,3 +108,14 @@ figure img {
 .VPNavBarMenuGroup:hover button .text {
   color: var(--vp-c-text-2) !important;
 }
+
+/* A <details> section whose <summary> holds a heading: keep them on one line */
+.vp-doc summary:has(> h3) {
+  cursor: pointer;
+  margin-top: 32px;
+}
+
+.vp-doc summary > h3 {
+  display: inline;
+  margin: 0;
+}
