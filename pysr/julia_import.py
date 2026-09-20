@@ -51,6 +51,10 @@ else:
         # opt back in with PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION=yes
         # or `%load_ext juliacall`.
         ("PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION", "no"),
+        # Concurrent GC sweeping (`N,1`): the search is GC-bound at high
+        # thread counts, and this was neutral at 8 threads, 8% faster at 32,
+        # and 25% faster at 96.
+        ("JULIA_NUM_GC_THREADS", f"{max(1, (os.cpu_count() or 2) // 2)},1"),
     ):
         os.environ[k] = os.environ.get(k, default)
 
