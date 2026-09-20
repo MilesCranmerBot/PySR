@@ -1,7 +1,6 @@
 import os
 import sys
 import warnings
-from importlib.metadata import version
 from types import ModuleType
 from typing import cast
 
@@ -57,8 +56,6 @@ else:
 
 
 def _import_juliacall():
-    if version("juliacall") == "0.9.35":
-        os.environ["JULIA_PYTHONCALL_EXE"] = sys.executable or ""
     import juliacall  # type: ignore
 
 
