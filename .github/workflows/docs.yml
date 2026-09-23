@@ -32,9 +32,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [primary, secondary]
     steps:
       # determine_bases reads git tag to decide which aliases a release still owns.
       - uses: actions/checkout@v7
@@ -69,5 +66,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DAMTP_DEPLOY_KEY: ${{ secrets.DAMTP_DEPLOY_KEY }}
-          DEPLOYMENT_TARGET: ${{ matrix.target }}
         run: julia --project=docs docs/deploy.jl

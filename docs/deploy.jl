@@ -1,19 +1,11 @@
 #!/usr/bin/env julia
 #
 # Build and deploy VitePress documentation to versioned gh-pages directories.
-# This script handles:
-# - Regular deployments to gh-pages
-# - PR preview deployments to gh-pages/previews/PR##/
-# - Dual deployment to secondary repository (ai.damtp.cam.ac.uk)
-#
+# PR previews deploy to gh-pages/previews/PR##/.
 
 using DocumenterVitepress
 
-# Get deployment target from environment (for dual deployment)
-deployment_target = get(ENV, "DEPLOYMENT_TARGET", "primary")
-
 println("Starting DocumenterVitepress deployment...")
-println("Deployment target: $deployment_target")
 println("Event: $(get(ENV, "GITHUB_EVENT_NAME", "unknown"))")
 println("Ref: $(get(ENV, "GITHUB_REF", "unknown"))")
 
@@ -40,7 +32,7 @@ function Documenter.postprocess_before_push(
     Documenter.postprocess_before_push(
         versions.base_version; subfolder, devurl, deploy_dir, dirname
     )
-    root = normpath(replace(deploy_dir, Regex("$(versions.base_version.base)\$") => ""))
+    root = stable_deploy_root(deploy_dir)
     for (path, content) in versions.root_stubs
         destination = joinpath(root, path)
         mkpath(Base.dirname(destination))
@@ -58,9 +50,7 @@ function Documenter.postprocess_before_push(
     return
 end
 
-# Custom DeployConfig that bypasses PR origin check for cross-repo deployments
-# This allows deploying PR previews to ai.damtp.cam.ac.uk/pysr even though
-# PRs exist in astroautomata/PySR (Documenter's security check would normally block this)
+# Custom DeployConfig that bypasses PR origin checks for cross-repo previews.
 struct BypassPRCheckConfig <: Documenter.DeployConfig end
 
 function Documenter.deploy_folder(
@@ -140,35 +130,18 @@ end
 Documenter.authentication_method(::BypassPRCheckConfig) = Documenter.SSH
 Documenter.documenter_key(::BypassPRCheckConfig) = ENV["DOCUMENTER_KEY"]
 
-# Configure deployment based on target
-if deployment_target == "secondary"
-    # Secondary: Use custom config to bypass PR origin check
-    deploy_config = BypassPRCheckConfig()
-    damtp_key = get(ENV, "DAMTP_DEPLOY_KEY", "")
-    if isempty(damtp_key)
-        error("DAMTP_DEPLOY_KEY environment variable is required for secondary deployment but is not set")
-    end
-    ENV["DOCUMENTER_KEY"] = damtp_key
+deploy_config = BypassPRCheckConfig()
+damtp_key = get(ENV, "DAMTP_DEPLOY_KEY", "")
+isempty(damtp_key) && error("DAMTP_DEPLOY_KEY environment variable is required for deployment but is not set")
+ENV["DOCUMENTER_KEY"] = damtp_key
 
-    deploy_decision = Documenter.deploy_folder(
-        deploy_config;
-        repo="github.com/ai-damtp-cam-ac-uk/pysr",
-        devbranch="master",
-        devurl="dev",
-        push_preview=true,
-    )
-else
-    # Primary: Use normal Documenter flow with security checks
-    deploy_config = Documenter.auto_detect_deploy_system()
-
-    deploy_decision = Documenter.deploy_folder(
-        deploy_config;
-        repo="github.com/astroautomata/PySR",
-        devbranch="master",
-        devurl="dev",
-        push_preview=true,
-    )
-end
+deploy_decision = Documenter.deploy_folder(
+    deploy_config;
+    repo="github.com/ai-damtp-cam-ac-uk/pysr",
+    devbranch="master",
+    devurl="dev",
+    push_preview=true,
+)
 
 println("Deploy decision: all_ok=$(deploy_decision.all_ok), is_preview=$(deploy_decision.is_preview), subfolder=$(deploy_decision.subfolder)")
 
@@ -179,10 +152,8 @@ end
 
 subfolder = deploy_decision.subfolder
 
-# Primary uses /PySR/ (capital P), secondary uses /pysr/ (lowercase p)
-base_prefix = deployment_target == "secondary" ? "/pysr/" : "/PySR/"
-repo_url = deployment_target == "secondary" ?
-    "github.com/ai-damtp-cam-ac-uk/pysr.git" : "github.com/astroautomata/PySR.git"
+base_prefix = "/"
+repo_url = "github.com/ai-damtp-cam-ac-uk/pysr.git"
 
 # VitePress bakes the base path into every asset URL at build time
 full_base = "$(base_prefix)$(subfolder)/"
@@ -190,22 +161,7 @@ println("Building VitePress with base: $full_base (deploy abspath: $base_prefix)
 
 config_path = joinpath(@__DIR__, "src", ".vitepress", "config.mts")
 original_config = read(config_path, String)
-# Match either /pysr/ or /PySR/ in the config
-modified_config = replace(original_config, r"base:\s*'/[Pp]y[Ss][Rr]/'" => "base: '$full_base'")
-# The version picker needs __DEPLOY_ABSPATH__ to construct URLs to sibling versions
-modified_config = replace(
-    modified_config,
-    r"__DEPLOY_ABSPATH__\s*:\s*JSON\.stringify\(getBaseRepository\([^)]+\)\)" =>
-        "__DEPLOY_ABSPATH__: JSON.stringify('$base_prefix')",
-)
-# Primary deployment should point to Cambridge as canonical
-# Secondary (Cambridge) should have empty canonical (it's already the canonical site)
-canonical_domain = deployment_target == "primary" ? "https://ai.damtp.cam.ac.uk/pysr/" : ""
-modified_config = replace(
-    modified_config,
-    r"const canonicalDomain = '';" =>
-        "const canonicalDomain = '$canonical_domain';",
-)
+modified_config = replace(original_config, r"base:\s*'/'" => "base: '$full_base'")
 write(config_path, modified_config)
 
 try

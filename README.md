@@ -1,18 +1,18 @@
-<h1><img align="left" height="171" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/master/images/pysr-logo.png" alt="">PySR<br><sub><sub>Symbolic Regression in Python and Julia</sub></sub><br><sub><sub><a href="https://ai.damtp.cam.ac.uk/pysr/">Docs</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/examples">Examples</a> &nbsp;×&nbsp; <a href="https://ai.damtp.cam.ac.uk/pysr/api">API</a> &nbsp;×&nbsp; <a href="https://github.com/astroautomata/PySR/discussions">Forum</a> &nbsp;×&nbsp; <a href="#ai-agent-skill">Agents</a></sub></sub><br><sub><a href="https://pypi.org/project/pysr/"><img src="https://img.shields.io/pypi/v/pysr" alt="PyPI"></a> <a href="https://anaconda.org/conda-forge/pysr"><img src="https://img.shields.io/conda/vn/conda-forge/pysr" alt="conda-forge"></a> <a href="https://arxiv.org/abs/2305.01582"><img src="https://img.shields.io/badge/arXiv-2305.01582-b31b1b" alt="arXiv"></a></sub><br clear="all"></h1>
+<h1><img align="left" height="171" src="https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/master/images/pysr-logo.png" alt="">PySR<br><sub><sub>Symbolic Regression in Python and Julia</sub></sub><br><sub><sub><a href="https://pysr.ai/">Docs</a> &nbsp;×&nbsp; <a href="https://pysr.ai/examples">Examples</a> &nbsp;×&nbsp; <a href="https://pysr.ai/api">API</a> &nbsp;×&nbsp; <a href="https://github.com/astroautomata/PySR/discussions">Forum</a> &nbsp;×&nbsp; <a href="#ai-agent-skill">Agents</a></sub></sub><br><sub><a href="https://pypi.org/project/pysr/"><img src="https://img.shields.io/pypi/v/pysr" alt="PyPI"></a> <a href="https://anaconda.org/conda-forge/pysr"><img src="https://img.shields.io/conda/vn/conda-forge/pysr" alt="conda-forge"></a> <a href="https://arxiv.org/abs/2305.01582"><img src="https://img.shields.io/badge/arXiv-2305.01582-b31b1b" alt="arXiv"></a></sub><br clear="all"></h1>
 
 ```bash
 pip install pysr
 ```
 
 If you find PySR useful, please cite the paper [arXiv:2305.01582](https://arxiv.org/abs/2305.01582).
-If you've finished a project with PySR, please submit a PR to showcase your work on the [research showcase page](https://ai.damtp.cam.ac.uk/pysr/papers)!
+If you've finished a project with PySR, please submit a PR to showcase your work on the [research showcase page](https://pysr.ai/papers)!
 
 **Contents**:
 
 - [Why PySR?](#why-pysr)
 - [Installation](#installation)
 - [Quickstart](#quickstart)
-- [→ Documentation](https://ai.damtp.cam.ac.uk/pysr)
+- [→ Documentation](https://pysr.ai)
 - [Contributors](#contributors-)
 
 ## Why PySR?
@@ -233,16 +233,16 @@ model = PySRRegressor.from_file("hall_of_fame.2022-08-10_100832.281.pkl")
 
 There are several other useful features such as denoising (e.g., `denoise=True`),
 feature selection (e.g., `select_k_features=3`).
-For examples of these and other features, see the [examples page](https://ai.damtp.cam.ac.uk/pysr/examples).
-For a detailed look at more options, see the [options page](https://ai.damtp.cam.ac.uk/pysr/options).
-You can also see the full API at [this page](https://ai.damtp.cam.ac.uk/pysr/api).
-There are also tips for tuning PySR on [this page](https://ai.damtp.cam.ac.uk/pysr/tuning).
+For examples of these and other features, see the [examples page](https://pysr.ai/examples).
+For a detailed look at more options, see the [options page](https://pysr.ai/options).
+You can also see the full API at [this page](https://pysr.ai/api).
+There are also tips for tuning PySR on [this page](https://pysr.ai/tuning).
 
 ### Detailed Example
 
 The following code makes use of as many PySR features as possible.
 Note that is just a demonstration of features and you should not use this example as-is.
-For details on what each parameter does, check out the [API page](https://ai.damtp.cam.ac.uk/pysr/api/).
+For details on what each parameter does, check out the [API page](https://pysr.ai/api/).
 
 ```python
 model = PySRRegressor(

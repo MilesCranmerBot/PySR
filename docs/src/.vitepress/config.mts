@@ -24,18 +24,8 @@ const configDirectory = path.dirname(fileURLToPath(import.meta.url))
 const juliaPkg = JSON.parse(readFileSync(path.resolve(configDirectory, '../../../pysr/juliapkg.json'), 'utf8'))
 const symbolicRegressionDocsVersion = symbolicRegressionDocsSubfolder(juliaPkg.packages.SymbolicRegression)
 
-function getBaseRepository(base: string): string {
-  if (!base || base === '/') return '/';
-  const parts = base.split('/').filter(Boolean);
-  return parts.length > 0 ? `/${parts[0]}/` : '/';
-}
-
-// Canonical domain for SEO - will be replaced by deploy.jl at build time
-// Empty string means no canonical tag (this site is canonical)
-const canonicalDomain = '';
-
 const baseTemp = {
-  base: '/pysr/',
+  base: '/',
 }
 
 const nav = [
@@ -60,7 +50,7 @@ const nav = [
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
-  base: '/pysr/',
+  base: '/',
   title: 'PySR',
   description: 'High-Performance Symbolic Regression in Python and Julia',
   lastUpdated: true,
@@ -69,24 +59,13 @@ export default defineConfig({
   srcExclude: ['**/_*.md'],
   head: [
     ['link', { rel: 'icon', href: `${baseTemp.base}favicon.png` }],
-    ['script', {src: `${getBaseRepository(baseTemp.base)}versions.js`}],
+    ['script', {src: '/versions.js'}],
     ['script', {src: `${baseTemp.base}siteinfo.js`}]
   ],
   ignoreDeadLinks: true,
-  transformHead: ({ pageData }) => {
-    if (!canonicalDomain) return [];
-
-    // Construct canonical URL for this page
-    const pagePath = pageData.relativePath.replace(/((^|\/)index)?\.md$/, '$2');
-    const canonicalUrl = `${canonicalDomain}${pagePath}`;
-
-    return [
-      ['link', { rel: 'canonical', href: canonicalUrl }]
-    ];
-  },
   vite: {
     define: {
-      __DEPLOY_ABSPATH__: JSON.stringify(getBaseRepository(baseTemp.base)),
+      __DEPLOY_ABSPATH__: JSON.stringify('/'),
     },
     optimizeDeps: {
       exclude: [
