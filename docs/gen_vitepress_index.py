@@ -29,7 +29,7 @@ def process_readme_content(readme_content):
             line = "#" + line
 
         # Fix internal links to use VitePress paths
-        line = line.replace("(https://ai.damtp.cam.ac.uk/pysr/papers)", "(/papers)")
+        line = line.replace("(https://pysr.ai/papers)", "(/papers)")
 
         # Skip table of contents entries
         if line.startswith("**Contents**:") or (

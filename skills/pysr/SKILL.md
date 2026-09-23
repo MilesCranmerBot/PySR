@@ -5,7 +5,7 @@ description: Use when fitting equations to data with PySR or SymbolicRegression.
 
 # Using PySR Effectively
 
-PySR evolves expression trees through the Julia backend SymbolicRegression.jl, returning readable equations on an accuracy/complexity Pareto front. This guide distills the documentation and several hundred real user threads. Full docs: https://ai.damtp.cam.ac.uk/pysr/
+PySR evolves expression trees through the Julia backend SymbolicRegression.jl, returning readable equations on an accuracy/complexity Pareto front. This guide distills the documentation and several hundred real user threads. Full docs: https://pysr.ai/
 
 ## Quick start
 
