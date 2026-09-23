@@ -13,6 +13,11 @@ include(joinpath(@__DIR__, "deploy_versions.jl"))
     @test !claims_stable("previews/PR123"; all_tagged_versions = tags, log = false)
 end
 
+@testset "stable deployment root" begin
+    @test stable_deploy_root("/tmp/gh-pages/stable") == "/tmp/gh-pages"
+    @test stable_deploy_root("/tmp/gh-pages/stable/") == "/tmp/gh-pages"
+end
+
 @testset "stable redirects" begin
     pages = ["index", "examples", "404", "api"]
     files = stable_redirect_files(pages, "v2.2.1")

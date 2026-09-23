@@ -32,7 +32,7 @@ function Documenter.postprocess_before_push(
     Documenter.postprocess_before_push(
         versions.base_version; subfolder, devurl, deploy_dir, dirname
     )
-    root = dirname(deploy_dir)
+    root = stable_deploy_root(deploy_dir)
     for (path, content) in versions.root_stubs
         destination = joinpath(root, path)
         mkpath(Base.dirname(destination))
