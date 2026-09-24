@@ -71,8 +71,8 @@ const loadVersions = async () => {
       const scriptsLoaded = await waitForScriptsToLoad();
 
       if (scriptsLoaded && window.DOC_VERSIONS && window.DOCUMENTER_CURRENT_VERSION) {
-        // DOC_VERSIONS lists releases newest first, so the first vX.Y.Z of each minor is its latest patch.
-        // Aliases (v1, v1.5) and prereleases stay reachable by URL, out of the picker.
+        // DOC_VERSIONS lists releases newest first, so the first vX.Y.Z of each minor is its latest patch;
+        // it is listed as vX.Y. Aliases (v1, v1.5) and prereleases stay reachable by URL, out of the picker.
         const seenMinors = new Set();
         versions.value = window.DOC_VERSIONS
           .filter(v => {
@@ -83,7 +83,7 @@ const loadVersions = async () => {
             return true;
           })
           .map(v => ({
-            text: v,
+            text: /^(v\d+\.\d+)\.\d+$/.exec(v)?.[1] ?? v,
             link: absoluteUrl(`/${v}/`),
           }));
         currentVersion.value = window.DOCUMENTER_CURRENT_VERSION;
