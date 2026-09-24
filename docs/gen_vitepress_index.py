@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPO_URL = "https://github.com/astroautomata/PySR"
 
