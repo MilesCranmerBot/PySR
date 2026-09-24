@@ -5,7 +5,6 @@ import { ref, onMounted, computed} from 'vue'
 import { useData } from 'vitepress'
 import VPNavBarMenuGroup from 'vitepress/dist/client/theme-default/components/VPNavBarMenuGroup.vue'
 import VPNavScreenMenuGroup from 'vitepress/dist/client/theme-default/components/VPNavScreenMenuGroup.vue'
-import { menuVersions } from './menuVersions.mjs'
 
 declare global {
   interface Window {
@@ -72,10 +71,21 @@ const loadVersions = async () => {
       const scriptsLoaded = await waitForScriptsToLoad();
 
       if (scriptsLoaded && window.DOC_VERSIONS && window.DOCUMENTER_CURRENT_VERSION) {
-        versions.value = menuVersions(window.DOC_VERSIONS).map(v => ({
-          text: v,
-          link: absoluteUrl(`/${v}/`),
-        }));
+        // DOC_VERSIONS lists releases newest first, so the first vX.Y.Z of each minor is its latest patch.
+        // Aliases (v1, v1.5) and prereleases stay reachable by URL, out of the picker.
+        const seenMinors = new Set();
+        versions.value = window.DOC_VERSIONS
+          .filter(v => {
+            if (v === 'dev' || v === 'stable') return true;
+            const minor = /^(v\d+\.\d+)\.\d+$/.exec(v)?.[1];
+            if (!minor || seenMinors.has(minor)) return false;
+            seenMinors.add(minor);
+            return true;
+          })
+          .map(v => ({
+            text: v,
+            link: absoluteUrl(`/${v}/`),
+          }));
         currentVersion.value = window.DOCUMENTER_CURRENT_VERSION;
       } else {
         versions.value = [{ text: 'dev', link: absoluteUrl('/dev/') }];
