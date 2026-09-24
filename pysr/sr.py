@@ -2841,7 +2841,7 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
         X_units : list[str]
             A list of units for each variable in `X`. Each unit should be
             a string representing a Julia expression. See DynamicQuantities.jl
-            https://symbolicml.org/DynamicQuantities.jl/dev/units/ for more
+            https://ai.damtp.cam.ac.uk/dynamicquantities/dev/units for more
             information.
         y_units : str | list[str]
             Similar to `X_units`, but as a unit for the target variable, `y`.
