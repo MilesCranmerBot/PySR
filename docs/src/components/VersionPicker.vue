@@ -92,7 +92,9 @@ const loadVersions = async () => {
 
 const versionItems = computed(() => versions.value.map((v) => ({
   text: v.text,
-  link: v.link
+  link: v.link,
+  target: '_self',
+  noIcon: true
 })));
 
 onMounted(() => {

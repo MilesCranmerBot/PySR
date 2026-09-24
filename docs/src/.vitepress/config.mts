@@ -40,7 +40,7 @@ const nav = [
     text: 'Python',
     items: [
       { text: 'Python', link: '/' },
-      { text: 'Julia', link: `https://julia.pysr.ai/${symbolicRegressionDocsVersion}/` }
+      { text: 'Julia', link: `https://julia.pysr.ai/${symbolicRegressionDocsVersion}/`, target: '_self', noIcon: true }
     ]
   },
   {
