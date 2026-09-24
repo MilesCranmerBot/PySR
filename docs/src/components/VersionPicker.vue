@@ -5,6 +5,7 @@ import { ref, onMounted, computed} from 'vue'
 import { useData } from 'vitepress'
 import VPNavBarMenuGroup from 'vitepress/dist/client/theme-default/components/VPNavBarMenuGroup.vue'
 import VPNavScreenMenuGroup from 'vitepress/dist/client/theme-default/components/VPNavScreenMenuGroup.vue'
+import { menuVersions } from './menuVersions.mjs'
 
 declare global {
   interface Window {
@@ -71,13 +72,10 @@ const loadVersions = async () => {
       const scriptsLoaded = await waitForScriptsToLoad();
 
       if (scriptsLoaded && window.DOC_VERSIONS && window.DOCUMENTER_CURRENT_VERSION) {
-        versions.value = window.DOC_VERSIONS
-          // Prerelease folders such as v2.0.0a2 stay reachable by URL, out of the picker
-          .filter(v => v === 'dev' || v === 'stable' || /^v\d+(\.\d+){0,2}$/.test(v))
-          .map(v => ({
-            text: v,
-            link: absoluteUrl(`/${v}/`),
-          }));
+        versions.value = menuVersions(window.DOC_VERSIONS).map(v => ({
+          text: v,
+          link: absoluteUrl(`/${v}/`),
+        }));
         currentVersion.value = window.DOCUMENTER_CURRENT_VERSION;
       } else {
         versions.value = [{ text: 'dev', link: absoluteUrl('/dev/') }];
@@ -92,12 +90,10 @@ const loadVersions = async () => {
   isClient.value = true;
 };
 
-const versionItems = computed(() => {
-  return versions.value.map((v) => ({
-    text: v.text,
-    link: v.link
-  }));
-});
+const versionItems = computed(() => versions.value.map((v) => ({
+  text: v.text,
+  link: v.link
+})));
 
 onMounted(() => {
   if (typeof window !== 'undefined') {
