@@ -10,6 +10,7 @@ import socket
 import threading
 import warnings
 from contextlib import ExitStack, contextmanager
+from ctypes import wintypes
 
 from .julia_import import SymbolicRegression
 
@@ -41,8 +42,6 @@ def _console_ctrl_c_to_python():
 
     Windows calls console handlers last-registered first, so this one runs first.
     """
-    from ctypes import wintypes
-
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     HANDLER = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
     kernel32.SetConsoleCtrlHandler.argtypes = [HANDLER, wintypes.BOOL]
