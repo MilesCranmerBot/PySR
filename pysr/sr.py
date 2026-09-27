@@ -51,6 +51,7 @@ from .julia_helpers import (
     jl_deserialize,
     jl_is_function,
     jl_named_tuple,
+    jl_numpy_array,
     jl_serialize,
 )
 from .julia_import import AnyValue, SymbolicRegression, VectorValue, jl
@@ -2699,14 +2700,14 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
             jl_X = type_spec_to_julia_array(type_spec_runtime, X, transpose=True)
             jl_y = type_spec_to_julia_array(type_spec_runtime, y)
         else:
-            jl_X = jl_array(np.array(X, dtype=np_dtype).T)
+            jl_X = jl_numpy_array(np.array(X, dtype=np_dtype).T)
             numeric_y = np.array(y, dtype=np_dtype)
-            jl_y = jl_array(numeric_y.T if numeric_y.ndim > 1 else numeric_y)
+            jl_y = jl_numpy_array(numeric_y.T if numeric_y.ndim > 1 else numeric_y)
         if weights is not None:
             if len(weights.shape) == 1:
-                jl_weights = jl_array(np.array(weights, dtype=np_dtype))
+                jl_weights = jl_numpy_array(np.array(weights, dtype=np_dtype))
             else:
-                jl_weights = jl_array(np.array(weights, dtype=np_dtype).T)
+                jl_weights = jl_numpy_array(np.array(weights, dtype=np_dtype).T)
         else:
             jl_weights = None
 
