@@ -174,6 +174,7 @@ CHILD_SCRIPT = textwrap.dedent("""
     import os
     import signal
     import threading
+    import time
     import warnings
 
     import numpy as np
@@ -217,8 +218,17 @@ CHILD_SCRIPT = textwrap.dedent("""
         progress=False,
         temp_equation_file=True,
     )
-    # Warm-up is complete, so the delayed interrupt reaches a running search.
-    threading.Timer(10.0, send_interrupt).start()
+    unarmed_handler = signal.getsignal(signal.SIGINT)
+
+    def interrupt_once_armed():
+        # The fit installs its own SIGINT handler once the search is armed; the
+        # extra wait lets the search run long enough to have partial results.
+        while signal.getsignal(signal.SIGINT) is unarmed_handler:
+            time.sleep(0.1)
+        time.sleep(5.0)
+        send_interrupt()
+
+    threading.Thread(target=interrupt_once_armed, daemon=True).start()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         model.fit(X, y)

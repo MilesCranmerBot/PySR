@@ -95,9 +95,8 @@ def _external_stop_signal_context(model):
             stop_read_fd, stop_write_fd = _stop_channel(cleanup)
             external_stop = SymbolicRegression.ExternalStop(stop_read_fd, signal.SIGINT)
 
-            # Julia intercepts Ctrl-C through SIGINT sigaction on POSIX, which
-            # Python replaces below, or through a Windows console handler that
-            # runs before Python's. Save the former or preempt the latter.
+            # `signal.signal` below replaces the SIGINT handler Julia installed
+            # on POSIX, and sigaction is the only way to put it back.
             if os.name == "posix":
                 libc = _libc_with_sigaction()
                 saved_sigaction = _SigactionStorage()
@@ -105,8 +104,6 @@ def _external_stop_signal_context(model):
                 cleanup.callback(
                     _checked_sigaction, libc, ctypes.byref(saved_sigaction), None
                 )
-            else:
-                cleanup.enter_context(_console_ctrl_c_to_python())
 
             saved_python_handler = signal.getsignal(signal.SIGINT)
 
@@ -118,6 +115,12 @@ def _external_stop_signal_context(model):
             cleanup.callback(signal.signal, signal.SIGINT, saved_python_handler)
             previous_wakeup_fd = signal.set_wakeup_fd(stop_write_fd)
             cleanup.callback(signal.set_wakeup_fd, previous_wakeup_fd)
+
+            # On Windows, Julia takes Ctrl-C through a console handler instead.
+            # Registering ours last means it is removed first, while
+            # `record_interrupt` still absorbs a Ctrl-C arriving mid-teardown.
+            if os.name != "posix":
+                cleanup.enter_context(_console_ctrl_c_to_python())
 
         yield external_stop
 
