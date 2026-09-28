@@ -65,7 +65,7 @@ def jl_named_tuple(d):
 
 
 def jl_is_function(f) -> bool:
-    return cast(bool, jl.seval("op -> op isa Function")(f))
+    return cast(bool, jl.isa(f, jl.Function))
 
 
 def jl_serialize(obj: Any) -> NDArray[np.uint8]:
