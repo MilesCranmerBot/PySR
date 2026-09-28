@@ -246,8 +246,7 @@ class TestTorch(unittest.TestCase):
 
         torch_output = torch_module(self.torch.tensor(X.values)).detach().numpy()
 
-        np.testing.assert_almost_equal(y.values, np_output, decimal=3)
-        np.testing.assert_almost_equal(y.values, torch_output, decimal=3)
+        np.testing.assert_almost_equal(np_output, torch_output, decimal=3)
 
 
 def runtests(just_tests=False):

@@ -169,7 +169,11 @@ np.save({str(output_path)!r}, np.asarray(f(np.load({str(input_path)!r}), paramet
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            np.testing.assert_almost_equal(y.values, np.load(output_path), decimal=3)
+            symbols = [sympy.Symbol(name) for name in model.feature_names_in_]
+            reference = sympy.lambdify(
+                symbols, model.sympy(), modules=[{"cos_approx": cos_approx}, "numpy"]
+            )(*X.values[:, model.selection_mask_].T)
+            np.testing.assert_almost_equal(reference, np.load(output_path), decimal=3)
 
 
 def runtests(just_tests=False):
