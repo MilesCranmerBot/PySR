@@ -56,6 +56,10 @@ def jl_array(x, dtype=None):
         return jl_convert(jl.Array[dtype], x)
 
 
+def jl_numpy_array(x):
+    return jl.copy(PythonCall.PyArray(x))
+
+
 def jl_dict(x):
     return jl_convert(jl.Dict, x)
 
