@@ -2585,22 +2585,17 @@ class PySRRegressor(MultiOutputMixin, RegressorMixin, BaseEstimator):
 
         self.logger_ = logger
 
-        create_operator_enum = jl.seval(
-            "ops_dict -> OperatorEnum([k => v for (k, v) in ops_dict]...)"
+        jl_operator_enum = SymbolicRegression.OperatorEnum(
+            tuple(jl_operators_dict.values())
         )
-        jl_operator_enum = create_operator_enum(jl_operators_dict)
 
         # Build constraints dict with same structure
         jl_constraints_dict = None
         if any(c for c in constraints_by_arity.values() if c is not None):
-            constraints_pairs = []
+            jl_constraints_dict = jl.Dict[jl.Int, jl.Vector]()
             for arity in range(1, max_arity + 1):
                 if constraints_by_arity[arity] is not None:
-                    constraints_pairs.append(
-                        jl.Pair(arity, jl_array(constraints_by_arity[arity]))
-                    )
-            if constraints_pairs:
-                jl_constraints_dict = jl.Dict(constraints_pairs)
+                    jl_constraints_dict[arity] = jl_array(constraints_by_arity[arity])
 
         expression_spec = self._julia_expression_spec(type_spec_runtime)
 
