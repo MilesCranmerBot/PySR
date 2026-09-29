@@ -16,6 +16,7 @@ def load_required_packages(
     autodiff_backend: Literal["Zygote", "Mooncake", "Enzyme"] | None = None,
     cluster_manager: str | None = None,
     logger_spec: AbstractLoggerSpec | None = None,
+    use_tracing: bool = False,
 ):
     if turbo:
         load_package("LoopVectorization", "bdcacae8-1622-11e9-2a5c-532679323890")
@@ -27,10 +28,14 @@ def load_required_packages(
         load_package("Mooncake", "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6")
     elif autodiff_backend == "Enzyme":
         load_package("Enzyme", "7da242da-08ed-463a-9acd-ee780be4f1d9")
-    if cluster_manager is not None:
+    if cluster_manager == "slurm":
+        load_package("SlurmClusterManager", "c82cd089-7bf7-41d7-976b-6b5d413cbe0a")
+    elif cluster_manager is not None:
         load_package("ClusterManagers", "34f1f09b-3a8b-5176-ab39-66d58a4d544e")
     if isinstance(logger_spec, TensorBoardLoggerSpec):
         load_package("TensorBoardLogger", "899adc3e-224a-11e9-021f-63837185c80f")
+    if use_tracing:
+        load_package("JSON", "682c06a0-de6a-54ab-a142-c8b1cf79cde6")
 
 
 def load_all_packages():
@@ -41,7 +46,9 @@ def load_all_packages():
         autodiff_backend="Zygote",
         cluster_manager="slurm",
         logger_spec=TensorBoardLoggerSpec(log_dir="logs"),
+        use_tracing=True,
     )
+    load_package("ClusterManagers", "34f1f09b-3a8b-5176-ab39-66d58a4d544e")
 
 
 # TODO: Refactor this file so we can install all packages at once using `juliapkg`,
@@ -49,7 +56,9 @@ def load_all_packages():
 
 
 def isinstalled(uuid_s: str):
-    return jl.haskey(Pkg.dependencies(), jl.Base.UUID(uuid_s))
+    dependencies = Pkg.dependencies()
+    uuid = jl.Base.UUID(uuid_s)
+    return jl.haskey(dependencies, uuid) and dependencies[uuid].is_direct_dep
 
 
 def load_package(package_name: str, uuid_s: str) -> None:

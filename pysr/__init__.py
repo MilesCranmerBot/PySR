@@ -29,12 +29,35 @@ from .export_torch import sympy2torch
 from .expression_specs import (
     AbstractExpressionSpec,
     ExpressionSpec,
-    ParametricExpressionSpec,
     TemplateExpressionSpec,
 )
 from .julia_extensions import load_all_packages
 from .logger_specs import AbstractLoggerSpec, TensorBoardLoggerSpec
+from .mutations import (
+    AbstractMutation,
+    AddNodeMutation,
+    BacksolveMutation,
+    ConstantMutation,
+    DeleteNodeMutation,
+    DoNothingMutation,
+    FeatureMutation,
+    InsertNodeMutation,
+    OperatorMutation,
+    OptimizeMutation,
+    RandomizeMutation,
+    RotateTreeMutation,
+    SimplifyMutation,
+    SwapOperandsMutation,
+)
+from .plugins import (
+    AbstractPlugin,
+    AdaptiveMutationWeightsPlugin,
+    AdaptiveParsimonyPlugin,
+    MutationBurstPlugin,
+    SimulatedAnnealingPlugin,
+)
 from .sr import PySRRegressor
+from .type_specs import TypeSpec
 
 try:
     __version__ = version("pysr")
@@ -54,9 +77,28 @@ __all__ = [
     "AbstractExpressionSpec",
     "ExpressionSpec",
     "TemplateExpressionSpec",
-    "ParametricExpressionSpec",
     "AbstractLoggerSpec",
     "TensorBoardLoggerSpec",
+    "TypeSpec",
+    "AbstractMutation",
+    "ConstantMutation",
+    "OperatorMutation",
+    "FeatureMutation",
+    "SwapOperandsMutation",
+    "AddNodeMutation",
+    "InsertNodeMutation",
+    "DeleteNodeMutation",
+    "RotateTreeMutation",
+    "BacksolveMutation",
+    "SimplifyMutation",
+    "RandomizeMutation",
+    "OptimizeMutation",
+    "DoNothingMutation",
+    "AbstractPlugin",
+    "AdaptiveMutationWeightsPlugin",
+    "AdaptiveParsimonyPlugin",
+    "MutationBurstPlugin",
+    "SimulatedAnnealingPlugin",
     "best",
     "best_callable",
     "best_row",

@@ -1,4 +1,5 @@
 import fnmatch
+import os
 import sys
 import unittest
 import warnings
@@ -10,6 +11,7 @@ from ..test import (
     runtests,
     runtests_autodiff,
     runtests_dev,
+    runtests_interrupt,
     runtests_jax,
     runtests_slurm,
     runtests_startup,
@@ -50,7 +52,17 @@ def _install(julia_project, quiet, precompile):
     )
 
 
-TEST_OPTIONS = {"main", "jax", "torch", "autodiff", "cli", "dev", "startup", "slurm"}
+TEST_OPTIONS = {
+    "main",
+    "jax",
+    "torch",
+    "autodiff",
+    "cli",
+    "dev",
+    "startup",
+    "slurm",
+    "interrupt",
+}
 
 
 @pysr.command("test")
@@ -65,9 +77,23 @@ TEST_OPTIONS = {"main", "jax", "torch", "autodiff", "cli", "dev", "startup", "sl
 def _tests(tests, expressions):
     """Run parts of the PySR test suite.
 
-    Choose from main, jax, torch, autodiff, cli, dev, startup, and slurm.
+    Choose from main, jax, torch, autodiff, cli, dev, startup, slurm, and interrupt.
     You can give multiple tests, separated by commas.
     """
+    try:
+        shard_count = int(os.environ.get("PYSR_TEST_SHARD_COUNT", "1"))
+        shard_index = int(os.environ.get("PYSR_TEST_SHARD_INDEX", "0"))
+    except ValueError as error:
+        raise click.ClickException(
+            "PYSR_TEST_SHARD_COUNT and PYSR_TEST_SHARD_INDEX must be integers."
+        ) from error
+    if shard_count <= 0:
+        raise click.ClickException("PYSR_TEST_SHARD_COUNT must be a positive integer.")
+    if not 0 <= shard_index < shard_count:
+        raise click.ClickException(
+            "PYSR_TEST_SHARD_INDEX must satisfy 0 <= PYSR_TEST_SHARD_INDEX "
+            "< PYSR_TEST_SHARD_COUNT."
+        )
     test_cases = []
     for test in tests.split(","):
         if test == "main":
@@ -85,6 +111,8 @@ def _tests(tests, expressions):
             test_cases.extend(runtests_dev(just_tests=True))
         elif test == "startup":
             test_cases.extend(runtests_startup(just_tests=True))
+        elif test == "interrupt":
+            test_cases.extend(runtests_interrupt(just_tests=True))
         elif test == "slurm":
             test_cases.extend(runtests_slurm(just_tests=True))
         else:
@@ -100,6 +128,7 @@ def _tests(tests, expressions):
                 for expression in expressions
             ):
                 suite.addTest(test)
+    suite = unittest.TestSuite(list(suite)[shard_index::shard_count])
 
     runner = unittest.TextTestRunner()
     results = runner.run(suite)

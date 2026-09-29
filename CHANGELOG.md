@@ -1,5 +1,761 @@
 # Changelog
 
+## [2.6.0](https://github.com/astroautomata/PySR/compare/v2.5.2...v2.6.0) (2026-09-29)
+
+
+### Backend: SymbolicRegression.jl 2.4.2 → 2.5.0
+
+PySR now uses [SymbolicRegression.jl 2.5.0](https://github.com/astroautomata/SymbolicRegression.jl/releases/tag/v2.5.0) ([#1398](https://github.com/astroautomata/PySR/issues/1398)). The new backend makes the first fit in a Python session faster and speeds up `parallelism="multiprocessing"`, mostly at start-up. Search behavior is unchanged.
+
+* **Faster first fit.** PySR always loads PythonCall, and loading it invalidated much of the code that SymbolicRegression.jl precompiles, so every Python session recompiled the search on its first fit. The backend now reruns its precompile workload after PythonCall loads, including a search shaped like PySR's default call. On a 12-core node, the README example's first fit went from 17.4 s to 7.0 s. Custom operators still compile on first use, and installing or updating the backend takes a few seconds longer, once. ([SymbolicRegression.jl#743](https://github.com/astroautomata/SymbolicRegression.jl/pull/743))
+* **Multiprocessing start-up checks run on all workers at once.** Before a search, the main process runs quick checks on every worker. It used to wait for the answers one worker at a time, and each worker's first answer includes compiling code, so the waits added up. It now waits on all workers together. If a check fails on a worker, the original error is still raised, after every worker has answered. ([SymbolicRegression.jl#745](https://github.com/astroautomata/SymbolicRegression.jl/pull/745))
+* **Workers fetch their own starting populations.** During warm-up, the main process used to pull each starting population back from its worker, one at a time, before sending it out again. Each worker now fetches its own, as in PySR 1. ([SymbolicRegression.jl#744](https://github.com/astroautomata/SymbolicRegression.jl/pull/744))
+* **The equations file is rewritten only when it changes.** The hall-of-fame CSV used to be rewritten on every cycle. It is now written only when the best equations change. This applies to every parallelism mode. ([SymbolicRegression.jl#747](https://github.com/astroautomata/SymbolicRegression.jl/pull/747))
+
+On one 128-core AMD EPYC node with `procs=128` (256 populations, 2,000 rows, 5 features), a 100-iteration multiprocessing fit went from about 264 s to 136 s, and a 1-iteration fit from about 176 s to 54 s.
+
+## [2.5.2](https://github.com/astroautomata/PySR/compare/v2.5.1...v2.5.2) (2026-09-28)
+
+
+### Performance Improvements
+
+* check for Julia functions with isa ([#1395](https://github.com/astroautomata/PySR/issues/1395)) ([bfba1b6](https://github.com/astroautomata/PySR/commit/bfba1b62e3d4d4db843c7c9f4da7253e21caee72))
+* copy NumPy fit data through PyArray ([#1393](https://github.com/astroautomata/PySR/issues/1393)) ([415700d](https://github.com/astroautomata/PySR/commit/415700d6ce3083b380c846bfd47a9f9b4e760320))
+* pass operators and constraints to Julia as typed values ([#1394](https://github.com/astroautomata/PySR/issues/1394)) ([81cb12b](https://github.com/astroautomata/PySR/commit/81cb12b7d927ce3b9bf86465500fc5dd3fa74572))
+
+
+### Documentation
+
+* update moved UAV skin friction paper link ([#1391](https://github.com/astroautomata/PySR/issues/1391)) ([f60d7e4](https://github.com/astroautomata/PySR/commit/f60d7e49fec05e1b27fa15589f6cd56f4360c035))
+
+## [2.5.1](https://github.com/astroautomata/PySR/compare/v2.5.0...v2.5.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* stop searches gracefully on Windows console Ctrl-C ([#1386](https://github.com/astroautomata/PySR/issues/1386)) ([da64e04](https://github.com/astroautomata/PySR/commit/da64e0453148263d83765ba3ce8f66f74c68875c))
+
+
+### Documentation
+
+* fix broken links, version menu, same-tab nav, and favicon ([#1388](https://github.com/astroautomata/PySR/issues/1388)) ([e5b5454](https://github.com/astroautomata/PySR/commit/e5b5454a4f31f6902af52dff7a4c23c961d6dbf2))
+* point Julia documentation links to julia.pysr.ai ([#1387](https://github.com/astroautomata/PySR/issues/1387)) ([e999da7](https://github.com/astroautomata/PySR/commit/e999da72531bcd3975789c6670939d36d5970186))
+* serve documentation at pysr.ai ([#1384](https://github.com/astroautomata/PySR/issues/1384)) ([7873cfa](https://github.com/astroautomata/PySR/commit/7873cfafddc1cf501da8a14ce18be8270c76388a))
+
+## [2.5.0](https://github.com/astroautomata/PySR/compare/v2.4.1...v2.5.0) (2026-09-20)
+
+
+### Features
+
+* enable concurrent GC sweeping by default ([#1379](https://github.com/astroautomata/PySR/issues/1379)) ([5f14395](https://github.com/astroautomata/PySR/commit/5f14395eee3438f93ee39b56d07ddcf971769057))
+
+
+### Dependencies
+
+* require JuliaCall 0.9.36 and remove workaround ([#1380](https://github.com/astroautomata/PySR/issues/1380)) ([51aea3e](https://github.com/astroautomata/PySR/commit/51aea3e13a43b5acf3bee53643bfdfe76db05d68))
+
+
+### Documentation
+
+* compress agent skill ([#1375](https://github.com/astroautomata/PySR/issues/1375)) ([57ed43a](https://github.com/astroautomata/PySR/commit/57ed43ad65651c7a681f75a23ef0e58f72a32e1b))
+* document complexity_mapping, guesses in SKILL ([#1372](https://github.com/astroautomata/PySR/issues/1372)) ([b566bdb](https://github.com/astroautomata/PySR/commit/b566bdb42f8eb169141b8659410d5735db49bf2f))
+* explain agent skill installation in README ([#1377](https://github.com/astroautomata/PySR/issues/1377)) ([258872e](https://github.com/astroautomata/PySR/commit/258872e309c469f2078675bd724611057e4d38c5))
+* fix &lt;details&gt; headings ([#1374](https://github.com/astroautomata/PySR/issues/1374)) ([8507021](https://github.com/astroautomata/PySR/commit/85070216ec3012c27f7e196143e2ba113b7d7a9e))
+* link Julia docs to the pinned backend version ([#1370](https://github.com/astroautomata/PySR/issues/1370)) ([aecba32](https://github.com/astroautomata/PySR/commit/aecba3215592e8e85f49fbc193a0a032284c0073))
+
+## [2.4.1](https://github.com/astroautomata/PySR/compare/v2.4.0...v2.4.1) (2026-09-16)
+
+
+### Documentation
+
+* expand examples and split into topic pages ([#1350](https://github.com/astroautomata/PySR/issues/1350)) ([49773c3](https://github.com/astroautomata/PySR/commit/49773c30d43fb2d968d698605f72224489f74445))
+* restore accurate Python API feature card ([#1368](https://github.com/astroautomata/PySR/issues/1368)) ([876d3bb](https://github.com/astroautomata/PySR/commit/876d3bba0a05c1e51eb08b6c3aff7601dd4e06f9))
+
+## [2.4.0](https://github.com/astroautomata/PySR/compare/v2.3.1...v2.4.0) (2026-09-10)
+
+
+### Features
+
+* add an optional invalid value hook ([#1361](https://github.com/astroautomata/PySR/issues/1361)) ([f3420e8](https://github.com/astroautomata/PySR/commit/f3420e873c4e86bacdfeb1e5f4caa6a52845ddd4))
+* add TypeSpec definitions for methods on the generated type ([#1359](https://github.com/astroautomata/PySR/issues/1359)) ([4c61b90](https://github.com/astroautomata/PySR/commit/4c61b906f5f2f225959f84a8d0b77c79e292e36f))
+
+
+### Documentation
+
+* update README and documentation to the new PySR logo ([#1357](https://github.com/astroautomata/PySR/issues/1357)) ([11d1ae2](https://github.com/astroautomata/PySR/commit/11d1ae2d95b8467fede423b1ea4121e264cf193e))
+
+## [2.3.1](https://github.com/astroautomata/PySR/compare/v2.3.0...v2.3.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* restore Python executable for JuliaCall 0.9.35 ([#1362](https://github.com/astroautomata/PySR/issues/1362)) ([61b9027](https://github.com/astroautomata/PySR/commit/61b90272450f248cab237da27475d178501fcade))
+
+## [2.3.0](https://github.com/astroautomata/PySR/compare/v2.2.1...v2.3.0) (2026-09-07)
+
+
+### Features
+
+* expose search tracing on PySRRegressor ([#1347](https://github.com/astroautomata/PySR/issues/1347)) ([e694439](https://github.com/astroautomata/PySR/commit/e694439d498ae7ce6cbf0fe8ab40949944016416))
+* seed template parameters through guesses ([#1352](https://github.com/astroautomata/PySR/issues/1352)) ([fe41c38](https://github.com/astroautomata/PySR/commit/fe41c3858972822064b055aa476404b168cb996a))
+
+
+### Bug Fixes
+
+* **docker:** use Debian Trixie base ([#1356](https://github.com/astroautomata/PySR/issues/1356)) ([567ed69](https://github.com/astroautomata/PySR/commit/567ed690c88dd54c3851579701bd1039112f8f95))
+* migrate tracing to JSON with SymbolicRegression 2.4 ([#1354](https://github.com/astroautomata/PySR/issues/1354)) ([203f13c](https://github.com/astroautomata/PySR/commit/203f13c492d8bf7d3ccbb00e1dc5375df2380c8a))
+
+
+### Documentation
+
+* clarify guesses and template parameters ([#1353](https://github.com/astroautomata/PySR/issues/1353)) ([0caa20a](https://github.com/astroautomata/PySR/commit/0caa20a9d7828c2a90622a013627fa6257ab4c50))
+* generate legacy top-level redirects from the stable release ([#1346](https://github.com/astroautomata/PySR/issues/1346)) ([5114e66](https://github.com/astroautomata/PySR/commit/5114e668bc2f45386113f702abf93772fd5d9f66))
+* redirect nested documentation pages through stable ([#1348](https://github.com/astroautomata/PySR/issues/1348)) ([24cc669](https://github.com/astroautomata/PySR/commit/24cc669edf7bdc881a42b0e33d58675e2e6ba4fc))
+* replace README header video with a logo hero ([#1342](https://github.com/astroautomata/PySR/issues/1342)) ([8ffc78a](https://github.com/astroautomata/PySR/commit/8ffc78ab1851e4bcf9e51ec2d7cdd4755e41b881))
+* tweak badges ([#1344](https://github.com/astroautomata/PySR/issues/1344)) ([21e2ed5](https://github.com/astroautomata/PySR/commit/21e2ed552ffa4233e711539be12d9610ec724c40))
+
+## [2.2.1](https://github.com/astroautomata/PySR/compare/v2.2.0...v2.2.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* require juliacall 0.9.29+ and Python 3.10+ ([#1335](https://github.com/astroautomata/PySR/issues/1335)) ([b87067a](https://github.com/astroautomata/PySR/commit/b87067affa242d050ed124801872ea589f2323d0))
+
+## [2.2.0](https://github.com/astroautomata/PySR/compare/v2.1.0...v2.2.0) (2026-09-02)
+
+
+### Features
+
+* release the GIL during the search ([#1330](https://github.com/astroautomata/PySR/issues/1330)) ([b15bf62](https://github.com/astroautomata/PySR/commit/b15bf623d2ae44b1296288fc01b601d96de856b2))
+* stop searches gracefully on Windows interrupts ([#1329](https://github.com/astroautomata/PySR/issues/1329)) ([e180079](https://github.com/astroautomata/PySR/commit/e1800797e2e2b7e88e455f2667484e6a37ab89f8))
+
+
+### Documentation
+
+* correct AdaptiveMutationWeightsPlugin default state ([#1332](https://github.com/astroautomata/PySR/issues/1332)) ([9909624](https://github.com/astroautomata/PySR/commit/990962428fa1c946c0a9c27ab7e12db80dec867c))
+* update the stable redirect on every release ([#1328](https://github.com/astroautomata/PySR/issues/1328)) ([82c5d70](https://github.com/astroautomata/PySR/commit/82c5d70404d011a785590c5db353397171e1d938))
+
+## [2.1.0](https://github.com/astroautomata/PySR/compare/v2.0.0...v2.1.0) (2026-08-29)
+
+
+### Features
+
+* stop autoloading the juliacall IPython extension by default ([#1325](https://github.com/astroautomata/PySR/issues/1325)) ([b3f91a1](https://github.com/astroautomata/PySR/commit/b3f91a17cb75da8b2a5a520bf157f7491dd74e4c))
+* stop searches gracefully on interrupt instead of killing the kernel ([#1310](https://github.com/astroautomata/PySR/issues/1310)) ([5bd53f6](https://github.com/astroautomata/PySR/commit/5bd53f662ee1d3516f084d556f7871e2299411a0))
+
+
+### Documentation
+
+* add two research showcase papers ([#1323](https://github.com/astroautomata/PySR/issues/1323)) ([7727b01](https://github.com/astroautomata/PySR/commit/7727b0179a97114de317f136c15b1f83bb7ceff0))
+* update SKILL.md to v2 ([#1321](https://github.com/astroautomata/PySR/issues/1321)) ([d64ef62](https://github.com/astroautomata/PySR/commit/d64ef62b48926b1871dd0930cc5ee21d6618814c))
+
+## [2.0.0](https://github.com/astroautomata/PySR/compare/v1.5.9...v2.0.0) (2026-08-25)
+
+PySR 2.0.0 brings a two-year transformation of the library into the Python API, moving from a fixed scalar-tree search interface to a modular PyTorch-like framework for symbolic learning while keeping the familiar v1 estimator workflow. Operators can take any number of arguments, `TypeSpec` supports user-defined value types, and mutations, crossovers, and the search loop are configurable objects. Guesses mix expressions into populations throughout a run, which helps connect PySR to agentic coding loops. Automatic batching and a reusable backend evaluation buffer make large searches faster with less configuration.
+
+---
+
+### Highlights
+
+#### Operators with any number of arguments
+
+`operators` takes an arity-keyed dict, so ternary operators like `clamp`, `fma`, and `muladd`, along with `max`/`min` over three or more arguments, are searchable ([#999](https://github.com/astroautomata/PySR/pull/999)). Before v2 you had to fake `clamp(x0*x1, -1, 1)` as a tall nest of binary operators, which the search rarely found and never found cheaply. `binary_operators` and `unary_operators` still work, and they are mutually exclusive with `operators`.
+
+```python
+from pysr import PySRRegressor
+
+model = PySRRegressor(
+    operators={1: ["sin"], 2: ["+", "*", "-"], 3: ["clamp", "fma"]},
+    niterations=40,
+)
+model.fit(X, y)
+```
+
+<details>
+<summary>How arity flows through the tree type, dimensional analysis, and SymPy export</summary>
+
+The node type became `Node{T,D}` in DynamicExpressions ([#127](https://github.com/SymbolicML/DynamicExpressions.jl/pull/127)), where `D` is the maximum arity, and SymbolicRegression.jl generalized mutation, crossover, constraint checking, and dimensional analysis over it ([#471](https://github.com/astroautomata/SymbolicRegression.jl/pull/471), [#472](https://github.com/astroautomata/SymbolicRegression.jl/pull/472), [#464](https://github.com/astroautomata/SymbolicRegression.jl/pull/464)).
+
+`constraints` entries must now match operator arity exactly: a tuple of length N for an N-argument operator, else `ValueError: Operator '<op>' has arity N but constraint tuple has length M`. Unary operators still default to `-1`, and arity 2 and above default to `tuple([-1] * arity)`.
+
+SymPy export keeps up ([#999](https://github.com/astroautomata/PySR/pull/999)): `Max(*args)` and `Min(*args)` replace the old two-argument `Piecewise` form, and `fma`, `muladd`, and `clamp` gained mappings. That is what makes these operators usable outside Julia.
+
+</details>
+
+#### Seed the search with `guesses`
+
+Give PySR any guess for the final expressions, and it mixes those guesses into the populations throughout the search ([#999](https://github.com/astroautomata/PySR/pull/999); backend [#469](https://github.com/astroautomata/SymbolicRegression.jl/pull/469), [#500](https://github.com/astroautomata/SymbolicRegression.jl/pull/500)). When `should_optimize_constants=True`, constants in a guess are optimized before the candidate enters the population, so the structure can be useful even when its initial constants are inaccurate. `fraction_replaced_guesses` controls the fraction of each population drawn from guesses at the end of every cycle. Guesses also support custom value types ([#1316](https://github.com/astroautomata/PySR/pull/1316)).
+
+```python
+from pysr import PySRRegressor
+
+model = PySRRegressor(
+    binary_operators=["+", "*"],
+    unary_operators=["sin"],
+    guesses=["sin(x0 * 2.1 - 0.5)", "x0 * 3.0 + x2"],
+    fraction_replaced_guesses=0.01,
+)
+model.fit(X, y)
+```
+
+<details>
+<summary>Accepted guess shapes</summary>
+
+`guesses` is a `PySRRegressor` constructor parameter, not a `fit` keyword.
+
+Accepted shapes:
+
+- `list[str]` for single-output regression.
+- `list[list[str]]` for multi-output, one inner list per output. A plain list with `nout > 1` raises `ValueError: For multi-output (nout > 1) guesses must be a list of lists`.
+- `list[dict[str, str]]` for `TemplateExpressionSpec`, keyed by sub-expression name, using `#1`, `#2` as placeholders for the sub-expression arguments.
+
+Preparation happens in `_prepare_guesses_for_julia` (`pysr/sr.py:3413`).
+
+</details>
+
+#### `TypeSpec`: symbolic regression over your own value type
+
+Declare a Julia struct and PySR will search over it ([#1280](https://github.com/astroautomata/PySR/pull/1280)). 2D vectors, strings, tensors, variable-length constant containers: anything you can write as a struct with a sampler. PySR compiles the declaration into an isolated fingerprinted Julia module and wires up evaluation, mutation, constant optimization, printing, and serialization. The hall of fame then prints equations whose leaves are not numbers.
+
+```python
+from pysr import PySRRegressor, TypeSpec
+
+type_spec = TypeSpec(
+    name="Vec2",
+    fields={"data": "Vector{Float64}"},
+    sample="rng -> Vec2(randn(rng, 2))",
+    scalar_constants="value -> value.data",
+    with_scalar_constants="(value, constants) -> Vec2(constants)",
+)
+model = PySRRegressor(
+    type_spec=type_spec,
+    operators={
+        1: ["rotate90(x::Vec2) = Vec2([-x.data[2], x.data[1]])"],
+        2: ["add_vectors(x::Vec2, y::Vec2) = Vec2(x.data + y.data)"],
+    },
+    elementwise_loss="vector_loss(x::Vec2, y::Vec2)::Float64 = sum(abs2, x.data - y.data)",
+)
+model.fit(X, y)
+```
+
+<details>
+<summary>Validation, module compilation, and what each hook buys you</summary>
+
+`TypeSpec.__post_init__` validates eagerly: field names must be identifiers, `fields` must be non-empty, `scalar_constants` and `with_scalar_constants` must be supplied together, and a spec without them requires an explicit `mutate` so the search has some way to move.
+
+`scalar_constants` and `with_scalar_constants` are what turn on continuous constant optimization: the first flattens a value to a `Vector{Float64}`, the second rebuilds a value from optimized numbers. Supply `mutate` to define discrete moves instead, which is how string and container types work.
+
+Each spec compiles to one deterministic fingerprinted module per process. Identical source reuses the existing module; conflicting source for the same name warns on replacement, and checkpoint restore refuses a conflicting definition rather than silently binding to the wrong struct. Expression specs opt in through a new `supports_type_spec` property, `True` for `ExpressionSpec` and `TemplateExpressionSpec`.
+
+Under `parallelism="multiprocessing"`, a preamble that needs an external Julia package also needs `worker_imports=[...]`.
+
+For boxed element types, DynamicExpressions added fused-kernel indexing ([#198](https://github.com/SymbolicML/DynamicExpressions.jl/pull/198)): 27.9% faster on `String` keep-left and 15.5% faster on custom-struct addition in the backend's own benchmarks.
+
+</details>
+
+#### Mutations are objects you can configure
+
+The thirteen built-in mutations became classes, passed as a weighted mapping; two of them, `ConstantMutation` and `BacksolveMutation`, carry their own hyperparameters ([#1282](https://github.com/astroautomata/PySR/pull/1282); backend [#610](https://github.com/astroautomata/SymbolicRegression.jl/pull/610), [#645](https://github.com/astroautomata/SymbolicRegression.jl/pull/645), [#663](https://github.com/astroautomata/SymbolicRegression.jl/pull/663)). `mutations=` overrides or extends the defaults by type. `default_mutations=` replaces the whole set.
+
+```python
+from pysr import PySRRegressor, ConstantMutation, BacksolveMutation
+
+model = PySRRegressor(
+    mutations={
+        ConstantMutation(perturbation_factor=0.1, probability_negate=0.02): 0.05,
+        BacksolveMutation(
+            max_library_size=1000,
+            max_terms=12,
+            min_improvement=1e-4,
+            node_attempts=16,
+        ): 0.1,
+    },
+)
+model.fit(X, y)
+```
+
+<details>
+<summary>The full class list, how weights resolve, and writing your own in Julia</summary>
+
+Exported from `pysr.mutations`: `AbstractMutation`, `ConstantMutation(perturbation_factor=0.086, probability_negate=0.01)`, `OperatorMutation`, `FeatureMutation`, `SwapOperandsMutation`, `AddNodeMutation`, `InsertNodeMutation`, `DeleteNodeMutation`, `RotateTreeMutation`, `BacksolveMutation(max_library_size=500, max_terms=8, min_improvement=1e-3, node_attempts=8)`, `SimplifyMutation`, `RandomizeMutation`, `OptimizeMutation`, `DoNothingMutation`.
+
+The scalar `weight_*` parameters still work and now default to `None`, with fallbacks equal to the v1 numbers. Reading `PySRRegressor().weight_add_node` gives `None` rather than `2.47`. `FeatureMutation` is new as a first-class move ([#475](https://github.com/astroautomata/SymbolicRegression.jl/pull/475), with `weight_mutate_feature` falling back to 0.1): rewiring a leaf to a different input column used to happen only as an accident of delete-then-add, and it helps most on wide-feature problems.
+
+On the Julia side, a mutation is a type plus a `mutate!` method, so you can define your own and pass it in the same mapping without touching the search loop.
+
+</details>
+
+#### A composable search loop through plugins
+
+PySR 2.0 introduces plugins as the extension interface for the search loop ([#1282](https://github.com/astroautomata/PySR/pull/1282); backend [#645](https://github.com/astroautomata/SymbolicRegression.jl/pull/645), [#663](https://github.com/astroautomata/SymbolicRegression.jl/pull/663)). Simulated annealing, adaptive parsimony, adaptive mutation weights, and mutation bursts use explicit hooks for lifecycle events, selection biasing, mutation conditioning, and population seeding. This separates optional search behavior from the optimized core and lets several plugins compose in one run.
+
+```python
+from pysr import PySRRegressor, AdaptiveMutationWeightsPlugin, MutationBurstPlugin
+
+model = PySRRegressor(
+    plugins=[
+        AdaptiveMutationWeightsPlugin(smoothing=0.05, reward="loss"),
+        MutationBurstPlugin(retry_attempts=8),
+    ],
+)
+model.fit(X, y)
+```
+
+<details>
+<summary>The plugin interface, defaults, and composition rules</summary>
+
+Exported from `pysr.plugins`: `AbstractPlugin`, `SimulatedAnnealingPlugin(alpha=0.1)`, `AdaptiveParsimonyPlugin(tournament=True, mutation_acceptance=True)`, `AdaptiveMutationWeightsPlugin(smoothing=0.02, floor=0.05, reward="cost"|"loss")`, and `MutationBurstPlugin(retry_attempts=4, compound_probability=0.25, compound_max_steps=2)`.
+
+`plugins=` extends and overrides `default_plugins=` by plugin type. `default_plugins=[]` runs the core search without the default plugin set. A custom plugin implements `AbstractPlugin` and the hooks it needs; unrelated hooks retain their default behavior.
+
+`AdaptiveMutationWeightsPlugin` is enabled by default ([#678](https://github.com/astroautomata/SymbolicRegression.jl/pull/678)). Mutation probabilities move toward operations that improve cost. In the backend's ASV runs, multithreaded runtime was 12.9 s without adaptation and 13.1 s with it, while the aggregate score improved by 0.0143.
+
+`MutationBurstPlugin` retries rejected mutations and can chain further mutations after an acceptance. `MutationBurstPlugin(retry_attempts=1, compound_max_steps=1)` restores the previous single-attempt behavior without consuming an extra RNG draw.
+
+The annealing schedule was ported to a plugin bit for bit. Restoring the original quotient after a `LinRange` rewrite preserved the previous hall-of-fame hashes ([#652](https://github.com/astroautomata/SymbolicRegression.jl/pull/652)).
+
+</details>
+
+#### `BacksolveMutation`: analytic inversion plus sparse regression
+
+`BacksolveMutation` inverts the evaluation path to work out what a subtree *should* have returned, then fits a replacement by greedy forward selection over a library of the population's best subtrees, constrained by the remaining complexity budget ([#573](https://github.com/astroautomata/SymbolicRegression.jl/pull/573), thanks @ayagh19; exposed by [#1282](https://github.com/astroautomata/PySR/pull/1282)). It targets exactly the case random perturbation is bad at: a correct outer form with a wrong inner argument, like `sin(3.7*x0 + 0.1)` when the true phase is 2.4.
+
+```python
+from pysr import PySRRegressor
+
+model = PySRRegressor(
+    binary_operators=["+", "*", "-"],
+    unary_operators=["sin"],
+    weight_backsolve=0.5,   # effective default 0.0, experimental: knobs may move
+)
+model.fit(X, y)
+```
+
+<details>
+<summary>How the inversion and the sparse fit work</summary>
+
+For a target subtree, backsolve walks up the tree, inverting each operator on the path to the root to get the residual target the subtree needs to produce. It then builds a library of candidate basis functions from the best subtrees currently in the population and uses greedy forward selection to fit a sparse combination within the remaining complexity budget.
+
+Tuning lives on the mutation object rather than in global weights: `BacksolveMutation(max_library_size=500, max_terms=8, min_improvement=1e-3, node_attempts=8)`. The `weight_backsolve` keyword sets its weight in the default mapping.
+
+</details>
+
+#### Automatic batching
+
+`batching="auto"` and `batch_size=None` are the new defaults ([#1045](https://github.com/astroautomata/PySR/pull/1045), [#1285](https://github.com/astroautomata/PySR/pull/1285); backend [#676](https://github.com/astroautomata/SymbolicRegression.jl/pull/676)). Above 1000 rows PySR minibatches, choosing 128, 256, or 512 from the dataset size. Large fits get much faster with no configuration at all. Minibatches guide the inner evolution; hall-of-fame candidates are reevaluated on the full dataset before they are returned. Pass `batching=False` for the v1 search contract.
+
+```python
+from pysr import PySRRegressor
+
+# 200k rows: v2 minibatches on its own
+model = PySRRegressor(niterations=40)
+model.fit(X, y)
+
+# full-data evolution, as in v1
+model = PySRRegressor(niterations=40, batching=False, batch_size=50)
+model.fit(X, y)
+```
+
+Measured locally: the identical default `PySRRegressor` script on a 20000x5 dataset took a median 63.9 s on 1.5.9 and 12.7 s on PR #1280 head `e6064687456c8d7a1c8746f47f003b83f5d39bfb` (stale package metadata `2.0.0a2`; M1 Pro, 4 threads, 3 repeats, warmed). This is the batching default acting, and v1 prints its own warning recommending batching at this size. It is a defaults win, separate from the engine work below.
+
+<details>
+<summary>The exact batching thresholds</summary>
+
+With `batching="auto"` and `batch_size=None`: full data for N <= 1000, batch size 128 for N < 5000, 256 for N < 50000, and 512 above that. Setting `batch_size` explicitly overrides the choice; setting `batching=True` or `batching=False` overrides the automatic decision.
+
+</details>
+
+#### A reusable evaluation arena in the backend
+
+Evaluation buffers are now allocated once in a contiguous arena and reused across mutation, crossover, loss evaluation, constant optimization, and template inner calls ([#654](https://github.com/astroautomata/SymbolicRegression.jl/pull/654), [#668](https://github.com/astroautomata/SymbolicRegression.jl/pull/668); DynamicExpressions [#180](https://github.com/SymbolicML/DynamicExpressions.jl/pull/180), [#186](https://github.com/SymbolicML/DynamicExpressions.jl/pull/186); pulled into PySR by [#1282](https://github.com/astroautomata/PySR/pull/1282)). On SymbolicRegression.jl's own 8-thread benchmark this took a full search from 9.541 s to 5.880 s median with allocations dropping from 59.10 GB to 10.71 GB, and the hall of fame came out byte-identical. There is no API change; you get it by upgrading.
+
+```python
+from pysr import PySRRegressor
+
+# nothing to configure
+model = PySRRegressor(niterations=40)
+model.fit(X, y)
+```
+
+Measured locally: the identical 2000x5 default fit script, warmed, 5 alternating repeats at 8 threads on an M1 Pro, ran a median 6.36 s on 1.5.9 and 5.26 s on PR #1280 head `e6064687456c8d7a1c8746f47f003b83f5d39bfb` (stale package metadata `2.0.0a2`). With batching pinned equal at 20000 rows, 1.5.9 was the faster of the two on this machine, so the arena figures above remain the backend's own result. Full numbers and method caveats are in the release measurement log.
+
+<details>
+<summary>Where the allocations went, and the Julia-level API change behind it</summary>
+
+The 38.4% runtime and 81.9% allocation figures are SymbolicRegression.jl's own 8-thread arena benchmark, not a PySR measurement; treat them as the backend's numbers.
+
+`EvalOptions` was renamed `EvalContext` and arena lifetimes became caller-owned ([#187](https://github.com/SymbolicML/DynamicExpressions.jl/pull/187), [#192](https://github.com/SymbolicML/DynamicExpressions.jl/pull/192), [#186](https://github.com/SymbolicML/DynamicExpressions.jl/pull/186); [#668](https://github.com/astroautomata/SymbolicRegression.jl/pull/668), [#670](https://github.com/astroautomata/SymbolicRegression.jl/pull/670)). The deprecated `EvalOptions` binding is kept. Unknown evaluation keywords now error instead of being ignored. None of this is visible from Python.
+
+</details>
+
+#### Faster startup
+
+Backend precompilation was narrowed to the workload PySR's `precision=32` default actually uses, the Float32 single-output search ([#642](https://github.com/astroautomata/SymbolicRegression.jl/pull/642)), and PySR sets `precompile_float64: false` in its Julia preferences ([#1279](https://github.com/astroautomata/PySR/pull/1279)). On a clean depot, precompilation drops from about 43 s to about 17 s and the cache from 59 to 39 MiB. This is precompile time, not steady-state fit time; the backend reports no repeatable change in default first-fit time.
+
+```python
+# on a fresh Julia depot
+import pysr
+from pysr import PySRRegressor
+
+PySRRegressor(niterations=1).fit(X, y)
+```
+
+<details>
+<summary>Why the Float32 path</summary>
+
+PySR defaults to `precision=32`, so precompiling the Float64 path paid for a workload most users never hit. The preference is set with the backend pin in `pysr/juliapkg.json`.
+
+</details>
+
+---
+
+### Notable changes
+
+- `autodiff_backend` accepts `"Zygote"`, `"Mooncake"`, and `"Enzyme"`, loading the Julia package on demand; Enzyme is no longer experimental ([#999](https://github.com/astroautomata/PySR/pull/999); [#468](https://github.com/astroautomata/SymbolicRegression.jl/pull/468), [#632](https://github.com/astroautomata/SymbolicRegression.jl/pull/632), [#537](https://github.com/astroautomata/SymbolicRegression.jl/pull/537), [#566](https://github.com/astroautomata/SymbolicRegression.jl/pull/566)).
+- DynamicDiff v0.3 adds symbolic differentiation support for expressions containing n-arity operator nodes ([DynamicDiff #4](https://github.com/MilesCranmer/DynamicDiff.jl/pull/4)).
+- All `weight_*` parameters default to `None`, with fallbacks equal to the v1 numbers, so behavior is preserved but `PySRRegressor().weight_add_node` reads `None` instead of `2.47` ([#1282](https://github.com/astroautomata/PySR/pull/1282)).
+- Adaptive mutation weights are on by default: probabilities move during the run based on observed cost improvement, at parity overhead in the backend's ASV runs ([#678](https://github.com/astroautomata/SymbolicRegression.jl/pull/678), [#1282](https://github.com/astroautomata/PySR/pull/1282)).
+- BREAKING: `cluster_manager="slurm"` now loads SlurmClusterManager.jl and expects an existing allocation. Request resources with `sbatch` or `salloc`, run Python once inside the allocation, and set `procs` to the allocation's task count; PySR no longer allocates for you. Other managers keep ClusterManagers ([#794](https://github.com/astroautomata/PySR/pull/794)).
+- BREAKING: `requires-python >= 3.9`, `juliacall>=0.9.28,<0.9.36`, `pandas<4`, and the SymbolicRegression.jl `~2.0.0` backend requirement affect environment resolution ([#1052](https://github.com/astroautomata/PySR/pull/1052), [#1035](https://github.com/astroautomata/PySR/pull/1035), [#1129](https://github.com/astroautomata/PySR/pull/1129), [#1047](https://github.com/astroautomata/PySR/pull/1047), [#1312](https://github.com/astroautomata/PySR/pull/1312)).
+- SymPy export gained `Max(*args)` and `Min(*args)` in place of two-argument `Piecewise`, plus mappings for `fma`, `muladd`, and `clamp`. Re-exported v1 models print differently ([#999](https://github.com/astroautomata/PySR/pull/999)).
+- `FeatureMutation` and `weight_mutate_feature` (default 0.1) make rewiring a leaf to a different input column its own weighted move, which also removes a generate-and-reject loop in templates ([#475](https://github.com/astroautomata/SymbolicRegression.jl/pull/475), [#999](https://github.com/astroautomata/PySR/pull/999), [#1282](https://github.com/astroautomata/PySR/pull/1282)).
+- `MutationBurstPlugin` retries a rejected mutation (4 attempts) and chains further mutations after acceptance (p = 0.25), flagged extra experimental; `retry_attempts=1, compound_max_steps=1` reproduces the old inner loop without consuming an extra RNG draw ([#645](https://github.com/astroautomata/SymbolicRegression.jl/pull/645), [#1282](https://github.com/astroautomata/PySR/pull/1282)).
+- Custom JAX operator mappings survive checkpoint round trips ([#1199](https://github.com/astroautomata/PySR/pull/1199)).
+- Documentation now includes the complete v1-to-v2 migration guide, a PDE discovery example, and updated agent skill guidance ([#1302](https://github.com/astroautomata/PySR/pull/1302), [#1311](https://github.com/astroautomata/PySR/pull/1311)).
+- `worker_imports` and `worker_timeout` make external-package operators, objectives, and TypeSpec preambles work under multiprocessing, and restart a worker that stops responding ([#999](https://github.com/astroautomata/PySR/pull/999); [#488](https://github.com/astroautomata/SymbolicRegression.jl/pull/488)).
+
+  <details>
+  <summary>A multiprocessing run with an external Julia package</summary>
+
+  ```python
+  from pysr import PySRRegressor
+
+  model = PySRRegressor(
+      parallelism="multiprocessing",
+      procs=8,
+      worker_imports=["SpecialFunctions"],
+      worker_timeout=120.0,
+      unary_operators=["myerf(x) = SpecialFunctions.erf(x)"],
+  )
+  model.fit(X, y)
+  ```
+
+  Workers see only the listed modules; arbitrary bindings from `Main` remain unavailable.
+
+  </details>
+
+- With `warm_start=True`, a fit that raises now restores the previous model state before re-raising, so a bad operator or a Ctrl-C no longer destroys the equations you already had ([#1280](https://github.com/astroautomata/PySR/pull/1280), `_rollback_failed_warm_start`).
+- User Julia code survives pickling and multiprocessing: operators, objectives, complexity mappings, early-stop conditions, templates, and worker definitions are replayed where v1 could fail or silently lose them ([#1280](https://github.com/astroautomata/PySR/pull/1280)).
+- Mis-shaped Julia loss functions are caught before the search starts, with a message naming the wrong signature instead of a `MethodError` five minutes in ([#1138](https://github.com/astroautomata/PySR/pull/1138), [#1184](https://github.com/astroautomata/PySR/pull/1184)).
+- `torch_format` modules register constants as buffers, so an exported equation follows `.to(device)`, `.cuda()`, and `.half()` and appears in `state_dict()` ([#1058](https://github.com/astroautomata/PySR/pull/1058)).
+- Backend correctness fixes: constant optimization escapes zero-valued constants, multiprocessing teardown stops hanging, an `X`/`y` row mismatch errors early with a `DimensionMismatch`, expression-level losses skip simplification, discrete custom-value mutation works, and hall-of-fame CSV quoting is fixed ([#637](https://github.com/astroautomata/SymbolicRegression.jl/pull/637), [#641](https://github.com/astroautomata/SymbolicRegression.jl/pull/641), [#660](https://github.com/astroautomata/SymbolicRegression.jl/pull/660), [#674](https://github.com/astroautomata/SymbolicRegression.jl/pull/674), [#687](https://github.com/astroautomata/SymbolicRegression.jl/pull/687), [#698](https://github.com/astroautomata/SymbolicRegression.jl/pull/698) via [#1282](https://github.com/astroautomata/PySR/pull/1282)).
+- `tempdir=` is respected for temporary equation files, which unblocks read-only `/tmp` and quota-constrained HPC setups ([#1207](https://github.com/astroautomata/PySR/pull/1207)).
+- The canonical repo is now [github.com/astroautomata/PySR](https://github.com/astroautomata/PySR) (old links redirect) and the docs at [ai.damtp.cam.ac.uk/pysr](https://ai.damtp.cam.ac.uk/pysr) moved from MkDocs to VitePress, so bookmarked deep links and local docs commands change. The PyPI name `pysr` and `import pysr` are unchanged ([#1272](https://github.com/astroautomata/PySR/pull/1272), [#1056](https://github.com/astroautomata/PySR/pull/1056); docs [#483](https://github.com/astroautomata/SymbolicRegression.jl/pull/483), [#491](https://github.com/astroautomata/SymbolicRegression.jl/pull/491)).
+- The repo ships an agent skill at `skills/pysr/SKILL.md`, so coding agents read current v2 API guidance instead of guessing at v0.x-era arguments ([#1264](https://github.com/astroautomata/PySR/pull/1264)).
+- Julia only: `machine`/`fit!`/`predict`/`report` work without MLJ or MLJBase loaded, via a new `SymbolicRegressionTablesExt` ([#680](https://github.com/astroautomata/SymbolicRegression.jl/pull/680)).
+- Julia only: custom crossovers via `AbstractCrossover`, mirroring the mutation API with `SubtreeCrossover`, a `crossovers=` mapping, and an `attempt` counter so an expensive crossover can cheap out on retries. No PySR keyword ([#664](https://github.com/astroautomata/SymbolicRegression.jl/pull/664), [#666](https://github.com/astroautomata/SymbolicRegression.jl/pull/666)).
+- BREAKING, Julia only: `use_recorder`/`recorder_file` are replaced by `use_tracing`/`tracing_file` writing versioned JSONL. Memory scales with in-flight records rather than the whole search history, and disabled tracing is verified zero-allocation ([#651](https://github.com/astroautomata/SymbolicRegression.jl/pull/651)).
+
+---
+
+### Migration guide
+
+Ordered by the sequence you will actually hit them.
+
+#### Hard failures
+
+##### 1. Python 3.8 install fails
+
+`requires-python` moved from `>=3.8` to `>=3.9`. `juliacall` is constrained to `>=0.9.28,<0.9.36`, so an environment holding another juliacall consumer may fail to resolve ([#1052](https://github.com/astroautomata/PySR/pull/1052), [#1047](https://github.com/astroautomata/PySR/pull/1047), [#1312](https://github.com/astroautomata/PySR/pull/1312)).
+
+##### 2. No v1 checkpoint loads (`ValueError`)
+
+```python
+# v1-written model.pkl
+import pickle
+model = pickle.load(open("model.pkl", "rb"))
+# v2: ValueError: Unsupported PySR checkpoint schema: expected 3, found None.
+```
+
+Refitting is the only path. `warm_start` from a v1 checkpoint is impossible. Pickles from the 2.0 prerelease builds (schema 2) also fail at schema 3 ([#1282](https://github.com/astroautomata/PySR/pull/1282), gate at `pysr/sr.py:1623-1631`).
+
+##### 3. `ParametricExpressionSpec` is gone (`ImportError`)
+
+No shim ([#1277](https://github.com/astroautomata/PySR/pull/1277); backend [#656](https://github.com/astroautomata/SymbolicRegression.jl/pull/656)).
+
+```python
+# v1
+from pysr import PySRRegressor, ParametricExpressionSpec
+model = PySRRegressor(expression_spec=ParametricExpressionSpec(max_parameters=2))
+model.fit(X, y, category=category)
+model.predict(X, category=category)
+
+# v2
+from pysr import PySRRegressor, TemplateExpressionSpec
+spec = TemplateExpressionSpec(
+    expressions=["f"],
+    variable_names=["x1", "x2", "category"],
+    parameters={"p": n_categories},
+    combine="p[category] * f(x1, x2)",
+)
+model = PySRRegressor(expression_spec=spec)
+model.fit(X, y)      # category is now a column of X, 1-indexed for Julia
+model.predict(X)
+```
+
+##### 4. `category=` is gone from `fit` and `predict` (`TypeError`)
+
+Same fix as above. The Julia `NamedTuple{(:class,)}` extra-data path was removed with it ([#1277](https://github.com/astroautomata/PySR/pull/1277)).
+
+##### 5. Legacy positional `TemplateExpressionSpec` removed
+
+Dangerous because a positional call now silently changes meaning: `combine` is the first dataclass field, where `function_symbols` used to be ([#1280](https://github.com/astroautomata/PySR/pull/1280)).
+
+```python
+# v1 legacy form (accepted in 1.5.9)
+spec = TemplateExpressionSpec(["f", "g"], "sin(f(x1, x2)) + g(x3)^2", {"f": 2, "g": 1})
+
+# v2
+spec = TemplateExpressionSpec(
+    combine="sin(f(x1, x2)) + g(x3)^2",
+    expressions=["f", "g"],
+    variable_names=["x1", "x2", "x3"],
+)
+```
+
+`julia_expression_options()` and the `num_features` keyword are gone. A custom `AbstractExpressionSpec` subclass must implement `supports_type_spec`, `_julia_expression_spec_source(*, prototype)`, and `_julia_expression_spec_function_selector()` to support `type_spec`.
+
+##### 6. `operators` and `binary_operators`/`unary_operators` are mutually exclusive (`ValueError`)
+
+`_validate_and_modify_params` rejects the combination: "Cannot use `operators` with `binary_operators` or `unary_operators`."
+
+```python
+# v1
+model = PySRRegressor(binary_operators=["+", "*"], unary_operators=["sin"])
+
+# v2, either style, never both
+model = PySRRegressor(operators={1: ["sin"], 2: ["+", "*"], 3: ["clamp", "fma"]})
+```
+
+##### 7. `constraints` tuples must match operator arity exactly (`ValueError`)
+
+`Operator '<op>' has arity N but constraint tuple has length M`. Unary operators still default to `-1`; arity 2 and above default to `tuple([-1] * arity)`.
+
+```python
+# v1
+model = PySRRegressor(
+    binary_operators=["+", "*"],
+    unary_operators=["sin"],
+    constraints={"sin": 9, "*": (-1, 9)},
+)
+
+# v2, one entry per argument
+model = PySRRegressor(
+    operators={1: ["sin"], 2: ["+", "*"], 3: ["clamp"]},
+    constraints={"sin": 9, "*": (-1, 9), "clamp": (-1, 5, 5)},
+)
+```
+
+##### 8. HPC: `cluster_manager="slurm"` no longer allocates
+
+Request resources with `sbatch` or `salloc`, run Python once inside the allocation, and set `procs` to the allocation's task count ([#794](https://github.com/astroautomata/PySR/pull/794)). Other managers (`pbs`, `lsf`, `sge`, `qrsh`, `scyld`, `htc`) are unchanged.
+
+For example, a minimal batch script for 16 workers is:
+
+```bash
+#!/bin/bash
+#SBATCH --ntasks=16
+
+python script.py
+```
+
+Submit it with `sbatch pysr_job.sh`. Do not wrap the Python command in `srun`, which would start one Python driver per task.
+
+```python
+# inside script.py
+model = PySRRegressor(parallelism="multiprocessing", cluster_manager="slurm", procs=16)
+```
+
+##### 9. Julia side only
+
+`use_recorder`/`recorder_file` become `use_tracing`/`tracing_file`; `Node{T}` becomes `Node{T,D}`; `EvalOptions` becomes `EvalContext`; `ParametricExpression` and `ParametricNode` are removed from SymbolicRegression.jl; SymbolicUtils is pinned to v4, so old SciML stacks cannot co-install; `EquationSearch`, `score_func`, and the old `calculate_pareto_frontier` signatures are deprecated.
+
+#### Silent behavior changes to re-tune or pin
+
+| parameter | v1 | v2 | note |
+|---|---|---|---|
+| `annealing` | `False` | `True` | matches SymbolicRegression.jl; changes every accept/reject decision |
+| `crossover_probability` | `0.0259` | `0.2` | about 8x more recombination |
+| `batching` | `False` | `"auto"` | on above 1000 rows; hall-of-fame candidates are reevaluated on the full dataset before return |
+| `batch_size` | `50` | `None` | full data for N <= 1000, 128 for N < 5000, 256 for N < 50000, 512 above |
+| all `weight_*` | floats | `None` | fallbacks match the v1 numbers, and adaptive weights now move them during the run |
+| adaptive mutation weights | off | on | `AdaptiveMutationWeightsPlugin` is in the default set |
+| SymPy export of `max`/`min` | `Piecewise` | `Max`/`Min` | re-exported v1 models print differently |
+| torch export constants | Python floats | registered buffers | now in `state_dict()` and follow `.to(device)` |
+
+New `weight_*` entries: `weight_mutate_feature` (`None`, falling back to 0.1) and `weight_backsolve` (`None`, falling back to 0.0, so off).
+
+The `crossover_probability` move to 0.2 came out of a 560-search factorial ablation (+2.24% aggregate held-out Pareto NMSE) and a 420-search sweep in which 0.20 was the only setting that helped ([#643](https://github.com/astroautomata/SymbolicRegression.jl/pull/643)). `annealing=True` matches the backend default ([#1283](https://github.com/astroautomata/PySR/pull/1283); [#652](https://github.com/astroautomata/SymbolicRegression.jl/pull/652)).
+
+#### v1-like configuration
+
+For a search close to the v1 defaults, set the changed values explicitly and omit the adaptive-mutation plugin:
+
+```python
+from pysr import AdaptiveParsimonyPlugin, PySRRegressor
+
+model = PySRRegressor(
+    batching=False,
+    batch_size=50,
+    annealing=False,
+    crossover_probability=0.0259,
+    default_plugins=[AdaptiveParsimonyPlugin()],
+    weight_add_node=2.47,
+    weight_insert_node=0.0112,
+    weight_delete_node=0.87,
+    weight_do_nothing=0.273,
+    weight_mutate_constant=0.0346,
+    weight_mutate_operator=0.293,
+    weight_mutate_feature=0.0,
+    weight_swap_operands=0.198,
+    weight_rotate_tree=4.26,
+    weight_randomize=0.000502,
+    weight_simplify=0.00209,
+    weight_optimize=0.0,
+    weight_backsolve=0.0,
+)
+```
+
+This preserves the v1 search configuration, but it does not make a run bit-for-bit identical. Backend implementation changes still alter random-number consumption and search trajectories.
+
+---
+
+### Other changes
+
+Docs:
+
+- `mutations` and `plugins` are placed in `pysr/param_groupings.yml`, so the generated options docs group them sensibly.
+
+Bug fixes:
+
+- `exports["jax_format"]` and `exports["torch_format"]` are `pd.Series` on the equations index rather than raw lists (`pysr/export.py`).
+- Fitting with DataFrame column names containing spaces no longer breaks `predict` ([#1136](https://github.com/astroautomata/PySR/pull/1136)).
+- `TemplateExpressionSpec.num_features` keys are converted to Julia symbols, fixing a silently ignored per-sub-expression feature limit on the legacy path that [#1280](https://github.com/astroautomata/PySR/pull/1280) then removed ([#1209](https://github.com/astroautomata/PySR/pull/1209)).
+- `Complex{T}` derivatives work in DynamicDiff's ForwardDiff fallback and throw `DomainError` when Cauchy-Riemann disagrees, rather than returning a wrong gradient ([DynamicDiff #10](https://github.com/MilesCranmer/DynamicDiff.jl/pull/10)).
+
+Misc:
+
+- `pysr test` gained `autodiff` and `slurm` groups, so you can verify an Enzyme or Mooncake install, or a Slurm setup, locally ([#1111](https://github.com/astroautomata/PySR/pull/1111)).
+- BREAKING: custom `AbstractExpressionSpec` subclasses must implement `supports_type_spec`, `_julia_expression_spec_source(*, prototype)`, and `_julia_expression_spec_function_selector()` to support `type_spec`; `julia_expression_options()` is gone ([#1280](https://github.com/astroautomata/PySR/pull/1280)).
+- DynamicExpressions gained fused-kernel indexing for boxed element types: 27.9% faster on `String` keep-left, 15.5% on custom-struct addition, and about 1% for plain `Float64`, which matters to `TypeSpec` users ([#198](https://github.com/SymbolicML/DynamicExpressions.jl/pull/198)).
+- SymbolicUtils is pinned to v4 and the SymbolicRegression.jl deprecated-API surface (`EquationSearch`, `score_func`, old `calculate_pareto_frontier` signatures) is formally deprecated in `src/deprecates.jl`.
+
+---
+
+### Backend versions
+
+PySR `2.0.0` (tag `v2.0.0`) requires:
+
+- [SymbolicRegression.jl](https://github.com/astroautomata/SymbolicRegression.jl) `~2.0.0`, with `preferences: {"precompile_float64": false}` in `pysr/juliapkg.json`. [Release notes](https://github.com/astroautomata/SymbolicRegression.jl/releases/tag/v2.0.0).
+- [DynamicExpressions.jl](https://github.com/SymbolicML/DynamicExpressions.jl) `~2.10` (up from `~1.10.1`). [Release notes](https://github.com/SymbolicML/DynamicExpressions.jl/releases).
+- [DynamicDiff.jl](https://github.com/MilesCranmer/DynamicDiff.jl) `0.3` (up from `0.2`). [Release notes](https://github.com/MilesCranmer/DynamicDiff.jl/releases).
+- SymbolicUtils.jl `4`.
+
+Docs: [ai.damtp.cam.ac.uk/pysr](https://ai.damtp.cam.ac.uk/pysr). Repo: [github.com/astroautomata/PySR](https://github.com/astroautomata/PySR).
+
+
+## [2.0.0-beta.4](https://github.com/astroautomata/PySR/compare/v2.0.0-beta.3...v2.0.0-beta.4) (2026-08-24)
+
+
+### Features
+
+* support guesses with custom types ([#1316](https://github.com/astroautomata/PySR/issues/1316)) ([6115158](https://github.com/astroautomata/PySR/commit/61151582bb21a58eefbccca9c979ce1fbe85f3fc))
+
+## [2.0.0-beta.3](https://github.com/astroautomata/PySR/compare/v2.0.0-beta.2...v2.0.0-beta.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* preserve custom JAX mappings in checkpoints ([#1199](https://github.com/astroautomata/PySR/issues/1199)) ([0d78783](https://github.com/astroautomata/PySR/commit/0d78783b8aca3c3e42e8001397ee3a5a819dc6dd))
+
+
+### Dependencies
+
+* raise jax, ipython, ipykernel, and pytest-cov ceilings ([#1307](https://github.com/astroautomata/PySR/issues/1307)) ([3f37488](https://github.com/astroautomata/PySR/commit/3f37488da78d735df9bee37bf3a23bf01f98ee1c))
+* raise juliacall ceiling to 0.9.36 ([#1312](https://github.com/astroautomata/PySR/issues/1312)) ([494798e](https://github.com/astroautomata/PySR/commit/494798e76511aed9db1f57078c6ec8366c6e06fc))
+
+
+### Documentation
+
+* add PDE discovery example and skill guidance ([#1311](https://github.com/astroautomata/PySR/issues/1311)) ([459a720](https://github.com/astroautomata/PySR/commit/459a720bd72cb0bd02e96ba7b877460d4a2739c2))
+* add PySR v1 to v2 migration guide ([#1302](https://github.com/astroautomata/PySR/issues/1302)) ([b0bb321](https://github.com/astroautomata/PySR/commit/b0bb321451fc8a489c711a5a7c37bff03fbb50c9))
+* replace python feature card ([#1303](https://github.com/astroautomata/PySR/issues/1303)) ([b99a314](https://github.com/astroautomata/PySR/commit/b99a314da625d3bce5a9dc25e7618a8681a8ffc4))
+
+## [2.0.0-beta.2](https://github.com/astroautomata/PySR/compare/v2.0.0-beta.1...v2.0.0-beta.2) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* the deprecated positional and `function_symbols=...` forms of `TemplateExpressionSpec` are removed; pass explicit `combine=`, `expressions=`, and `variable_names=` keywords.
+* checkpoints written before this change (schema 2, from v2.0.0-beta.1 and earlier betas) fail to load with an explicit schema error rather than restoring incomplete state.
+
+### Features
+
+* accept sample_weight as an alias for weights in fit ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+* require keyword arguments for TemplateExpressionSpec ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+* support custom value types via TypeSpec ([#1280](https://github.com/astroautomata/PySR/issues/1280)) ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+
+
+### Bug Fixes
+
+* avoid duplicate PyPI attestations ([#1292](https://github.com/astroautomata/PySR/issues/1292)) ([71242e8](https://github.com/astroautomata/PySR/commit/71242e8420e90db7be4f8ff064ab3dc9df2c52d2))
+* bump the checkpoint schema to version 3 ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+* rebuild Julia-backed equation columns after unpickling ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+
+
+### Documentation
+
+* rewrite the examples for TypeSpec and template expressions ([e2a159b](https://github.com/astroautomata/PySR/commit/e2a159b615b8258c192608cccde90a19fcc31563))
+
+## [2.0.0-beta.1](https://github.com/astroautomata/PySR/compare/v2.0.0a2...v2.0.0-beta.1) (2026-08-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* enable annealing by default ([#1283](https://github.com/astroautomata/PySR/issues/1283))
+* remove ParametricExpressionSpec ([#1277](https://github.com/astroautomata/PySR/issues/1277))
+* switch to SlurmClusterManager.jl for slurm allocations ([#794](https://github.com/astroautomata/PySR/issues/794))
+
+### Features
+
+* expose new plugin interface + upgrade to v2.0.0-beta.3 ([#1282](https://github.com/astroautomata/PySR/issues/1282)) ([e20c880](https://github.com/astroautomata/PySR/commit/e20c88015cc4294ea41d52cc2e9345bed7f1ebac))
+* remove ParametricExpressionSpec ([#1277](https://github.com/astroautomata/PySR/issues/1277)) ([d5f0bb0](https://github.com/astroautomata/PySR/commit/d5f0bb0b4b1e5d13463ba988c3ff15fba00bfe13))
+* set precompile_float64=false preference for SymbolicRegression ([#1279](https://github.com/astroautomata/PySR/issues/1279)) ([b89f920](https://github.com/astroautomata/PySR/commit/b89f9209d8ead59974bcff8f0f295b71c4a8fb7c))
+* switch to SlurmClusterManager.jl for slurm allocations ([#794](https://github.com/astroautomata/PySR/issues/794)) ([49f44a4](https://github.com/astroautomata/PySR/commit/49f44a420c3c08c4406c8c9685ba9d34d7773b23))
+
+
+### Bug Fixes
+
+* convert num_features dict keys to Julia Symbols ([#1209](https://github.com/astroautomata/PySR/issues/1209)) ([8aa59b8](https://github.com/astroautomata/PySR/commit/8aa59b82bfbe29daba59e38c2c063d8184c9dd0b)), closes [#811](https://github.com/astroautomata/PySR/issues/811)
+* enable annealing by default ([#1283](https://github.com/astroautomata/PySR/issues/1283)) ([f4dc86b](https://github.com/astroautomata/PySR/commit/f4dc86b21df97724f0e5efc8f9bc4ce34b8814d4))
+* respect tempdir for temporary equation files ([#1207](https://github.com/astroautomata/PySR/issues/1207)) ([beaa405](https://github.com/astroautomata/PySR/commit/beaa4053a1352789176b1b3bae356007dcbebabd))
+
+
+### Documentation
+
+* add agent skill for using PySR effectively ([#1264](https://github.com/astroautomata/PySR/issues/1264)) ([fdedcc8](https://github.com/astroautomata/PySR/commit/fdedcc892db4ae2fed289601718074ec45a596d0))
+* add angular coefficients paper ([da6d2d2](https://github.com/astroautomata/PySR/commit/da6d2d27f782156e5378ecd0255474cad5dc684d))
+* add biomass pyrolysis paper ([ccb473e](https://github.com/astroautomata/PySR/commit/ccb473ec715f353e32729f6921352a572f6ca71f))
+* add dark energy symbolic regression paper ([da9ad80](https://github.com/astroautomata/PySR/commit/da9ad80bc0187ca65f12b331d919c322264ea874))
+* add human mobility models paper ([f47c4d2](https://github.com/astroautomata/PySR/commit/f47c4d27496659ea97cc72ab9cfe138964c3ea53))
+* add microbial growth models paper ([f7c72fb](https://github.com/astroautomata/PySR/commit/f7c72fbc3ba13ed6e7e5f69f946c3c57d0a2d755))
+* add paper showcase entries ([9283914](https://github.com/astroautomata/PySR/commit/9283914523b52e5e992f4238d7ca6692de7825d1))
+* add s-stars chaos paper ([cfc4907](https://github.com/astroautomata/PySR/commit/cfc490762cac17ea248cfb83555c261779fa61e9))
+* add skin friction estimation paper ([8ec43f0](https://github.com/astroautomata/PySR/commit/8ec43f082e2b449d7dece4cb5ba2372915b81a7c))
+* add yawed wind turbines paper ([e1dc986](https://github.com/astroautomata/PySR/commit/e1dc986ef096b3c0c14e7f7f4429aee6b730f429))
+* update contributors list ([#1286](https://github.com/astroautomata/PySR/issues/1286)) ([10b3637](https://github.com/astroautomata/PySR/commit/10b36376b2866e09e8382669df20e4a7a1539ec5))
+* use Float32 literals in custom loss example ([#1276](https://github.com/astroautomata/PySR/issues/1276)) ([2bd7db2](https://github.com/astroautomata/PySR/commit/2bd7db238a70773c9b4882259b940f3dec8c8591))
+
 ## [2.0.0a2](https://github.com/MilesCranmer/PySR/compare/v2.0.0a1...v2.0.0a2) (2026-05-15)
 
 This is an alpha release of v2.0.0. It includes backend, packaging, export, and documentation updates since `v2.0.0a1`.

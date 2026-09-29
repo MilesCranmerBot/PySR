@@ -1,13 +1,19 @@
 import functools
 import importlib
+import json
 import os
 import pickle as pkl
 import platform
-import re
+import shutil
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import traceback
 import unittest
 import warnings
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from textwrap import dedent
 from unittest import mock
@@ -24,7 +30,6 @@ except ImportError:
     estimator_checks_generator = functools.partial(check_estimator, generate_only=True)
 
 from pysr import (
-    ParametricExpressionSpec,
     PySRRegressor,
     TemplateExpressionSpec,
     TensorBoardLoggerSpec,
@@ -34,11 +39,11 @@ from pysr import (
 )
 from pysr.export_latex import sympy2latex
 from pysr.export_sympy import pysr2sympy
-from pysr.expression_specs import parametric_expression_deprecation_warning
 from pysr.feature_selection import _handle_feature_selection, run_feature_selection
-from pysr.julia_helpers import init_julia
+from pysr.julia_helpers import _load_cluster_manager, init_julia
 from pysr.sr import (
     _check_assertions,
+    _create_julia_operators_and_loss_functions,
     _process_constraints,
     _suggest_keywords,
     _validate_elementwise_loss,
@@ -53,6 +58,7 @@ from .params import (
     DEFAULT_POPULATIONS,
     skip_if_beartype,
 )
+from .test_type_specs import TestTypeSpecs
 
 # Disables local saving:
 os.environ["SYMBOLIC_REGRESSION_IS_TESTING"] = os.environ.get(
@@ -353,6 +359,17 @@ class TestPipeline(unittest.TestCase):
     def test_validation_helpers_skip_nonfunction(self):
         _validate_elementwise_loss(jl.seval("1.0"), has_weights=False)
 
+    def test_elementwise_loss_accepts_lossfunctions_object(self):
+        _, custom_loss, _, _ = _create_julia_operators_and_loss_functions(
+            operators={2: ["+", "-", "/", "*"]},
+            extra_sympy_mappings=None,
+            supports_sympy=True,
+            elementwise_loss="LPDistLoss{3}()",
+            loss_function=None,
+            loss_function_expression=None,
+        )
+        self.assertTrue(jl.applicable(custom_loss, 1.0, 1.0))
+
     def test_validate_export_mappings_typechecks(self):
         with self.assertRaises(ValueError):
             _validate_export_mappings({"a": 1}, None)
@@ -621,6 +638,10 @@ class TestPipeline(unittest.TestCase):
         regressor = PySRRegressor(warm_start=True, max_evals=10)
         regressor.fit(self.X, y)
 
+        regressor.set_params(binary_operators=["+", "*", "-", "/"])
+        with self.assertRaisesRegex(JuliaError, "Warm start incompatible.*operators"):
+            regressor.fit(self.X, y)
+
     def test_noisy_builtin_variable_names(self):
         y = self.X[:, [0, 1]] ** 2 + self.rstate.randn(self.X.shape[0], 1) * 0.05
         model = PySRRegressor(
@@ -832,7 +853,9 @@ class TestPipeline(unittest.TestCase):
         # Create model with template that includes the missing sin operator
         model = PySRRegressor(
             expression_spec=TemplateExpressionSpec(
-                ["f"], "sin_of_f((; f), (x, y)) = sin(f(x, y))"
+                combine="sin(f(x, y))",
+                expressions=["f"],
+                variable_names=["x", "y"],
             ),
             binary_operators=["+", "-", "*", "/"],
             unary_operators=[],  # No sin operator!
@@ -879,6 +902,112 @@ class TestPipeline(unittest.TestCase):
         with self.assertRaises(ValueError):
             model.latex_table()
 
+    def test_template_expressions_reload_in_fresh_process(self):
+        X = self.rstate.uniform(-1, 1, (30, 2))
+        y = np.sin(X[:, 0] + X[:, 1])
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor(
+                expression_spec=TemplateExpressionSpec(
+                    combine="sin(f(x, y))",
+                    expressions=["f"],
+                    variable_names=["x", "y"],
+                ),
+                binary_operators=["+", "-", "*"],
+                unary_operators=[],
+                maxsize=10,
+                **{
+                    **self.default_test_kwargs,
+                    "temp_equation_file": False,
+                },
+                output_directory=directory,
+                run_id="template-checkpoint",
+                early_stop_condition=1e-10,
+            )
+            model.fit(X, y)
+            expected = model.predict(X)
+            run_directory = Path(directory) / "template-checkpoint"
+            code = f"""
+import json
+import numpy as np
+from pysr import PySRRegressor
+model = PySRRegressor.from_file(run_directory={str(run_directory)!r})
+X = np.array({X.tolist()!r})
+print(json.dumps({{
+    "columns": list(model.equations_.columns),
+    "prediction": model.predict(X).tolist(),
+}}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn("lambda_format", payload["columns"])
+        np.testing.assert_allclose(payload["prediction"], expected, atol=1e-10)
+
+        loaded = pkl.loads(pkl.dumps(model))
+        self.assertIsNotNone(loaded.julia_state_)
+
+    def test_template_expression_pickle_roundtrip_in_fresh_process(self):
+        X = self.rstate.uniform(-1, 1, (30, 2))
+        y = np.sin(X[:, 0] + X[:, 1])
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor(
+                expression_spec=TemplateExpressionSpec(
+                    combine="sin(f(x, y))",
+                    expressions=["f"],
+                    variable_names=["x", "y"],
+                ),
+                binary_operators=["+", "-", "*"],
+                unary_operators=[],
+                maxsize=10,
+                **{
+                    **self.default_test_kwargs,
+                    "temp_equation_file": False,
+                },
+                output_directory=directory,
+                run_id="template-pickle",
+                early_stop_condition=1e-10,
+            )
+            model.fit(X, y)
+            expected = model.predict(X)
+
+            pickle_path = Path(directory) / "template-model.pkl"
+            with open(pickle_path, "wb") as f:
+                pkl.dump(model, f)
+            # Delete the run directory: the pickle alone must be enough to
+            # rebuild the Julia-backed equation columns.
+            shutil.rmtree(Path(directory) / "template-pickle")
+
+            code = f"""
+import json
+import pickle
+import numpy as np
+
+with open({str(pickle_path)!r}, "rb") as f:
+    model = pickle.load(f)
+X = np.array({X.tolist()!r})
+prediction = model.predict(X)
+print(json.dumps({{
+    "columns": list(model.equations_.columns),
+    "prediction": prediction.tolist(),
+}}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertIn("lambda_format", payload["columns"])
+        np.testing.assert_allclose(payload["prediction"], expected, atol=1e-10)
+
     def test_template_expression_with_parameters_multiout(self):
         # Create random data
         X_continuous = self.rstate.uniform(-1, 1, (100, 2))
@@ -897,7 +1026,7 @@ class TestPipeline(unittest.TestCase):
         model = PySRRegressor(
             **self.default_test_kwargs,
             expression_spec=TemplateExpressionSpec(
-                "p[class] * x1^2 + f(x2)",
+                combine="p[class] * x1^2 + f(x2)",
                 expressions=["f"],
                 parameters={"p": 3},
                 variable_names=["x1", "x2", "class"],
@@ -926,61 +1055,6 @@ class TestPipeline(unittest.TestCase):
 
         test_mse = np.mean((y_test - y_pred) ** 2)
         self.assertLess(test_mse, 1e-5)
-
-    def test_parametric_expression(self):
-        # Create data with two classes
-        n_points = 100
-        X = self.rstate.uniform(-3, 3, (n_points, 2))  # x1, x2
-        category = self.rstate.randint(0, 3, n_points)  # class (0 or 1)
-
-        # True parameters for each class
-        P1 = [0.1, 1.5, -5.2]  # phase shift for each class
-        P2 = [3.2, 0.5, 1.2]  # offset for each class
-
-        # Ground truth: 2*cos(x2 + P1[class]) + x1^2 - P2[class]
-        y = np.array(
-            [
-                2 * np.cos(x2 + P1[c]) + x1**2 - P2[c]
-                for x1, x2, c in zip(X[:, 0], X[:, 1], category)
-            ]
-        )
-
-        model = PySRRegressor(
-            expression_spec=ParametricExpressionSpec(max_parameters=2),
-            binary_operators=["+", "*", "/", "-"],
-            unary_operators=["cos", "exp"],
-            maxsize=20,
-            early_stop_condition="stop_if(loss, complexity) = loss < 1e-4 && complexity <= 14",
-            **self.default_test_kwargs,
-        )
-
-        model.fit(X, y, category=category)
-
-        # Test on new data points
-        X_test = self.rstate.uniform(-6, 6, (10, 2))
-        category_test = self.rstate.randint(0, 3, 10)
-
-        y_test = np.array(
-            [
-                2 * np.cos(x2 + P1[c]) + x1**2 - P2[c]
-                for x1, x2, c in zip(X_test[:, 0], X_test[:, 1], category_test)
-            ]
-        )
-
-        y_test_pred = model.predict(X_test, category=category_test)
-        test_mse = np.mean((y_test - y_test_pred) ** 2)
-        self.assertLess(test_mse, 1e-3)
-
-        with self.assertRaises(ValueError):
-            model.sympy()
-        with self.assertRaises(ValueError):
-            model.latex()
-        with self.assertRaises(ValueError):
-            model.jax()
-        with self.assertRaises(ValueError):
-            model.pytorch()
-        with self.assertRaises(ValueError):
-            model.latex_table()
 
     def test_tensorboard_logger(self):
 
@@ -1042,6 +1116,37 @@ class TestPipeline(unittest.TestCase):
 
                 # Verify model still works as expected
                 self.assertLessEqual(model.get_best()["loss"], 1e-4)
+
+    def test_tracing_writes_jsonl(self):
+        """Tracing should write the search and each iteration as JSON lines."""
+        X = self.rstate.randn(10, 2)
+        y = X[:, 0]
+        kwargs = dict(
+            niterations=2,
+            populations=2,
+            population_size=20,
+            ncycles_per_iteration=DEFAULT_NCYCLES,
+            progress=False,
+            temp_equation_file=True,
+            parallelism="serial",
+            deterministic=True,
+            random_state=0,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace_file = Path(tmpdir) / "trace.jsonl"
+
+            PySRRegressor(**kwargs, use_tracing=True, tracing_file=trace_file).fit(X, y)
+
+            records = [json.loads(line) for line in trace_file.read_text().splitlines()]
+            self.assertEqual(records[0]["record_type"], "search")
+            iterations = [r for r in records if r["record_type"] == "iteration"]
+            self.assertGreater(len(iterations), 0)
+            self.assertIn("tree", iterations[0]["members"][0])
+            self.assertIn("mutations", iterations[0])
+
+            trace_file.unlink()
+            PySRRegressor(**kwargs).fit(X, y)
+            self.assertFalse(trace_file.exists())
 
     def test_negative_losses(self):
         X = self.rstate.rand(100, 3) * 20.0
@@ -1191,6 +1296,29 @@ class TestGuesses(unittest.TestCase):
         # Check that a good fit was found
         self.assertTrue(any(model.equations_["loss"] < 1e-10))
 
+    def test_template_expression_guess_parameters(self):
+        X = self.rstate.randn(100, 1)
+        y = 5.0 * X[:, 0] ** 2 + 10.0 * X[:, 0] + 0.8
+        parameter_values = np.array([5.0, 10.0, 0.8], dtype=np.float64)
+        original_values = parameter_values.copy()
+        model = PySRRegressor(
+            expression_spec=TemplateExpressionSpec(
+                expressions=["f"],
+                combine="p[1] * f(x) + p[2] * x + p[3]",
+                variable_names=["x"],
+                parameters={"p": 3, "unused": 1},
+            ),
+            guesses=[{"f": "#1 * #1", "p": parameter_values}],
+            should_optimize_constants=False,
+            precision=32,
+            **self.default_test_kwargs,
+        )
+        model.fit(X, y, variable_names=["x"])
+
+        np.testing.assert_allclose(model.predict(X), y, rtol=1e-6, atol=1e-6)
+        np.testing.assert_array_equal(parameter_values, original_values)
+        self.assertEqual(parameter_values.dtype, np.float64)
+
     def test_multi_output_template_expression_guesses(self):
         X = self.rstate.randn(100, 2)
         Y = np.column_stack([X[:, 0] + X[:, 1], X[:, 0] - X[:, 1]])
@@ -1209,6 +1337,77 @@ class TestGuesses(unittest.TestCase):
         # Check both outputs have good fits
         for i, eqs_df in enumerate(model.equations_):
             self.assertTrue(any(eqs_df["loss"] < 1e-10))
+
+    def test_template_parameter_guesses_replace_on_warm_start(self):
+        X = self.rstate.randn(100, 1)
+        y = 3.0 * X[:, 0] + 4.0
+        template = TemplateExpressionSpec(
+            expressions=["f"],
+            combine="p[1] * f(x) + p[2]",
+            variable_names=["x"],
+            parameters={"p": 2},
+        )
+        model = PySRRegressor(
+            expression_spec=template,
+            guesses=[{"f": "#1", "p": [1.0, 0.0]}],
+            should_optimize_constants=False,
+            **self.default_test_kwargs,
+        )
+        model.fit(X, y, variable_names=["x"])
+        model.set_params(guesses=[{"f": "#1", "p": [3.0, 4.0]}], warm_start=True)
+        model.fit(X, y, variable_names=["x"])
+
+        np.testing.assert_allclose(model.predict(X), y, rtol=1e-6, atol=1e-6)
+
+    def test_multi_output_template_parameter_guesses(self):
+        X = self.rstate.randn(100, 1)
+        Y = np.column_stack([2.0 * X[:, 0] + 1.0, -3.0 * X[:, 0] + 0.5])
+        model = PySRRegressor(
+            expression_spec=TemplateExpressionSpec(
+                expressions=["f"],
+                combine="p[1] * f(x) + p[2]",
+                variable_names=["x"],
+                parameters={"p": 2},
+            ),
+            guesses=[
+                [{"f": "#1", "p": [2.0, 1.0]}],
+                [{"f": "#1", "p": [-3.0, 0.5]}],
+            ],
+            should_optimize_constants=False,
+            **self.default_test_kwargs,
+        )
+        model.fit(X, Y, variable_names=["x"])
+
+        prediction = model.predict(X)
+        self.assertEqual(prediction.shape, Y.shape)
+        np.testing.assert_allclose(prediction, Y, rtol=1e-6, atol=1e-6)
+
+    def test_invalid_template_parameter_guesses(self):
+        X = self.rstate.randn(10, 1)
+        y = X[:, 0]
+        template = TemplateExpressionSpec(
+            expressions=["f"],
+            combine="p[1] * f(x) + p[2]",
+            variable_names=["x"],
+            parameters={"p": 2},
+        )
+        cases = [
+            ({"f": "#1", "missing": "#1", "p": [1.0, 2.0]}, JuliaError),
+            ({"p": [1.0, 2.0]}, JuliaError),
+            ({"f": ["#1"], "p": [1.0, 2.0]}, JuliaError),
+            ({"f": "#1", "p": [1.0]}, JuliaError),
+            ({"f": "#1", "p": 1.0}, ValueError),
+            ({"f": "#1", "p": [[1.0, 2.0]]}, ValueError),
+        ]
+        for guess, error in cases:
+            with self.subTest(guess=guess):
+                model = PySRRegressor(
+                    expression_spec=template,
+                    guesses=[guess],
+                    **self.default_test_kwargs,
+                )
+                with self.assertRaises(error):
+                    model.fit(X, y, variable_names=["x"])
 
     def test_invalid_multi_output_format_guesses(self):
         X = self.rstate.randn(100, 2)
@@ -1343,14 +1542,16 @@ def manually_create_model(equations, feature_names=None):
                     Path(output_directory)
                     / run_id
                     / f"hall_of_fame_output{i+1}.csv.bak"
-                )
+                ),
+                index=False,
             )
     else:
         model.nout_ = 1
         model.selection_mask_ = None
         model.feature_names_in_ = np.array(feature_names, dtype=object)
         equations["complexity loss equation".split(" ")].to_csv(
-            str(Path(output_directory) / run_id / "hall_of_fame.csv.bak")
+            str(Path(output_directory) / run_id / "hall_of_fame.csv.bak"),
+            index=False,
         )
 
     model.refresh()
@@ -1437,6 +1638,142 @@ class TestFeatureSelection(unittest.TestCase):
 class TestMiscellaneous(unittest.TestCase):
     """Test miscellaneous functions."""
 
+    def test_search_releases_the_gil(self):
+        """Other Python threads must keep running while Julia searches."""
+        gaps = []
+        stop = threading.Event()
+
+        def sample_gaps():
+            previous = time.monotonic()
+            while not stop.is_set():
+                time.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - previous)
+                previous = now
+
+        rstate = np.random.RandomState(0)
+        X = rstate.randn(100, 2)
+        y = X[:, 0] * X[:, 1]
+        model = PySRRegressor(
+            niterations=40,
+            populations=8,
+            verbosity=0,
+            progress=False,
+            temp_equation_file=True,
+        )
+
+        watcher = threading.Thread(target=sample_gaps, daemon=True)
+        watcher.start()
+        started = time.monotonic()
+        try:
+            model.fit(X, y)
+        finally:
+            elapsed = time.monotonic() - started
+            stop.set()
+            watcher.join(timeout=5)
+
+        # Holding the GIL across the search would leave one gap spanning it.
+        self.assertLess(max(gaps), elapsed / 4)
+
+    def test_loss_function_can_call_back_into_python(self):
+        """A Julia loss_function shim can drive a Python objective mid-search."""
+        calls = {"n": 0}
+
+        def python_objective(tree, dataset, options):
+            calls["n"] += 1
+            prediction, completed = jl.SymbolicRegression.eval_tree_array(
+                tree, dataset.X, options
+            )
+            if not completed:
+                return float("inf")
+            prediction = np.asarray(prediction)
+            target = np.asarray(dataset.y)
+            return float(np.mean((prediction - target) ** 2))
+
+        jl.pysr_test_python_objective = python_objective
+        jl.seval("""
+            using PythonCall
+
+            function pysr_test_python_objective_shim(
+                tree, dataset::Dataset{T,L}, options
+            )::L where {T,L}
+                PythonCall.GIL.@lock begin
+                    return pyconvert(
+                        L, pysr_test_python_objective(tree, dataset, options)
+                    )
+                end
+            end
+            """)
+
+        X = np.arange(8.0).reshape(-1, 1)
+        y = 2.0 * X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            loss_function="pysr_test_python_objective_shim",
+            niterations=1,
+            populations=1,
+            population_size=20,
+            ncycles_per_iteration=1,
+            maxsize=7,
+            should_optimize_constants=False,
+            parallelism="serial",
+            deterministic=True,
+            random_state=0,
+            precision=64,
+            progress=False,
+            verbosity=0,
+            temp_equation_file=True,
+        )
+        model.fit(X, y)
+
+        self.assertGreater(calls["n"], 0)
+        self.assertTrue(np.all(np.isfinite(model.equations_["loss"])))
+
+    def test_unfitted_julia_streams_are_none(self):
+        model = PySRRegressor()
+        self.assertIsNone(model.julia_options_)
+        self.assertIsNone(model.julia_state_)
+
+    def test_inline_operator_must_be_a_function(self):
+        from pysr.sr import _maybe_create_inline_operators
+
+        with self.assertRaisesRegex(ValueError, "must evaluate to a Julia function"):
+            _maybe_create_inline_operators({1: ["identity(1)"]}, None, False)
+
+    def test_variable_names_must_match_feature_count(self):
+        # sklearn's own length check fires first during `fit`; exercise the
+        # backstop in `_check_assertions` directly.
+        from pysr.sr import _check_assertions
+
+        X = np.random.randn(10, 2)
+        with self.assertRaisesRegex(ValueError, "one name per feature"):
+            _check_assertions(X, True, ["a"], None, None, X[:, 0], None, None, False)
+
+    def test_equations_with_quoted_constants_are_read(self):
+        """Equations holding string constants arrive with doubled quotes."""
+        output_directory = tempfile.mkdtemp()
+        run_id = "quoted"
+        os.makedirs(Path(output_directory) / run_id)
+        equation = 'f = "a"; p = ["a", "b"]'
+        with open(
+            Path(output_directory) / run_id / "hall_of_fame.csv", "w", encoding="utf-8"
+        ) as f:
+            f.write("Complexity,Loss,Equation\n")
+            f.write('1,0.0,"""a"""\n')
+            f.write('3,0.0,"f = ""a""; p = [""a"", ""b""]"\n')
+
+        model = PySRRegressor()
+        model.nout_ = 1
+        model.output_directory_ = output_directory
+        model.run_id_ = run_id
+
+        equations = model._read_equation_file()[0]
+
+        self.assertEqual(list(equations["complexity"]), [1, 3])
+        self.assertEqual(list(equations["loss"]), [0.0, 0.0])
+        self.assertEqual(list(equations["equation"]), ['"a"', equation])
+
     def test_pickle_inv_sympy_expression(self):
         """Test that sympy expressions with the inv operator can be pickled and unpickled correctly."""
         expr_str = "inv(x0) + x1"
@@ -1518,6 +1855,104 @@ class TestMiscellaneous(unittest.TestCase):
         y_predictions2 = model2.predict(X)
         np.testing.assert_array_almost_equal(y_predictions, y_predictions2)
 
+    def test_checkpoint_schema(self):
+        state = PySRRegressor().__getstate__()
+        self.assertEqual(state["_checkpoint_schema_version"], 3)
+
+        schema_two_state = state.copy()
+        schema_two_state.pop("type_spec")
+        schema_two_model = PySRRegressor.__new__(PySRRegressor)
+        schema_two_model.__setstate__(schema_two_state)
+        self.assertIsNone(schema_two_model.type_spec)
+
+        missing_schema_state = state.copy()
+        missing_schema_state.pop("_checkpoint_schema_version")
+        missing_schema_model = PySRRegressor.__new__(PySRRegressor)
+        with self.assertRaisesRegex(ValueError, "Unsupported PySR checkpoint schema"):
+            missing_schema_model.__setstate__(missing_schema_state)
+
+        for schema_version in (1, 2, 4):
+            incompatible_state = state.copy()
+            incompatible_state["_checkpoint_schema_version"] = schema_version
+
+            model = PySRRegressor.__new__(PySRRegressor)
+            with self.assertRaisesRegex(
+                ValueError, "Unsupported PySR checkpoint schema"
+            ):
+                model.__setstate__(incompatible_state)
+
+    def test_checkpoint_dump_failure_preserves_existing_file(self):
+        def fail_after_partial_write(_, checkpoint_file):
+            checkpoint_file.write(b"partial")
+            raise TypeError("cannot pickle")
+
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "failed-checkpoint"
+            model.show_pickle_warnings_ = False
+            checkpoint = model.get_pkl_filename()
+            checkpoint.write_bytes(b"previous checkpoint")
+
+            with mock.patch("pysr.sr.pkl.dump", side_effect=fail_after_partial_write):
+                model._checkpoint()
+
+            self.assertEqual(checkpoint.read_bytes(), b"previous checkpoint")
+            self.assertFalse(model.show_pickle_warnings_)
+            self.assertEqual(list(checkpoint.parent.glob("*.tmp")), [])
+
+    def test_checkpoint_dump_failure_leaves_no_file(self):
+        def fail_after_partial_write(_, checkpoint_file):
+            checkpoint_file.write(b"partial")
+            raise TypeError("cannot pickle")
+
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "failed-checkpoint"
+            checkpoint = model.get_pkl_filename()
+
+            with mock.patch("pysr.sr.pkl.dump", side_effect=fail_after_partial_write):
+                model._checkpoint()
+
+            self.assertFalse(checkpoint.exists())
+            self.assertTrue(model.show_pickle_warnings_)
+            self.assertEqual(list(checkpoint.parent.glob("*.tmp")), [])
+
+    def test_checkpoint_cleanup_failure_restores_warnings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "failed-cleanup"
+            model.show_pickle_warnings_ = True
+            checkpoint = model.get_pkl_filename()
+
+            with mock.patch(
+                "pathlib.Path.unlink", side_effect=OSError("cannot unlink")
+            ):
+                model._checkpoint()
+
+            self.assertTrue(checkpoint.exists())
+            self.assertTrue(model.show_pickle_warnings_)
+
+    def test_checkpoint_propagates_publication_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = PySRRegressor()
+            model.output_directory_ = directory
+            model.run_id_ = "unpublishable-checkpoint"
+            model.show_pickle_warnings_ = True
+            checkpoint = model.get_pkl_filename()
+
+            with mock.patch(
+                "pysr.sr.os.replace", side_effect=OSError("read-only directory")
+            ):
+                with self.assertRaises(OSError):
+                    model._checkpoint()
+
+            self.assertFalse(checkpoint.exists())
+            self.assertEqual(list(checkpoint.parent.glob("*.tmp")), [])
+            self.assertTrue(model.show_pickle_warnings_)
+
     def test_scikit_learn_compatibility(self):
         """Test PySRRegressor compatibility with scikit-learn."""
         model = PySRRegressor(
@@ -1578,7 +2013,7 @@ class TestMiscellaneous(unittest.TestCase):
 
         self.assertTrue(any("batch_size" in str(w.message) for w in caught))
 
-    def test_progress_disabled_when_stdout_lacks_buffer(self):
+    def test_progress_silently_disabled_when_stdout_lacks_buffer(self):
         fake_stdout = type(
             "FakeStdout", (), {"write": lambda self, *_args, **_kwargs: None}
         )()
@@ -1596,7 +2031,286 @@ class TestMiscellaneous(unittest.TestCase):
                 y = X[:, 0]
                 model.fit(X, y)
 
-        self.assertTrue(any("progress bar" in str(w.message) for w in caught))
+        self.assertFalse(any("progress bar" in str(w.message) for w in caught))
+
+    def test_builtin_mutation_and_plugin_configs(self):
+        from pysr import (
+            AdaptiveMutationWeightsPlugin,
+            BacksolveMutation,
+            ConstantMutation,
+            MutationBurstPlugin,
+            OperatorMutation,
+            SymbolicRegression,
+        )
+
+        mutation_name = jl.seval("m -> string(nameof(typeof(m)))")
+        for mutation, expected_name in (
+            (OperatorMutation(), "OperatorMutation"),
+            (BacksolveMutation(), "BacksolveMutation"),
+        ):
+            julia_mutation = mutation.julia_mutation()
+            self.assertEqual(str(mutation_name(julia_mutation)), expected_name)
+
+        backsolve_mutation = BacksolveMutation(
+            max_library_size=321,
+            max_terms=4,
+            min_improvement=0.02,
+            node_attempts=5,
+        ).julia_mutation()
+        self.assertEqual(backsolve_mutation.max_library_size, 321)
+        self.assertEqual(backsolve_mutation.max_terms, 4)
+        self.assertEqual(backsolve_mutation.min_improvement, 0.02)
+        self.assertEqual(backsolve_mutation.node_attempts, 5)
+        constant_mutation = ConstantMutation().julia_mutation()
+        backend_default = SymbolicRegression.ConstantMutation()
+        self.assertEqual(
+            constant_mutation.perturbation_factor,
+            backend_default.perturbation_factor,
+        )
+        self.assertEqual(
+            constant_mutation.probability_negate,
+            backend_default.probability_negate,
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        for plugin, expected_name in (
+            (
+                AdaptiveMutationWeightsPlugin(reward="loss"),
+                "AdaptiveMutationWeightsPlugin",
+            ),
+            (MutationBurstPlugin(retry_attempts=2), "MutationBurstPlugin"),
+        ):
+            self.assertEqual(str(plugin_name(plugin.julia_plugin())), expected_name)
+
+    def test_default_operators_and_plugins_match_backend(self):
+        from pysr import SymbolicRegression
+
+        model = PySRRegressor()
+        backend_options = SymbolicRegression.Options()
+
+        backend_binary_operators = jl.seval(
+            "options -> string.(options.operators.ops[2])"
+        )(backend_options)
+        self.assertListEqual(
+            model._validate_and_modify_params().operators[2],
+            [str(operator) for operator in backend_binary_operators],
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {
+            str(plugin_name(plugin)): plugin for plugin in backend_options.plugins
+        }
+
+        parsimony = plugins["AdaptiveParsimonyPlugin"]
+        self.assertEqual(model.use_frequency, parsimony.mutation_acceptance)
+        self.assertEqual(model.use_frequency_in_tournament, parsimony.tournament)
+
+    def test_mutation_and_plugin_configuration(self):
+        from pysr import (
+            AbstractPlugin,
+            AdaptiveParsimonyPlugin,
+            BacksolveMutation,
+            ConstantMutation,
+            RandomizeMutation,
+            SimulatedAnnealingPlugin,
+            SymbolicRegression,
+        )
+
+        jl.seval("""
+            if !isdefined(Main, :PySRPluginMutationTest)
+                @eval module PySRPluginMutationTest
+                    using SymbolicRegression
+                    struct PluginMutation <: SymbolicRegression.AbstractMutation end
+                    struct Plugin <: SymbolicRegression.AbstractPlugin end
+                    SymbolicRegression.plugin_mutations(::Plugin) =
+                        (PluginMutation() => 0.25,)
+                end
+            end
+            """)
+
+        class PluginConfig(AbstractPlugin):
+            def julia_plugin(self):
+                return jl.seval("PySRPluginMutationTest.Plugin()")
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            perturbation_factor=0.7,
+            probability_negate_constant=0.8,
+            mutations={
+                BacksolveMutation(max_library_size=123): 0.02,
+                ConstantMutation(perturbation_factor=0.2): 0.5,
+                RandomizeMutation(): 0.4,
+            },
+            plugins=[
+                SimulatedAnnealingPlugin(alpha=0.4),
+                AdaptiveParsimonyPlugin(tournament=False, mutation_acceptance=False),
+                PluginConfig(),
+            ],
+        )
+        model.fit(X, y)
+
+        options = model.julia_options_
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        mutation_by_name = {
+            str(mutation_name(pair)): pair for pair in options.mutations
+        }
+        self.assertEqual(options.crossover_probability, 0.2)
+        expected_weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in SymbolicRegression.Options().mutations
+        }
+        expected_weights.update(
+            ConstantMutation=0.5,
+            RandomizeMutation=0.4,
+            BacksolveMutation=0.02,
+            PluginMutation=0.25,
+        )
+        self.assertSetEqual(set(mutation_by_name), set(expected_weights))
+        for name, weight in expected_weights.items():
+            self.assertEqual(float(jl.last(mutation_by_name[name])), weight)
+        constant_mutation = jl.first(mutation_by_name["ConstantMutation"])
+        self.assertEqual(constant_mutation.perturbation_factor, 0.2)
+        self.assertEqual(
+            constant_mutation.probability_negate,
+            SymbolicRegression.ConstantMutation().probability_negate,
+        )
+        self.assertEqual(
+            jl.first(mutation_by_name["BacksolveMutation"]).max_library_size,
+            123,
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {str(plugin_name(plugin)): plugin for plugin in options.plugins}
+        self.assertSetEqual(
+            set(plugins),
+            {
+                "SimulatedAnnealingPlugin",
+                "AdaptiveParsimonyPlugin",
+                "AdaptiveMutationWeightsPlugin",
+                "Plugin",
+            },
+        )
+        self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
+        self.assertFalse(plugins["AdaptiveParsimonyPlugin"].tournament)
+        self.assertFalse(plugins["AdaptiveParsimonyPlugin"].mutation_acceptance)
+
+    def test_default_mutation_and_plugin_configuration(self):
+        from pysr import (
+            BacksolveMutation,
+            MutationBurstPlugin,
+            OperatorMutation,
+            SimulatedAnnealingPlugin,
+        )
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            default_mutations={OperatorMutation(): 0.7},
+            mutations={BacksolveMutation(max_library_size=123): 0.2},
+            default_plugins=[MutationBurstPlugin(retry_attempts=2)],
+            plugins=[SimulatedAnnealingPlugin(alpha=0.4)],
+        )
+        model.fit(X, y)
+
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in model.julia_options_.mutations
+        }
+        self.assertDictEqual(
+            weights,
+            {"OperatorMutation": 0.7, "BacksolveMutation": 0.2},
+        )
+
+        plugin_name = jl.seval("p -> string(nameof(typeof(p)))")
+        plugins = {
+            str(plugin_name(plugin)): plugin for plugin in model.julia_options_.plugins
+        }
+        self.assertSetEqual(
+            set(plugins), {"MutationBurstPlugin", "SimulatedAnnealingPlugin"}
+        )
+        self.assertEqual(plugins["MutationBurstPlugin"].retry_attempts, 2)
+        self.assertEqual(plugins["SimulatedAnnealingPlugin"].alpha, 0.4)
+
+    def test_legacy_mutation_weight_override(self):
+        from pysr import SymbolicRegression
+
+        X = np.arange(12, dtype=np.float32).reshape(6, 2)
+        y = X[:, 0]
+        model = PySRRegressor(
+            binary_operators=["+"],
+            unary_operators=[],
+            niterations=0,
+            populations=1,
+            population_size=4,
+            tournament_selection_n=2,
+            progress=False,
+            temp_equation_file=True,
+            perturbation_factor=0.7,
+            probability_negate_constant=0.8,
+            weight_randomize=0.3,
+            weight_backsolve=0.2,
+        )
+        model.fit(X, y)
+
+        mutation_name = jl.seval("p -> string(nameof(typeof(first(p))))")
+        weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in model.julia_options_.mutations
+        }
+        self.assertEqual(weights["RandomizeMutation"], 0.3)
+        self.assertEqual(weights["BacksolveMutation"], 0.2)
+        backend_weights = {
+            str(mutation_name(pair)): float(jl.last(pair))
+            for pair in SymbolicRegression.default_mutations()
+        }
+        self.assertEqual(weights["AddNodeMutation"], backend_weights["AddNodeMutation"])
+        constant_mutation = next(
+            jl.first(pair)
+            for pair in model.julia_options_.mutations
+            if str(mutation_name(pair)) == "ConstantMutation"
+        )
+        self.assertEqual(constant_mutation.perturbation_factor, 0.7)
+        self.assertEqual(constant_mutation.probability_negate, 0.8)
+
+    def test_mutation_interfaces_are_mutually_exclusive(self):
+        from sklearn.base import clone
+
+        from pysr import OperatorMutation
+
+        model = PySRRegressor()
+        cloned_model = clone(model)
+        legacy_parameters = filter(
+            lambda parameter: parameter.startswith("weight_"), model.get_params()
+        )
+        for parameter in legacy_parameters:
+            self.assertIsNone(getattr(model, parameter))
+            self.assertIsNone(getattr(cloned_model, parameter))
+
+        for new_interface in (
+            {"default_mutations": {OperatorMutation(): 0.7}},
+            {"mutations": {OperatorMutation(): 0.7}},
+        ):
+            conflicting_model = PySRRegressor(weight_add_node=2.47, **new_interface)
+            with self.assertRaisesRegex(ValueError, "Cannot combine legacy"):
+                conflicting_model._validate_and_modify_params()
 
     def test_param_groupings(self):
         """Test that param_groupings are complete"""
@@ -1621,54 +2335,18 @@ class TestMiscellaneous(unittest.TestCase):
         # Check the sets are equal:
         self.assertSetEqual(set(params), set(regressor_params))
 
-    def test_parametric_deprecation_warning(self):
-        """Test that the helpful warning message is displayed."""
-        pattern = re.compile(
-            r"ParametricExpressionSpec is deprecated.*TemplateExpressionSpec.*"
-            r"max_parameters=2.*"
-            r"variable_names=\[\"alpha\", \"beta\"\].*"
-            r"expressions=\[\"f\"\].*"
-            r"variable_names=\[\"alpha\", \"beta\", \"category\"\].*"
-            r"parameters=\{\s*\"p1\": n_categories,\s*\"p2\": n_categories\s*\}.*"
-            r"combine=\"f\(alpha, beta, p1\[category\], p2\[category\]\)\"",
-            flags=re.S,
-        )
-
-        with self.assertWarnsRegex(FutureWarning, pattern):
-            parametric_expression_deprecation_warning(
-                max_parameters=2,
-                variable_names=["alpha", "beta"],
-            )
-
     def test_load_all_packages(self):
         """Test we can load all packages at once."""
         load_all_packages()
         self.assertTrue(jl.seval("ClusterManagers isa Module"))
+        self.assertTrue(jl.seval("SlurmClusterManager isa Module"))
 
-    def test_get_batch_size(self):
-        """Test the _get_batch_size function."""
-        from pysr.sr import _get_batch_size
-
-        # Test None (auto) mode with different dataset sizes
-        self.assertEqual(_get_batch_size(500, None), 500)
-        self.assertEqual(_get_batch_size(999, None), 999)
-        self.assertEqual(_get_batch_size(1000, None), 1000)
-        self.assertEqual(_get_batch_size(1001, None), 128)
-        self.assertEqual(_get_batch_size(1500, None), 128)
-        self.assertEqual(_get_batch_size(4999, None), 128)
-        self.assertEqual(_get_batch_size(5000, None), 256)
-        self.assertEqual(_get_batch_size(10000, None), 256)
-        self.assertEqual(_get_batch_size(49999, None), 256)
-        self.assertEqual(_get_batch_size(50000, None), 512)
-        self.assertEqual(_get_batch_size(100000, None), 512)
-
-        # Test explicit batch_size
-        self.assertEqual(_get_batch_size(1000, 64), 64)
-        self.assertEqual(_get_batch_size(1000, 2000), 1000)  # Capped at dataset size
-        self.assertEqual(_get_batch_size(50, 100), 50)  # Capped at dataset size
+        with mock.patch.dict(os.environ, {"SLURM_JOB_ID": "1", "SLURM_NTASKS": "2"}):
+            with self.assertRaisesRegex(JuliaError, "allocation has 2 tasks"):
+                _load_cluster_manager("slurm")(1)
 
     def test_batching_auto(self):
-        """Test that batching='auto' works correctly."""
+        """Test that batching configuration is passed to SymbolicRegression.jl."""
         model = PySRRegressor()
         self.assertEqual(model.batching, "auto")
 
@@ -1676,11 +2354,13 @@ class TestMiscellaneous(unittest.TestCase):
         y_small = np.random.randn(100)
         model = PySRRegressor(batching="auto", niterations=0)
         model.fit(X_small, y_small)
+        self.assertEqual(model.julia_options_.batching, jl.Symbol("auto"))
+        self.assertIsNone(model.julia_options_.batch_size)
 
-        X_large = np.random.randn(1001, 2)
-        y_large = np.random.randn(1001)
-        model2 = PySRRegressor(batching="auto", niterations=0)
-        model2.fit(X_large, y_large)
+        explicit = PySRRegressor(batching=True, batch_size=64, niterations=0)
+        explicit.fit(X_small, y_small)
+        self.assertTrue(explicit.julia_options_.batching)
+        self.assertEqual(explicit.julia_options_.batch_size, 64)
 
     def test_batch_size_negative_warning(self):
         """Test that batch_size < 1 gives a warning for integers only."""
@@ -1751,17 +2431,6 @@ class TestHelpMessages(unittest.TestCase):
                 PySRRegressor.from_file(run_directory=run_dir, n_features_in=1)
 
             self.assertIn("must provide either `operators`", str(cm.exception))
-
-    def test_size_warning(self):
-        """Ensure that a warning is given for a large input size."""
-        model = PySRRegressor()
-        X = np.random.randn(50001, 2)
-        y = np.random.randn(50001)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            with self.assertRaises(Exception) as context:
-                model.fit(X, y)
-            self.assertIn("more than 50,000", str(context.exception))
 
     def test_deterministic_warnings(self):
         """Ensure that warnings are given for determinism"""
@@ -2150,6 +2819,7 @@ class TestDimensionalConstraints(unittest.TestCase):
                 y,
                 X_units,
                 y_units,
+                supports_sympy=False,
             )
         invalid_units = [
             (np.ones((10, 2)), np.ones(10), ["m/s", "s", "s^2"], None),
@@ -2165,6 +2835,7 @@ class TestDimensionalConstraints(unittest.TestCase):
                     y,
                     X_units,
                     y_units,
+                    supports_sympy=False,
                 )
 
     def test_unit_propagation(self):
@@ -2246,20 +2917,18 @@ class TestDimensionalConstraints(unittest.TestCase):
 
 
 class TestTemplateExpressionSpec(unittest.TestCase):
-    def test_num_features_symbol_keys(self):
-        # ponytail: one check — dict keys must reach Julia as Symbols
-        spec = TemplateExpressionSpec(
-            ["f", "g"],
-            "combine(fs, vars) = fs.f(vars[1], vars[2]) + fs.g(vars[3])",
-            {"f": 2, "g": 1},
-        )
-        options = spec.julia_expression_options()
-        names = jl.seval("x -> propertynames(x.structure.num_features)")(options)
-        self.assertEqual(names, (jl.Symbol("f"), jl.Symbol("g")))
-
     def _check_macro_str(self, spec, expected_str):
         self.assertEqual(
             spec._template_macro_str().strip(), dedent(expected_str).strip()
+        )
+
+    def test_is_dataclass(self):
+        spec = TemplateExpressionSpec("f(x)", ["f"], ["x"])
+
+        self.assertTrue(is_dataclass(spec))
+        self.assertEqual(
+            [field.name for field in fields(spec)],
+            ["combine", "expressions", "variable_names", "parameters"],
         )
 
     def test_single_expression_no_params_single_variable(self):
@@ -2382,6 +3051,7 @@ def runtests(just_tests=False):
         TestLaTeXTable,
         TestDimensionalConstraints,
         TestGuesses,
+        TestTypeSpecs,
     ]
     if just_tests:
         return test_cases

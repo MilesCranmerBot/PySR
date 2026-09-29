@@ -15,19 +15,25 @@ on:
       - '**'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
+    name: Test (shard ${{ matrix.shard-index }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
     strategy:
+      fail-fast: false
       matrix:
         julia-version: ['1']
-        python-version: ['3.13']
+        python-version: ['3.14']
         os: [macos-latest]
-
+        shard-index: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       - name: "Set up Julia"
@@ -35,12 +41,12 @@ jobs:
         with:
           version: ${{ matrix.julia-version }}
       - name: "Cache Julia"
-        uses: julia-actions/cache@v2
+        uses: julia-actions/cache@v3
         with:
           cache-name: ${{ matrix.os }}-test-${{ matrix.julia-version }}-${{ matrix.python-version }}
           cache-packages: false
       - name: "Set up Python"
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -51,8 +57,13 @@ jobs:
             python -c 'import pysr'
       - name: "Run tests"
         run: |
-            python -m pysr test main,cli,startup
+            python -m pysr test main,cli,startup,interrupt
+        env:
+          PYSR_TEST_SHARD_COUNT: "4"
+          PYSR_TEST_SHARD_INDEX: ${{ matrix.shard-index }}
       - name: "Run JAX tests"
         run: python -m pysr test jax
+        if: ${{ matrix.shard-index == 0 }}
       - name: "Run Torch tests"
         run: python -m pysr test torch
+        if: ${{ matrix.shard-index == 0 }}

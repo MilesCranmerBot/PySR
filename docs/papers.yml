@@ -2,6 +2,35 @@
 # information to generate the "Research Showcase"
 
 papers:
+  - title: "Maximum updraft velocity beyond CAPE: the role of boundary layer dynamics and pressure perturbations"
+    authors:
+      - Bety Pechacova (1)
+      - Alejandro Casallas (1)
+      - Tom Beucler (2,3)
+      - Lokahith Agasthya (4)
+      - Caroline Muller (1)
+    affiliations:
+      1: Institute of Science and Technology Austria
+      2: Faculty of Geosciences and Environment, University of Lausanne
+      3: Expertise Center for Climate Extremes, University of Lausanne
+      4: Department of Meteorology and Geophysics, University of Vienna
+    link: https://doi.org/10.48550/arXiv.2607.23627
+    abstract: "Deep convective updraft velocities play a key role in the Earth's climate system, influencing precipitation extremes, lightning, and the planetary energy budget. While Convective Available Potential Energy (CAPE) is widely used to explain maximum updraft velocity ($w_{\\max}$), CAPE is an imperfect predictor as updrafts are also influenced by entrainment, boundary layer dynamics, pressure perturbations, and condensate loading. However, the relative importance of these processes and how they interact to set $w_{\\max}$ in individual clouds remains unclear. Here, we use equation learning to identify compact, physically interpretable relationships linking environmental and in-cloud conditions to $w_{\\max}$ in individual tracked clouds across idealized radiative–convective equilibrium regimes spanning a range of sea surface temperatures and radiative cooling rates. For pre-storm prediction, CAPE and local mean boundary layer vertical velocity ($\\overline{w_{\\mathrm{bl}}}$) together explain nearly half the variance in $w_{\\max}$ across regimes ($R^2=0.47$). While CAPE captures regime-mean differences, it has little predictive value within a single simulation. $\\overline{w_{\\mathrm{bl}}}$ is essential for capturing cloud-to-cloud variability, including the suppression of $w_{\\max}$ even at high $\\mathrm{CAPE}$ values. At the time of peak intensity, a simple approximate Bernoulli-like invariant combining maximum pressure perturbation and maximum cloud condensate explains 89% of the variance ($R^2=0.89$). The tight link between $w_{\\max}$ and pressure perturbation supports the sticky thermals hypothesis and highlights the importance of dynamic pressure effects, often neglected in updraft theories. These results highlight $\\overline{w_{\\mathrm{bl}}}$ as an important regulator of convective intensity alongside CAPE, and demonstrate that dynamic pressure plays an important role within individual updrafts."
+    image: https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/d6a8df0a069efb549ed9fc53e87cf0877ad3fee6/images/pr1295_updraft_velocity.png
+    date: 2026-07-26
+  - title: Improvement of spatiotemporal generalization in radiocesium transfer models for wheat using symbolic regression
+    authors:
+      - Katsutoshi Seki (1)
+      - Noriko Yamaguchi (2)
+      - Tetsuya Eguchi (2)
+      - Masato Igura (2)
+    affiliations:
+      1: Natural Science Laboratory, Toyo University
+      2: Institute for Agro-Environmental Sciences, NARO
+    link: https://doi.org/10.1016/j.jenvrad.2026.108077
+    abstract: "Accurate prediction of the soil-to-plant transfer factor (TF) of radiocesium ($^{137}$Cs) is essential for assessing radionuclide transfer to the human food chain and supporting radiological risk management after nuclear contamination. Semi-empirical TF models based on exchangeable potassium (K) and soil fixation capacity are widely used, but their predictive performance often deteriorates when applied to unobserved sites or years. In this study, we evaluated whether symbolic regression (SR), an approach that derives interpretable mathematical equations from data, can improve the spatiotemporal generalization of TF models. We analyzed long-term monitoring data from 11 upland wheat fields in Japan collected over five survey years ($n$ = 36). Model performance was assessed using structured cross-validation, including leave-one-site-out (LOSO) and leave-one-year-out (LOYO), to explicitly test spatial and temporal extrapolation. A simple K-based model substantially improved baseline predictions compared with a conventional semi-empirical model. However, linear additive extensions incorporating radiocesium interception potential (RIP), cation exchange capacity, pH, and soil $^{137}$Cs did not consistently improve predictive performance under LOSO or LOYO. In contrast, the selected SR model showed the lowest point-estimate prediction errors in both spatial and temporal validations. The selected equation represented a non-linear interaction between exchangeable K and RIP, consistent with reduced K sensitivity in soils with strong specific fixation sites. However, the selected SR-derived equation remains empirical and is valid only within the observed soil-property range and may show nonphysical behavior under extreme RIP conditions. These results suggest that interpretable non-linear equations derived by SR may improve TF prediction within a restricted soil domain."
+    image: https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/d6a8df0a069efb549ed9fc53e87cf0877ad3fee6/images/pr1206_radiocesium_transfer_models.png
+    date: 2026-06-13
   - title: Discovering data-driven microbial growth models with symbolic regression
     authors:
       - T. Anthony Sun (1)
@@ -80,7 +109,7 @@ papers:
       - Pericles Panagiotou (1)
     affiliations:
       1: Laboratory of Fluid Mechanics and Turbomachinery, Department of Mechanical Engineering, Aristotle University of Thessaloniki, 54124 Thessaloniki, Greece
-    link: https://www.aifluids.net/proceedings/S6P16.pdf
+    link: https://www.aifluids.net/proceedings/C.%20Pliakos,%20G.%20Efrem,%20D.%20Terzis,%20P.%20Panagiotou,%20Data-driven%20skin%20friction%20estimation%20for%20UAV%20wings%20in%20subsonic%20flows.pdf
     abstract: Accurate estimation of the skin friction coefficient (𝐶𝑓) is essential for estimating the wall shear stresses (𝜏𝑤) and ultimately the first-layer cell height (𝑦) in wall-resolved RANS simulations of wings, where turbulence models are used, demanding a specific grid resolution near walls (primarily the 𝑦𝑡𝑎𝑟𝑔𝑒𝑡⁺). Conventional flat-plate correlations often fail to account for the three-dimensional nature of real wing flows, introducing uncertainties in 𝐶𝑓 predictions and leading to multiple CFD analyses and mesh refinements to meet the targets. In this work, we propose a machine-learning-based approach exploring symbolic regression to derive a model that correlates wing-specific parameters (e.g., Reynolds number, angle of attack, thickness-to-chord ratio, wing sweep angle) with 𝐶𝑓 at the Mean Aerodynamic Chord (MAC). Data are acquired from an in-house database of over 5,000 RANS simulations for UAV wings operating in the low subsonic regime, covering a wide design space, all conducted following best-practice CFD guidelines to ensure high fidelity. These analyses are performed at various flow conditions covering Reynolds numbers from 10⁵ to 10⁷ and include the complete drag polar for each wing. The proposed correlation provides improved agreement with CFD data and enables more accurate 𝑦⁺ estimations. Validation on different wing geometries, including the ONERA M6 and in-house UAV wings, confirmed the robustness of the model, which improves boundary-layer resolution with only a marginal (~2%) increase in total mesh size, while achieving an R² of 0.68 with negligible computational inference cost. This explicit, data-driven equation offers an efficient method for streamlining mesh generation in aerodynamic simulations.
     image: https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/48020babcca1e73d2f5bbbd4ef3f0ec3265c59fb/images/pr1127_skin_friction.png
     date: 2025-05-30

@@ -345,49 +345,11 @@ def process_markdown_file(source_path: Path, output_path: Path) -> None:
     print(f"Generated {output_path} from {source_path}")
 
 
-def process_readme_to_index(readme_path: Path, output_path: Path) -> None:
-    """Convert README.md to index.md with VitePress syntax."""
-    content = readme_path.read_text()
-
-    # Add the video splash at the top
-    video_splash = '<div style="width:100%;height:0px;position:relative;padding-bottom:56.250%;"><iframe src="https://streamable.com/e/ncvqhy" frameborder="0" width="100%" height="100%" allowfullscreen style="width:100%;height:100%;position:absolute;left:0px;top:0px;overflow:hidden;"></iframe></div>\n'
-    content = video_splash + content
-
-    # Convert <details> blocks to VitePress ::: details syntax
-    # Pattern matches: <details><summary>\n\n### Title\n\n</summary>\ncontent\n</details>
-    def replace_details(match):
-        summary = match.group(1).strip()
-        body = match.group(2).strip()
-        # Extract title from summary (remove ### prefix if present)
-        title = summary.replace("###", "").strip()
-        return f"::: details {title}\n\n{body}\n\n:::"
-
-    # Match <details><summary>...</summary>...</details> blocks
-    details_pattern = r"<details>\s*<summary>\s*(.*?)\s*</summary>\s*(.*?)\s*</details>"
-    content = re.sub(details_pattern, replace_details, content, flags=re.DOTALL)
-
-    output_path.write_text(content)
-    print(f"Generated {output_path} from {readme_path}")
-
-
 def main():
     """Main entry point."""
     # Get the directory containing this script
     script_dir = Path(__file__).parent.resolve()
     src_dir = script_dir / "src"
-
-    # Generate index.md from README.md
-    readme_path = script_dir.parent / "README.md"
-    index_path = src_dir / "index.md"
-    if readme_path.exists():
-        try:
-            process_readme_to_index(readme_path, index_path)
-        except Exception as e:
-            print(f"Error generating index.md: {e}", file=sys.stderr)
-            import traceback
-
-            traceback.print_exc()
-            sys.exit(1)
 
     # Process _api.md → api.md and _api-advanced.md → api-advanced.md
     for source_name, output_name in [

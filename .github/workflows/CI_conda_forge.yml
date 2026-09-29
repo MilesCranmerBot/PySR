@@ -1,46 +1,60 @@
-name: conda-forge
+name: conda-forge published-package canary
 
-# This CI tries the conda-forge version of PySR
+# Weekly smoke test for the latest published PySR package on conda-forge.
 
 on:
+  pull_request:
+    branches:
+      - 'master'
+      - 'release-*'
+    paths:
+      - '.github/workflows/CI_conda_forge.yml'
   schedule:
-    # Run at the 0th minute of the 10th hour (UTC).
-    # This means the job will run at 5am EST.
-    - cron: "0 10 * * *"
-    # This will automatically run on master branch only.
+    - cron: "0 10 * * 1"
   workflow_dispatch:
 
 jobs:
   conda_test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      SCIPY_ARRAY_API: "1"
     defaults:
       run:
         shell: bash -el {0}
     strategy:
       fail-fast: false
       matrix:
-        # NOTE: pin to avoid free-threaded Python variants (e.g. 3.14t)
-        python-version: ['3.10', '3.13']
+        python-version: ['3.10', '3.14']
         os: ['ubuntu-latest', 'windows-latest', 'macos-latest']
 
     steps:
       - name: "Set up Conda"
-        uses: conda-incubator/setup-miniconda@v3
+        uses: conda-incubator/setup-miniconda@v4
         with:
           miniforge-variant: Miniforge3
           miniforge-version: latest
           auto-activate-base: true
           python-version: ${{ matrix.python-version }}
           activate-environment: pysr-test
+      - name: "Set up Julia"
+        uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
       - name: "Install pysr"
         run: |
           conda install -y pysr
-          python -c "import pysr"
+          python -c 'import importlib.metadata, pysr; print("Installed PySR", importlib.metadata.version("pysr"))'
           echo "Finished."
       - name: "Run tests"
         run: |
           echo "Running tests"
           pip install pytest nbval
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            status=0
+            python -m pysr test main,startup > canary.log 2>&1 || status=$?
+            cat canary.log
+            exit "$status"
+          fi
           python -m pysr test main,startup
           echo "Finished."

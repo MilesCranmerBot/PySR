@@ -131,6 +131,86 @@ class TestStartup(unittest.TestCase):
             )
             self.assertIn(warning_test["msg"], result.stderr.decode())
 
+    def test_autoload_extension_env_precedence(self):
+        autoload_key = "PYTHON_JULIACALL_AUTOLOAD_IPYTHON_EXTENSION"
+        deprecated_key = "PYSR_AUTOLOAD_EXTENSIONS"
+        cases = [
+            # (extra env, expected value after `import pysr`)
+            ({}, "no"),
+            ({autoload_key: "yes"}, "yes"),
+            ({deprecated_key: "yes"}, "yes"),
+            # An explicitly set juliacall var beats the deprecated alias:
+            ({autoload_key: "no", deprecated_key: "yes"}, "no"),
+        ]
+        for extra_env, expected in cases:
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in (autoload_key, deprecated_key)
+            }
+            env.update(extra_env)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    f'import pysr, os; print("autoload=" + os.environ["{autoload_key}"])',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertIn(f"autoload={expected}", result.stdout.decode())
+            deprecation_expected = deprecated_key in extra_env
+            self.assertEqual(
+                "PYSR_AUTOLOAD_EXTENSIONS is deprecated" in result.stderr.decode(),
+                deprecation_expected,
+            )
+
+    def test_juliacall_0935_distributed_worker_uses_current_python(self):
+        import_orders = (
+            "import pysr\nfrom pysr import jl",
+            "import juliacall\nimport pysr\nfrom pysr import jl",
+        )
+        worker_code = r"""
+            using Distributed
+            worker = only(addprocs(1, exeflags="--threads=1"))
+            try
+                fetch(Distributed.remotecall_eval(Main, worker, :(using PythonCall)))
+                @fetchfrom worker (
+                    pyconvert(String, pyimport("sys").executable),
+                    pyconvert(Int, pybuiltins.sum([1, 2, 3])),
+                )
+            finally
+                rmprocs(worker)
+            end
+        """
+        env = os.environ.copy()
+        env.pop("JULIA_PYTHONCALL_EXE", None)
+        env.pop("JULIA_PYTHONCALL_EXECUTABLE", None)
+        env["JULIA_CONDAPKG_OFFLINE"] = "yes"
+        env["PYTHON_JULIACALL_THREADS"] = "1"
+        env["JULIA_NUM_THREADS"] = "1"
+
+        for import_order in import_orders:
+            with self.subTest(import_order=import_order):
+                code = (
+                    "import sys\n"
+                    f"{import_order}\n"
+                    f"worker_python, total = jl.seval({worker_code!r})\n"
+                    "assert worker_python == sys.executable, "
+                    "(worker_python, sys.executable)\n"
+                    "assert total == 6, total\n"
+                )
+                result = subprocess.run(
+                    [sys.executable, "-c", code],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=300,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_notebook(self):
         if platform.system() == "Windows":
             self.skipTest("Notebook test incompatible with Windows")

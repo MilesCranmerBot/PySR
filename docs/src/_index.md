@@ -16,7 +16,7 @@ hero:
       text: View on GitHub
       link: https://github.com/astroautomata/PySR
   image:
-    src: https://ai.damtp.cam.ac.uk/symbolicregression/dev/logo.png
+    src: https://raw.githubusercontent.com/MilesCranmer/PySR_Docs/master/images/pysr-logo.png
     alt: PySR
 
 features:
@@ -33,8 +33,8 @@ features:
     details: "Customize everything: operators, loss functions, complexity, input types, optimizer, and more."
 
   - icon: 🐍
-    title: Python Native
-    details: Built for Python with Julia backend for maximum performance and ease of use.
+    title: Familiar Python API
+    details: A scikit-learn interface, with results exported to SymPy, PyTorch, or JAX.
 ---
 
 If you find PySR useful, please cite the paper [arXiv:2305.01582](https://arxiv.org/abs/2305.01582).

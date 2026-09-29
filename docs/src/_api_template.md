@@ -75,13 +75,15 @@ PARAMSKEY
         heading_level: 3
         show_root_full_path: false
 
-::: pysr.ParametricExpressionSpec
+::: pysr.AbstractExpressionSpec
     options:
         show_root_heading: true
         heading_level: 3
         show_root_full_path: false
 
-::: pysr.AbstractExpressionSpec
+## Type Specifications
+
+::: pysr.TypeSpec
     options:
         show_root_heading: true
         heading_level: 3
@@ -96,6 +98,124 @@ PARAMSKEY
         show_root_full_path: false
 
 ::: pysr.AbstractLoggerSpec
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+## Mutations
+
+::: pysr.ConstantMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.OperatorMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.FeatureMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.SwapOperandsMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AddNodeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.InsertNodeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.DeleteNodeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.RotateTreeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.BacksolveMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.SimplifyMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.RandomizeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.OptimizeMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.DoNothingMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AbstractMutation
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+## Plugins
+
+::: pysr.AdaptiveMutationWeightsPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AdaptiveParsimonyPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.MutationBurstPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.SimulatedAnnealingPlugin
+    options:
+        show_root_heading: true
+        heading_level: 3
+        show_root_full_path: false
+
+::: pysr.AbstractPlugin
     options:
         show_root_heading: true
         heading_level: 3

@@ -30,6 +30,19 @@ def _escape_filename(filename):
 
 
 def _load_cluster_manager(cluster_manager: str):
+    if cluster_manager == "slurm":
+        jl.seval("using Distributed: addprocs")
+        jl.seval("using SlurmClusterManager: SlurmManager")
+        return jl.seval("""
+            (numprocs; kws...) -> begin
+                manager = SlurmManager()
+                manager.ntasks == numprocs || error(
+                    "Requested $numprocs processes, but Slurm allocation has $(manager.ntasks) tasks. " *
+                    "Set Slurm `--ntasks`/`--ntasks-per-node` and `procs` to the same value."
+                )
+                addprocs(manager; kws...)
+            end
+            """)
     jl.seval(f"using ClusterManagers: addprocs_{cluster_manager}")
     return jl.seval(f"addprocs_{cluster_manager}")
 
@@ -43,6 +56,10 @@ def jl_array(x, dtype=None):
         return jl_convert(jl.Array[dtype], x)
 
 
+def jl_numpy_array(x):
+    return jl.copy(PythonCall.PyArray(x))
+
+
 def jl_dict(x):
     return jl_convert(jl.Dict, x)
 
@@ -52,7 +69,7 @@ def jl_named_tuple(d):
 
 
 def jl_is_function(f) -> bool:
-    return cast(bool, jl.seval("op -> op isa Function")(f))
+    return cast(bool, jl.isa(f, jl.Function))
 
 
 def jl_serialize(obj: Any) -> NDArray[np.uint8]:
