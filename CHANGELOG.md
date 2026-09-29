@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/astroautomata/PySR/compare/v2.5.2...v2.6.0) (2026-09-29)
+
+
+### Miscellaneous Chores
+
+* update backend to v2.5.0 ([#1398](https://github.com/astroautomata/PySR/issues/1398)) ([e5461b9](https://github.com/astroautomata/PySR/commit/e5461b967cc35405f63b9512a8e71280b0f799ef))
+
 ## [2.5.2](https://github.com/astroautomata/PySR/compare/v2.5.1...v2.5.2) (2026-09-28)
 
 
