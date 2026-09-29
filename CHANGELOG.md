@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.6.0](https://github.com/astroautomata/PySR/compare/v2.5.2...v2.6.0) (2026-09-29)
+
+
+### Backend: SymbolicRegression.jl 2.4.2 → 2.5.0
+
+PySR now uses [SymbolicRegression.jl 2.5.0](https://github.com/astroautomata/SymbolicRegression.jl/releases/tag/v2.5.0) ([#1398](https://github.com/astroautomata/PySR/issues/1398)). The new backend makes the first fit in a Python session faster and speeds up `parallelism="multiprocessing"`, mostly at start-up. Search behavior is unchanged.
+
+* **Faster first fit.** PySR always loads PythonCall, and loading it invalidated much of the code that SymbolicRegression.jl precompiles, so every Python session recompiled the search on its first fit. The backend now reruns its precompile workload after PythonCall loads, including a search shaped like PySR's default call. On a 12-core node, the README example's first fit went from 17.4 s to 7.0 s. Custom operators still compile on first use, and installing or updating the backend takes a few seconds longer, once. ([SymbolicRegression.jl#743](https://github.com/astroautomata/SymbolicRegression.jl/pull/743))
+* **Multiprocessing start-up checks run on all workers at once.** Before a search, the main process runs quick checks on every worker. It used to wait for the answers one worker at a time, and each worker's first answer includes compiling code, so the waits added up. It now waits on all workers together. If a check fails on a worker, the original error is still raised, after every worker has answered. ([SymbolicRegression.jl#745](https://github.com/astroautomata/SymbolicRegression.jl/pull/745))
+* **Workers fetch their own starting populations.** During warm-up, the main process used to pull each starting population back from its worker, one at a time, before sending it out again. Each worker now fetches its own, as in PySR 1. ([SymbolicRegression.jl#744](https://github.com/astroautomata/SymbolicRegression.jl/pull/744))
+* **The equations file is rewritten only when it changes.** The hall-of-fame CSV used to be rewritten on every cycle. It is now written only when the best equations change. This applies to every parallelism mode. ([SymbolicRegression.jl#747](https://github.com/astroautomata/SymbolicRegression.jl/pull/747))
+
+On one 128-core AMD EPYC node with `procs=128` (256 populations, 2,000 rows, 5 features), a 100-iteration multiprocessing fit went from about 264 s to 136 s, and a 1-iteration fit from about 176 s to 54 s.
+
 ## [2.5.2](https://github.com/astroautomata/PySR/compare/v2.5.1...v2.5.2) (2026-09-28)
 
 
