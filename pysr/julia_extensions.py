@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-import juliapkg
+import juliapkg  # type: ignore
 
 from .julia_import import Pkg, jl
 from .logger_specs import AbstractLoggerSpec, TensorBoardLoggerSpec
