@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from .julia_helpers import jl_array
+import juliapkg
+
 from .julia_import import Pkg, jl
-from .julia_registry_helpers import try_with_registry_fallback
 from .logger_specs import AbstractLoggerSpec, TensorBoardLoggerSpec
 
 _PACKAGE_UUIDS: dict[str, str] = {
@@ -95,30 +95,25 @@ def install_packages(package_names) -> None:
     if not missing:
         return
 
-    def _add_packages():
-        # Julia 1.13.2's auto-precompile after `Pkg.add` fails with "Unknown package" when the add
-        # changes the version of an indirect dependency (JuliaLang/Pkg.jl#4866, fixed in #4867).
-        # Loading a package precompiles what it needs instead.
-        old_value = os.environ.get("JULIA_PKG_PRECOMPILE_AUTO")
-        os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
-        try:
-            Pkg.add(
-                jl_array(
-                    [
-                        Pkg.PackageSpec(name=name, uuid=_PACKAGE_UUIDS[name])
-                        for name in missing
-                    ],
-                    Pkg.PackageSpec,
-                )
-            )
-            Pkg.resolve()
-        finally:
-            if old_value is None:
-                del os.environ["JULIA_PKG_PRECOMPILE_AUTO"]
-            else:
-                os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = old_value
+    # juliapkg rebuilds the Julia project from its dependency files whenever it
+    # re-resolves, for example in a process whose `sys.path` finds a different set of
+    # `juliapkg.json` files. Recording extensions there keeps them, and the versions
+    # they force, in every resolve.
+    for name in missing:
+        juliapkg.add(name, _PACKAGE_UUIDS[name])
 
-    try_with_registry_fallback(_add_packages)
+    # Julia 1.13.2's auto-precompile after `Pkg.add` fails with "Unknown package" when the add
+    # changes the version of an indirect dependency (JuliaLang/Pkg.jl#4866, fixed in #4867).
+    # juliapkg runs `Pkg.precompile()` afterwards instead.
+    old_value = os.environ.get("JULIA_PKG_PRECOMPILE_AUTO")
+    os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
+    try:
+        juliapkg.resolve()
+    finally:
+        if old_value is None:
+            del os.environ["JULIA_PKG_PRECOMPILE_AUTO"]
+        else:
+            os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = old_value
 
 
 def _loaded_packages_with_changed_versions() -> list[str]:
