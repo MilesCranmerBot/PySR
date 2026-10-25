@@ -228,6 +228,8 @@ class TestStartup(unittest.TestCase):
                 sys.executable,
                 "-m",
                 "pytest",
+                "-p",
+                "no:faulthandler",
                 "--nbval",
                 str(notebook_file),
                 "--nbval-sanitize-with",
