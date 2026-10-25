@@ -228,8 +228,6 @@ class TestStartup(unittest.TestCase):
                 sys.executable,
                 "-m",
                 "pytest",
-                # Disabling faulthandler at exit resets SIGSEGV to the default action,
-                # which kills Julia's GC safepoint handling during shutdown.
                 "-p",
                 "no:faulthandler",
                 "--nbval",
