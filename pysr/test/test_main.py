@@ -2386,8 +2386,6 @@ class TestMiscellaneous(unittest.TestCase):
                 _load_cluster_manager("slurm")(1)
 
     def test_detects_loaded_package_whose_environment_version_changed(self):
-        # Like a Pkg downgrade: the environment switches to another copy of a
-        # package the session already loaded.
         with tempfile.TemporaryDirectory() as tmpdir:
 
             def write_package(version):

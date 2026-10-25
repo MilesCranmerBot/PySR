@@ -95,16 +95,9 @@ def install_packages(package_names) -> None:
     if not missing:
         return
 
-    # juliapkg rebuilds the Julia project from its dependency files whenever it
-    # re-resolves, for example in a process whose `sys.path` finds a different set of
-    # `juliapkg.json` files. Recording extensions there keeps them, and the versions
-    # they force, in every resolve.
     for name in missing:
         juliapkg.add(name, _PACKAGE_UUIDS[name])
 
-    # Julia 1.13.2's auto-precompile after `Pkg.add` fails with "Unknown package" when the add
-    # changes the version of an indirect dependency (JuliaLang/Pkg.jl#4866, fixed in #4867).
-    # juliapkg runs `Pkg.precompile()` afterwards instead.
     old_value = os.environ.get("JULIA_PKG_PRECOMPILE_AUTO")
     os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
     try:
