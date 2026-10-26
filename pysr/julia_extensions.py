@@ -7,7 +7,9 @@ from typing import Literal
 
 import juliapkg  # type: ignore
 
+from .julia_helpers import jl_array
 from .julia_import import Pkg, jl
+from .julia_registry_helpers import try_with_registry_fallback
 from .logger_specs import AbstractLoggerSpec, TensorBoardLoggerSpec
 
 _PACKAGE_UUIDS: dict[str, str] = {
@@ -95,18 +97,29 @@ def install_packages(package_names) -> None:
     if not missing:
         return
 
+    def _add_packages():
+        old_value = os.environ.get("JULIA_PKG_PRECOMPILE_AUTO")
+        os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
+        try:
+            Pkg.add(
+                jl_array(
+                    [
+                        Pkg.PackageSpec(name=name, uuid=_PACKAGE_UUIDS[name])
+                        for name in missing
+                    ],
+                    Pkg.PackageSpec,
+                )
+            )
+            Pkg.resolve()
+        finally:
+            if old_value is None:
+                del os.environ["JULIA_PKG_PRECOMPILE_AUTO"]
+            else:
+                os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = old_value
+
+    try_with_registry_fallback(_add_packages)
     for name in missing:
         juliapkg.add(name, _PACKAGE_UUIDS[name])
-
-    old_value = os.environ.get("JULIA_PKG_PRECOMPILE_AUTO")
-    os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
-    try:
-        juliapkg.resolve()
-    finally:
-        if old_value is None:
-            del os.environ["JULIA_PKG_PRECOMPILE_AUTO"]
-        else:
-            os.environ["JULIA_PKG_PRECOMPILE_AUTO"] = old_value
 
 
 def _loaded_packages_with_changed_versions() -> list[str]:
